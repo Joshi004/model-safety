@@ -64,7 +64,7 @@ Both scans are offline batch jobs — no coupling to `launchers/slurm/run_with_s
 ## Install
 
 ```bash
-cd synth_data_gen/tools/data_prep/toxicity
+cd modelsafety/data_screening/toxicity
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -78,15 +78,15 @@ Stage 2 additionally needs a running Qwen3Guard endpoint (same vLLM pattern as t
 Default QA test paths:
 
 ```bash
-cd synth_data_gen
-sbatch tools/data_prep/toxicity/run_toxicity_scan.sbatch
+cd /path/to/qvac-model-safety
+sbatch launchers/slurm/run_toxicity_scan.sbatch
 ```
 
 Custom input/output:
 
 ```bash
 sbatch --export=ALL,TOX_INPUT=/path/to/data.jsonl,TOX_RUN_DIR=/path/to/toxicity_out \
-  tools/data_prep/toxicity/run_toxicity_scan.sbatch
+  launchers/slurm/run_toxicity_scan.sbatch
 ```
 
 The wrapper runs Detoxify stage 1, starts Qwen3Guard with vLLM from the enroot

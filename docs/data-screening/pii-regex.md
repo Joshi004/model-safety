@@ -100,7 +100,7 @@ CPU-only for stages 1–3; stages 4a/4b need an OpenAI-compatible LLM endpoint.
 ## Install
 
 ```bash
-cd synth_data_gen/tools/data_prep/pii_scan
+cd modelsafety/data_screening/pii/regex
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -114,15 +114,15 @@ The SLURM script below creates the venv on first run if it is missing.
 Default test paths (`tmp/qa_scan_test/input` → `tmp/qa_scan_test/pii_run`):
 
 ```bash
-cd synth_data_gen
-sbatch tools/data_prep/pii_scan/run_pii_scan.sbatch
+cd /path/to/qvac-model-safety
+sbatch launchers/slurm/run_pii_scan.sbatch
 ```
 
 Custom input/output:
 
 ```bash
 sbatch --export=ALL,PII_BASE_DIR=/path/to/jsonl/root,PII_RUN_DIR=/path/to/pii_run,PII_NUM_WORKERS=32 \
-  tools/data_prep/pii_scan/run_pii_scan.sbatch
+  launchers/slurm/run_pii_scan.sbatch
 ```
 
 Logs land under `logs/scans/pii_scan/run_<jobid>/`:
@@ -142,11 +142,16 @@ Results: read `stage1_scan/metrics.txt` and `stage2_validated/metrics.txt` under
 
 ### Manual — stages 1 + 2 (worker / interactive session only)
 
+`pii_scanner_fast.py` imports `modelsafety.contract.textract`, so the repo
+root needs to be on `PYTHONPATH` when running it outside the sbatch wrapper
+(the wrapper sets this for you):
+
 ```bash
 export PII_BASE_DIR=/path/to/jsonl/root
 export PII_RUN_DIR=/path/to/pii_run
 export PII_NUM_WORKERS=32
 export PII_CHUNK_SIZE=10000
+export PYTHONPATH=/path/to/qvac-model-safety
 
 python pii_scanner_fast.py
 python pii_validator.py

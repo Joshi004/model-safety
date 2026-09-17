@@ -4,15 +4,15 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=24:00:00
-#SBATCH --output=synth_data_gen/logs/slurm/dedup_scan_%j.out
-#SBATCH --error=synth_data_gen/logs/slurm/dedup_scan_%j.err
+#SBATCH --output=logs/slurm/dedup_scan_%j.out
+#SBATCH --error=logs/slurm/dedup_scan_%j.err
 
 set -euo pipefail
 
 export PATH=/usr/bin:/bin:/usr/local/bin:$PATH
 
-REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}/synth_data_gen}"
-DEDUP_DIR="${REPO}/tools/data_prep/dedup"
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+DEDUP_DIR="${REPO}/modelsafety/data_screening/dedup"
 VENV="${DEDUP_DIR}/.venv"
 
 DEDUP_INPUT_ROOT="${DEDUP_INPUT_ROOT:-${REPO}/tmp/qa_scan_test/input}"

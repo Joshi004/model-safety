@@ -5,13 +5,13 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=72:00:00
-#SBATCH --output=synth_data_gen/logs/slurm/privacy_filter_llm_%j.out
-#SBATCH --error=synth_data_gen/logs/slurm/privacy_filter_llm_%j.err
+#SBATCH --output=logs/slurm/privacy_filter_llm_%j.out
+#SBATCH --error=logs/slurm/privacy_filter_llm_%j.err
 
 set -euo pipefail
 
-REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}/synth_data_gen}"
-PIPELINE_DIR="${REPO}/tools/data_prep/pii_privacy_filter"
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+PIPELINE_DIR="${REPO}/modelsafety/data_screening/pii/model"
 RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT:?PRIVACY_FILTER_RUN_ROOT is required}"
 INPUT="${PRIVACY_FILTER_LLM_INPUT:-${RUN_ROOT}/llm_candidates.csv}"
 MODEL="${PRIVACY_FILTER_LLM_MODEL:-google/gemma-4-31B-it}"

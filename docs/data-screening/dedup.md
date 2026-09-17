@@ -39,10 +39,10 @@ The job uses the `health` partition and creates a dedicated `.venv` in this
 directory on first use.
 
 ```bash
-cd /path/to/qvac-research-medpsy/synth_data_gen
+cd /path/to/qvac-model-safety
 export DEDUP_INPUT_ROOT="$PWD/tmp/qa_scan_test/input"
 export DEDUP_RUN_DIR="$PWD/tmp/qa_scan_test/dedup_out"
-sbatch tools/data_prep/dedup/run_dedup_scan.sbatch
+sbatch launchers/slurm/run_dedup_scan.sbatch
 ```
 
 For a full post-quality-filter run:
@@ -50,7 +50,7 @@ For a full post-quality-filter run:
 ```bash
 export DEDUP_INPUT_ROOT="$PWD/output/medpsy2/pii_toxicity_cleaning/filtered"
 export DEDUP_RUN_DIR="$PWD/output/medpsy2/dedup"
-sbatch tools/data_prep/dedup/run_dedup_scan.sbatch
+sbatch launchers/slurm/run_dedup_scan.sbatch
 ```
 
 An existing non-empty run directory is rejected. Set `DEDUP_OVERWRITE=1` only
@@ -68,11 +68,11 @@ normal global dedup pass afterward if the candidate output also needs internal
 deduplication.
 
 ```bash
-cd /path/to/qvac-research-medpsy/synth_data_gen
+cd /path/to/qvac-model-safety
 export DEDUP_REFERENCE_ROOT="/path/to/dataset_always_retained"
 export DEDUP_CANDIDATE_ROOT="/path/to/dataset_to_filter"
 export DEDUP_RUN_DIR="$PWD/output/cross_dedup"
-sbatch tools/data_prep/dedup/run_dedup_scan.sbatch
+sbatch launchers/slurm/run_dedup_scan.sbatch
 ```
 
 The output `filtered/` and `filtered_out/` trees contain candidate rows only.
@@ -89,7 +89,7 @@ export DEDUP_REFERENCE_ROOT="/path/to/test_and_benchmark_sets"
 export DEDUP_CANDIDATE_ROOT="/path/to/training_data"
 export DEDUP_RUN_DIR="$PWD/output/train_test_decontamination"
 export DEDUP_TEXT_SCOPE="prompt"
-sbatch tools/data_prep/dedup/run_dedup_scan.sbatch
+sbatch launchers/slurm/run_dedup_scan.sbatch
 ```
 
 This is approximate lexical decontamination over 60-character shingles by
@@ -101,11 +101,15 @@ to prompt-only JSONL:
 
 ```bash
 srun --partition=health --ntasks=1 --cpus-per-task=4 --mem=16G --time=00:30:00 \
-  venv/bin/python \
-  tools/data_prep/dedup/prepare_benchmarks.py \
+  modelsafety/data_screening/dedup/.venv/bin/python \
+  modelsafety/data_screening/dedup/prepare_benchmarks.py \
   --input-root data/benchmarks/alex_health \
   --output-root data/benchmarks/alex_health_prepared
 ```
+
+(`modelsafety/data_screening/dedup/.venv` is the dedup module's own venv,
+created on first run of `launchers/slurm/run_dedup_scan.sbatch` -- there is no
+shared root venv in this repo.)
 
 The prepared rows retain their original benchmark file, line, format, dataset,
 and record identifier under `metadata`. Empty source rows are skipped and
@@ -179,7 +183,7 @@ sbatch \
   --mem=16G \
   --time=01:00:00 \
   --export=ALL,DEDUP_INPUT_ROOT=/path/to/pilot,DEDUP_RUN_DIR=/path/to/pilot_output \
-  tools/data_prep/dedup/run_dedup_scan.sbatch
+  launchers/slurm/run_dedup_scan.sbatch
 ```
 
 For a full run, the launcher defaults to 16 CPUs and 128 GB RAM. Adjust memory
@@ -187,7 +191,8 @@ from pilot peak usage; corpus row count and LSH band count dominate memory.
 
 ## Direct CLI
 
-Use direct execution only inside an allocated compute session:
+Use direct execution only inside an allocated compute session, run from
+`modelsafety/data_screening/dedup/` (all paths below are relative to it):
 
 ```bash
 .venv/bin/python run.py \

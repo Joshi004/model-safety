@@ -4,16 +4,20 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=02:00:00
-#SBATCH --output=synth_data_gen/logs/slurm/pii_scan_%j.out
-#SBATCH --error=synth_data_gen/logs/slurm/pii_scan_%j.err
+#SBATCH --output=logs/slurm/pii_scan_%j.out
+#SBATCH --error=logs/slurm/pii_scan_%j.err
 
 set -euo pipefail
 
 export PATH=/usr/bin:/bin:/usr/local/bin:$PATH
 
-REPO="${PII_REPO:-${SLURM_SUBMIT_DIR:-$PWD}/synth_data_gen}"
-PII_DIR="${REPO}/tools/data_prep/pii_scan"
+REPO="${PII_REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+PII_DIR="${REPO}/modelsafety/data_screening/pii/regex"
 VENV="${PII_DIR}/.venv"
+# pii_scanner_fast.py imports `modelsafety.contract.textract`, an absolute
+# package import added when the code was ported out of a flat sibling-file
+# layout. It needs the repo root on PYTHONPATH to resolve.
+export PYTHONPATH="${REPO}${PYTHONPATH:+:${PYTHONPATH}}"
 
 export PII_BASE_DIR="${PII_BASE_DIR:-${REPO}/tmp/qa_scan_test/input}"
 export PII_RUN_DIR="${PII_RUN_DIR:-${REPO}/tmp/qa_scan_test/pii_run}"

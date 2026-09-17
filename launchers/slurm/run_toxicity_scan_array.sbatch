@@ -5,13 +5,13 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=96G
 #SBATCH --time=48:00:00
-#SBATCH --output=synth_data_gen/logs/slurm/medpsy_toxicity_%A_%a.out
-#SBATCH --error=synth_data_gen/logs/slurm/medpsy_toxicity_%A_%a.err
+#SBATCH --output=logs/slurm/medpsy_toxicity_%A_%a.out
+#SBATCH --error=logs/slurm/medpsy_toxicity_%A_%a.err
 
 set -euo pipefail
 
-REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}/synth_data_gen}"
-TOX_DIR="${REPO}/tools/data_prep/toxicity"
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+TOX_DIR="${REPO}/modelsafety/data_screening/toxicity"
 VENV="${TOX_DIR}/.venv"
 INPUT_ROOT="${QUALITY_INPUT_ROOT:?QUALITY_INPUT_ROOT is required}"
 MANIFEST_DIR="${QUALITY_MANIFEST_DIR:?QUALITY_MANIFEST_DIR is required}"

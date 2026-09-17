@@ -6,13 +6,13 @@
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=512G
 #SBATCH --time=7-00:00:00
-#SBATCH --output=synth_data_gen/logs/slurm/privacy_filter_node_%j.out
-#SBATCH --error=synth_data_gen/logs/slurm/privacy_filter_node_%j.err
+#SBATCH --output=logs/slurm/privacy_filter_node_%j.out
+#SBATCH --error=logs/slurm/privacy_filter_node_%j.err
 
 set -euo pipefail
 
-REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}/synth_data_gen}"
-PIPELINE_DIR="${REPO}/tools/data_prep/pii_privacy_filter"
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+PIPELINE_DIR="${REPO}/modelsafety/data_screening/pii/model"
 INPUT_ROOT="${PRIVACY_FILTER_INPUT_ROOT:?PRIVACY_FILTER_INPUT_ROOT is required}"
 RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT:?PRIVACY_FILTER_RUN_ROOT is required}"
 WORK_MANIFEST="${PRIVACY_FILTER_WORK_MANIFEST:-${RUN_ROOT}/manifest/work_units.jsonl}"
@@ -20,7 +20,7 @@ MODEL="${PRIVACY_FILTER_MODEL:-OpenMed/privacy-filter-nemotron-v2}"
 BACKEND="${PRIVACY_FILTER_BACKEND:-transformers}"
 GPU_COUNT="${PRIVACY_FILTER_GPU_COUNT:-${SLURM_GPUS_ON_NODE:-8}}"
 VENV="${PRIVACY_FILTER_VENV:-${PIPELINE_DIR}/.venv-isolated}"
-BASE_PYTHON="${PRIVACY_FILTER_BASE_PYTHON:-${REPO}/venv/bin/python}"
+BASE_PYTHON="${PRIVACY_FILTER_BASE_PYTHON:-python3}"
 HF_HOME="${HF_HOME:-${REPO}/cache/hf}"
 VLLM_IMAGE="${PRIVACY_VLLM_SQUASHFS_PATH:-${REPO}/containers/vllm-openai-v0.24.0-cu129.sqsh}"
 

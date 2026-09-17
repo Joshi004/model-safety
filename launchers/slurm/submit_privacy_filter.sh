@@ -4,8 +4,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="${REPO:-$(cd "${SCRIPT_DIR}/../../.." && pwd)}"
-PIPELINE_DIR="${REPO}/tools/data_prep/pii_privacy_filter"
+REPO="${REPO:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+PIPELINE_DIR="${REPO}/modelsafety/data_screening/pii/model"
 INPUT_ROOT="${PRIVACY_FILTER_INPUT_ROOT:-${REPO}/output/medpsy2/baichuan_cleaning/filtered}"
 RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT:-${REPO}/output/medpsy2/privacy_filter_nemotron}"
 MODE="${PRIVACY_FILTER_MODE:-pilot}"
@@ -33,7 +33,7 @@ if [[ ! -f "${manifest}" ]]; then
   fi
   prepare_job="$(
     sbatch --parsable --export="${export_values}" \
-      "${PIPELINE_DIR}/prepare_privacy_filter.sbatch"
+      "${SCRIPT_DIR}/prepare_privacy_filter.sbatch"
   )"
   dependency=(--dependency="afterok:${prepare_job}")
   echo "Manifest job: ${prepare_job}"
@@ -41,9 +41,9 @@ fi
 
 if [[ "${MODE}" == "pilot" ]]; then
   export_values+=",PRIVACY_FILTER_MAX_UNITS=${PRIVACY_FILTER_MAX_UNITS:-1}"
-  scan_script="${PIPELINE_DIR}/run_privacy_filter_pilot.sbatch"
+  scan_script="${SCRIPT_DIR}/run_privacy_filter_pilot.sbatch"
 else
-  scan_script="${PIPELINE_DIR}/run_privacy_filter_node.sbatch"
+  scan_script="${SCRIPT_DIR}/run_privacy_filter_node.sbatch"
 fi
 scan_job="$(
   sbatch --parsable "${dependency[@]}" --export="${export_values}" "${scan_script}"

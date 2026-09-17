@@ -6,17 +6,22 @@
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
-#SBATCH --output=synth_data_gen/logs/slurm/medpsy_pii_cpu_%A_%a.out
-#SBATCH --error=synth_data_gen/logs/slurm/medpsy_pii_cpu_%A_%a.err
+#SBATCH --output=logs/slurm/medpsy_pii_cpu_%A_%a.out
+#SBATCH --error=logs/slurm/medpsy_pii_cpu_%A_%a.err
 
 # Intentionally non-exclusive: this CPU-only job must leave GPUs and the
 # remaining node CPUs available to other workloads.
 
 set -euo pipefail
 
-REPO="${PII_REPO:-${SLURM_SUBMIT_DIR:-$PWD}/synth_data_gen}"
-PII_DIR="${REPO}/tools/data_prep/pii_scan"
+REPO="${PII_REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+PII_DIR="${REPO}/modelsafety/data_screening/pii/regex"
 VENV="${PII_DIR}/.venv"
+# pii_scanner_fast.py and pii_extractor.py import
+# `modelsafety.contract.textract`, an absolute package import added when the
+# code was ported out of a flat sibling-file layout. Needs the repo root on
+# PYTHONPATH to resolve.
+export PYTHONPATH="${REPO}${PYTHONPATH:+:${PYTHONPATH}}"
 INPUT_ROOT="${QUALITY_INPUT_ROOT:?QUALITY_INPUT_ROOT is required}"
 MANIFEST_DIR="${QUALITY_MANIFEST_DIR:?QUALITY_MANIFEST_DIR is required}"
 RUN_ROOT="${QUALITY_RUN_ROOT:?QUALITY_RUN_ROOT is required}"

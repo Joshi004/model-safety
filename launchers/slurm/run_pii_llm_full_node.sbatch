@@ -6,14 +6,18 @@
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=512G
 #SBATCH --time=72:00:00
-#SBATCH --output=synth_data_gen/logs/slurm/medpsy_pii_gemma_node_%j.out
-#SBATCH --error=synth_data_gen/logs/slurm/medpsy_pii_gemma_node_%j.err
+#SBATCH --output=logs/slurm/medpsy_pii_gemma_node_%j.out
+#SBATCH --error=logs/slurm/medpsy_pii_gemma_node_%j.err
 
 set -euo pipefail
 
-REPO="${PII_REPO:-${SLURM_SUBMIT_DIR:-$PWD}/synth_data_gen}"
-PII_DIR="${REPO}/tools/data_prep/pii_scan"
+REPO="${PII_REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+PII_DIR="${REPO}/modelsafety/data_screening/pii/regex"
 VENV="${PII_DIR}/.venv"
+# pii_llm_validator.py imports `modelsafety.contract.textract`, an absolute
+# package import added when the code was ported out of a flat sibling-file
+# layout. It needs the repo root on PYTHONPATH to resolve.
+export PYTHONPATH="${REPO}${PYTHONPATH:+:${PYTHONPATH}}"
 MANIFEST_DIR="${QUALITY_MANIFEST_DIR:?QUALITY_MANIFEST_DIR is required}"
 RUN_ROOT="${QUALITY_RUN_ROOT:?QUALITY_RUN_ROOT is required}"
 MODEL="${PII_LLM_MODEL:-google/gemma-4-31B-it}"

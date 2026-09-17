@@ -58,36 +58,36 @@ cancel_partial_submission() {
 }
 trap cancel_partial_submission ERR
 
-prep_job="$(sbatch --parsable "${REPO}/tools/data_prep/prepare_quality_filter.sbatch")"
+prep_job="$(sbatch --parsable "${SCRIPT_DIR}/prepare_quality_filter.sbatch")"
 prep_job="${prep_job%%;*}"
 submitted_jobs+=("${prep_job}")
 pii_job="$(sbatch --parsable \
   --dependency="afterok:${prep_job}" \
   --array="${pii_array_spec}" \
-  "${REPO}/tools/data_prep/pii_scan/run_pii_scan_array.sbatch")"
+  "${SCRIPT_DIR}/run_pii_scan_array.sbatch")"
 pii_job="${pii_job%%;*}"
 submitted_jobs+=("${pii_job}")
 toxicity_job="$(sbatch --parsable \
   --dependency="afterok:${prep_job}" \
   --array="${array_spec}" \
-  "${REPO}/tools/data_prep/toxicity/run_toxicity_scan_array.sbatch")"
+  "${SCRIPT_DIR}/run_toxicity_scan_array.sbatch")"
 toxicity_job="${toxicity_job%%;*}"
 submitted_jobs+=("${toxicity_job}")
 pii_llm_job="$(sbatch --parsable \
   --dependency="afterok:${pii_job}" \
   --array="${array_spec}" \
-  "${REPO}/tools/data_prep/pii_scan/run_pii_llm.sbatch")"
+  "${SCRIPT_DIR}/run_pii_llm.sbatch")"
 pii_llm_job="${pii_llm_job%%;*}"
 submitted_jobs+=("${pii_llm_job}")
 finalize_job="$(sbatch --parsable \
   --dependency="afterok:${pii_llm_job}:${toxicity_job}" \
   --array="${array_spec}" \
-  "${REPO}/tools/data_prep/run_quality_filter_finalize.sbatch")"
+  "${SCRIPT_DIR}/run_quality_filter_finalize.sbatch")"
 finalize_job="${finalize_job%%;*}"
 submitted_jobs+=("${finalize_job}")
 report_job="$(sbatch --parsable \
   --dependency="afterok:${finalize_job}" \
-  "${REPO}/tools/data_prep/run_quality_filter_report.sbatch")"
+  "${SCRIPT_DIR}/run_quality_filter_report.sbatch")"
 report_job="${report_job%%;*}"
 submitted_jobs+=("${report_job}")
 trap - ERR

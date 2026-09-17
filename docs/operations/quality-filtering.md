@@ -27,7 +27,7 @@ unchanged-byte partition of accepted and rejected source rows.
 - The existing vLLM SquashFS must be present at
   `containers/vllm-openai-v0.24.0-cu129.sqsh`.
 - `google/gemma-4-31B-it` is gated. Export `HF_TOKEN` with accepted Gemma access,
-  place it in `synth_data_gen/.env`, or pre-populate `synth_data_gen/cache/hf`.
+  place it in `.env` at the repo root, or pre-populate `cache/hf`.
   The submission launcher sources that `.env` only when `HF_TOKEN` is unset.
 
 ## Pilot
@@ -36,25 +36,25 @@ Use a separate output root so the pilot success marker cannot be confused with
 the full run:
 
 ```bash
-cd /path/to/qvac-research-medpsy/synth_data_gen
+cd /path/to/qvac-model-safety
 export QUALITY_RUN_ROOT="$PWD/output/medpsy2/pii_toxicity_cleaning_pilot"
 export QUALITY_PILOT_FILES=8
 export QUALITY_SHARD_COUNT=8
 export QUALITY_ARRAY_CONCURRENCY=4
 export QUALITY_PII_ARRAY_CONCURRENCY=4
-bash tools/data_prep/submit_medpsy_quality_filter.sh
+bash launchers/slurm/submit_medpsy_quality_filter.sh
 ```
 
 ## Full run
 
 ```bash
-cd /path/to/qvac-research-medpsy/synth_data_gen
+cd /path/to/qvac-model-safety
 unset QUALITY_PILOT_FILES
 export QUALITY_RUN_ROOT="$PWD/output/medpsy2/pii_toxicity_cleaning"
 export QUALITY_SHARD_COUNT=16
 export QUALITY_ARRAY_CONCURRENCY=8
 export QUALITY_PII_ARRAY_CONCURRENCY=4
-bash tools/data_prep/submit_medpsy_quality_filter.sh
+bash launchers/slurm/submit_medpsy_quality_filter.sh
 ```
 
 Each PII CPU task requests 64 cores without exclusive-node allocation. At the
@@ -89,9 +89,9 @@ pipeline's `_SUCCESS` marker exists, submit:
 ```bash
 export DEDUP_INPUT_ROOT="$QUALITY_RUN_ROOT/filtered"
 export DEDUP_RUN_DIR="$PWD/output/medpsy2/dedup"
-sbatch tools/data_prep/dedup/run_dedup_scan.sbatch
+sbatch launchers/slurm/run_dedup_scan.sbatch
 ```
 
 The job writes its own `filtered/`, `filtered_out/`, decisions, summary, and
-`_SUCCESS` marker. See [dedup/README.md](dedup/README.md) for policy and resource
+`_SUCCESS` marker. See [dedup.md](../data-screening/dedup.md) for policy and resource
 controls.

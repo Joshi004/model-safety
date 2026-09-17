@@ -5,13 +5,13 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=08:00:00
-#SBATCH --output=synth_data_gen/logs/slurm/medpsy_guard_pilot_%j.out
-#SBATCH --error=synth_data_gen/logs/slurm/medpsy_guard_pilot_%j.err
+#SBATCH --output=logs/slurm/medpsy_guard_pilot_%j.out
+#SBATCH --error=logs/slurm/medpsy_guard_pilot_%j.err
 
 set -euo pipefail
 
-REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}/synth_data_gen}"
-TOX_DIR="${REPO}/tools/data_prep/toxicity"
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+TOX_DIR="${REPO}/modelsafety/data_screening/toxicity"
 VENV="${TOX_DIR}/.venv"
 RUN_ROOT="${QUALITY_RUN_ROOT:-${REPO}/output/medpsy2/pii_toxicity_cleaning}"
 PILOT_ROOT="${MEDICAL_GUARD_PILOT_ROOT:-${REPO}/output/medpsy2/medical_guard_pilot_v1}"

@@ -5,15 +5,15 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=04:00:00
-#SBATCH --output=synth_data_gen/logs/slurm/toxicity_scan_%j.out
-#SBATCH --error=synth_data_gen/logs/slurm/toxicity_scan_%j.err
+#SBATCH --output=logs/slurm/toxicity_scan_%j.out
+#SBATCH --error=logs/slurm/toxicity_scan_%j.err
 
 set -euo pipefail
 
 export PATH=/usr/bin:/bin:/usr/local/bin:$PATH
 
-REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}/synth_data_gen}"
-TOX_DIR="${REPO}/tools/data_prep/toxicity"
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+TOX_DIR="${REPO}/modelsafety/data_screening/toxicity"
 VENV="${TOX_DIR}/.venv"
 
 TOX_INPUT="${TOX_INPUT:-${REPO}/tmp/qa_scan_test/input/data_000000_messages_pipeline.jsonl}"

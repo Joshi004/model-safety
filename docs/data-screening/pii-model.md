@@ -89,7 +89,7 @@ All work runs through the `health` partition:
 export PRIVACY_FILTER_MODE=pilot
 export PRIVACY_FILTER_INPUT_ROOT=/path/to/input
 export PRIVACY_FILTER_RUN_ROOT=/path/to/output/privacy_filter_pilot
-bash submit_privacy_filter.sh
+bash launchers/slurm/submit_privacy_filter.sh
 ```
 
 The pilot defaults to one 32 MiB work unit on one H100. Supply
@@ -102,7 +102,7 @@ copy `pilot_sources.example.txt` and replace its repository-relative examples.
 export PRIVACY_FILTER_MODE=full
 export PRIVACY_FILTER_INPUT_ROOT=/path/to/input
 export PRIVACY_FILTER_RUN_ROOT=/path/to/output/privacy_filter
-bash submit_privacy_filter.sh
+bash launchers/slurm/submit_privacy_filter.sh
 ```
 
 The full job uses one node with eight H100s and many 256 MiB dynamic work units.
@@ -144,7 +144,7 @@ role, character offsets, label, confidence, model, and backend.
 
 ```bash
 export PRIVACY_FILTER_REGEX_INPUT=/path/to/regex/scans/pii/shards
-sbatch --export=ALL run_privacy_filter_compare.sbatch
+sbatch --export=ALL launchers/slurm/run_privacy_filter_compare.sbatch
 ```
 
 The report is overlap only; it does not claim precision or recall without
@@ -159,7 +159,7 @@ without rerunning inference.
 
 ## Optional LLM confirmation
 
-Submit `run_privacy_filter_llm.sbatch` with `PRIVACY_FILTER_RUN_ROOT` set. It
+Submit `launchers/slurm/run_privacy_filter_llm.sbatch` with `PRIVACY_FILTER_RUN_ROOT` set. It
 reads `llm_candidates.csv` and writes only inside
 `$PRIVACY_FILTER_RUN_ROOT/llm_validation/`. API/model failures are reported and
 must be retried before decisions are used.

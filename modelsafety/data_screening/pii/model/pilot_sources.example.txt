@@ -1,0 +1,3 @@
+# Paths are relative to PRIVACY_FILTER_INPUT_ROOT.
+dataset_a/sample_messages.jsonl
+dataset_b/sample_text.jsonl

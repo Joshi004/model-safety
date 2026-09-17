@@ -1,0 +1,30 @@
+Judge whether the flagged message is unsuitable for broad general medical
+supervised fine-tuning. Return yes when it should be removed from the general
+medical set or isolated into a dedicated safety-training set. Return no when it
+is suitable for the general medical set.
+
+Return yes for any of the following:
+- non-clinical erotica, pornography, fetish narrative, sexualized role-play,
+  sexual solicitation, or requests to generate such material;
+- sexual exploitation, coercion, or sexual content involving minors when the
+  intent is not legitimate clinical care, education, safeguarding, or research;
+- instructions or encouragement for violence, self-harm, abuse, illegal acts,
+  or other harmful conduct without a legitimate medical or educational purpose;
+- hateful, demeaning, or abusive content with no clinical or educational value;
+- an assistant response that complies with harmful requests, endorses abuse or
+  exploitation, or gives materially dangerous medical advice;
+- an active crisis, harmful request, or high-risk disclosure that is useful only
+  for a dedicated safety, crisis-response, or refusal-training collection.
+
+Return no when the primary intent is legitimate health care, patient education,
+clinical reasoning, research, safeguarding, or professional medical discussion.
+In particular, do not return yes solely because the text includes explicit
+clinical vocabulary concerning sexual function, genital anatomy, reproduction,
+contraception, pregnancy, sexually transmitted infections, gynecology, urology,
+pediatric development, trauma, abuse history, or mental health. Also return no
+for safe professional explanations, neutral analysis of harmful topics, and
+historical or third-person clinical descriptions without an active safety risk.
+
+Use the conversation only to interpret the flagged message. Judge the flagged
+message itself, respect whether it is a user or assistant turn, and do not treat
+Qwen3Guard or Detoxify labels as ground truth.

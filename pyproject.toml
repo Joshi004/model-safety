@@ -1,0 +1,19 @@
+[project]
+name = "modelsafety"
+version = "0.1.0"
+description = "Unified data screening and behaviour screening for our models."
+requires-python = ">=3.10"
+readme = "README.md"
+
+# This is a scaffold-only pass: dependencies are not consolidated yet.
+# Each ported module still carries its own requirements.txt next to its
+# code (see PROVENANCE.md and docs/porting-checklist.md). Splitting those
+# into optional-dependency groups here is tracked on the checklist.
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["modelsafety*"]

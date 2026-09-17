@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 120" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#555"/>
+    </marker>
+    <style>
+      .box { fill: #f6f8fa; stroke: #d0d7de; stroke-width: 1.5; rx: 6; }
+      .label { fill: #1f2328; }
+      .arrow { stroke: #555; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="box" x="10" y="38" width="88" height="44"/>
+  <text class="label" x="54" y="65" text-anchor="middle">JSONL input</text>
+
+  <rect class="box" x="130" y="38" width="120" height="44"/>
+  <text class="label" x="190" y="58" text-anchor="middle">run.py +</text>
+  <text class="label" x="190" y="74" text-anchor="middle">Detoxify</text>
+
+  <rect class="box" x="282" y="38" width="100" height="44"/>
+  <text class="label" x="332" y="65" text-anchor="middle">flagged JSONL</text>
+
+  <rect class="box" x="414" y="38" width="150" height="44"/>
+  <text class="label" x="489" y="58" text-anchor="middle">llm_check_guard.py</text>
+  <text class="label" x="489" y="74" text-anchor="middle">+ Qwen3Guard</text>
+
+  <rect class="box" x="596" y="28" width="170" height="64"/>
+  <text class="label" x="681" y="50" text-anchor="middle">safe / unsafe /</text>
+  <text class="label" x="681" y="66" text-anchor="middle">controversial</text>
+  <text class="label" x="681" y="82" text-anchor="middle">JSONL</text>
+
+  <rect class="box" x="798" y="38" width="120" height="44"/>
+  <text class="label" x="858" y="65" text-anchor="middle">guard_report.py</text>
+
+  <line class="arrow" x1="98" y1="60" x2="128" y2="60"/>
+  <line class="arrow" x1="250" y1="60" x2="280" y2="60"/>
+  <line class="arrow" x1="382" y1="60" x2="412" y2="60"/>
+  <line class="arrow" x1="564" y1="60" x2="594" y2="60"/>
+  <line class="arrow" x1="766" y1="60" x2="796" y2="60"/>
+</svg>

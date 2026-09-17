@@ -1,0 +1,7 @@
+huggingface_hub>=0.36
+numpy>=2.0
+openmed[hf]
+# Install Torch first from the CUDA 12.8 wheel index in the SLURM wrappers.
+torch>=2.9
+transformers>=5.6
+

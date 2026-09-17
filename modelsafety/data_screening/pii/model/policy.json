@@ -1,0 +1,49 @@
+{
+  "version": 4,
+  "tier_thresholds": {
+    "contextual": null,
+    "person_linked": 0.9,
+    "direct_identifier": 0.7
+  },
+  "label_thresholds": {
+    "user_name": 0.95,
+    "first_name": 0.9,
+    "last_name": 0.9,
+    "street_address": 0.8,
+    "ssn": 0.8,
+    "date_of_birth": 0.7,
+    "email": 0.5,
+    "phone_number": 0.5,
+    "fax_number": 0.5,
+    "postcode": 0.5,
+    "medical_record_number": 0.5,
+    "health_plan_beneficiary_number": 0.5,
+    "national_id": 0.5,
+    "tax_id": 0.5,
+    "credit_debit_card": 0.5,
+    "private_person": 0.99,
+    "private_address": 0.5,
+    "private_date": null,
+    "private_email": 0.5,
+    "private_phone": 0.5,
+    "private_url": 0.5,
+    "account_number": 0.5,
+    "secret": 0.5
+  },
+  "control_markup_names": [
+    "think",
+    "analysis",
+    "reasoning",
+    "tool",
+    "tool_call",
+    "tool_response",
+    "assistant",
+    "user",
+    "system",
+    "developer"
+  ],
+  "ignored_exact_values": [
+    "correct",
+    "incorrect"
+  ]
+}

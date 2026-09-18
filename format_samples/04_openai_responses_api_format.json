@@ -1,0 +1,274 @@
+{
+  "_regenerate_with": "head -n 2 /home/shared/agentic_slm/data/rl/raw/nemo_gym_recipe/Tool-N1-hermes/train.jsonl",
+  "_note": "Real records only, pulled verbatim from the file above. Strings over 500 chars are shortened for display and marked [TRUNCATED FOR DISPLAY]; nothing was invented or reworded.",
+  "family": "Family 4 -- needs new adapter (nested-path extraction)",
+  "format_name": "OpenAI Responses API request format (responses.create)",
+  "format_notes": "The field name \"responses_create_params\" matches OpenAI's own Python SDK class name ResponseCreateParamsBase (github.com/openai/openai-python). Real content is nested at responses_create_params.input. Covers 84 of 153 files -- the single biggest family.",
+  "source_file": "/home/shared/agentic_slm/data/rl/raw/nemo_gym_recipe/Tool-N1-hermes/train.jsonl",
+  "records": [
+    {
+      "responses_create_params": {
+        "input": [
+          {
+            "role": "user",
+            "content": "Retrieve platform list for page six. Also, find user aliases for the Steam ID '76561197998991414'. In addition, get game data for app with ID '730'. Finally, gather card information for the Hearthstone card with slug 'EX1_557'.",
+            "type": "message"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "name": "getplatformlist",
+            "description": "Fetches the list of platforms with their IDs and names from the API endpoint as JSON.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "page": {
+                  "type": "integer",
+                  "description": "Page number to retrieve the platform list from the API."
+                }
+              },
+              "required": []
+            },
+            "strict": false
+          },
+          {
+            "type": "function",
+            "name": "user_aliases",
+            "description": "Gets a list of user aliases and the timestamps when they were changed.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "is_id": {
+                  "type": "string",
+                  "description": "The Steam ID of the user for whom the aliases are retrieved."
+                }
+              },
+              "required": []
+            },
+            "strict": false
+          },
+          {
+            "type": "function",
+            "name": "gamesdata",
+            "description": "Fetches data for a specific game using its APP_ID from the Steam Games Data API.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "app_id": {
+                  "type": "integer",
+                  "description": "The unique identifier for the game whose data is to be fetched."
+                }
+              },
+              "required": []
+            },
+            "strict": false
+          },
+          {
+            "type": "function",
+            "name": "get_card_by_slug",
+            "description": "Fetches card information by slug from the Hearthstone API.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "slug": {
+                  "type": "string",
+                  "description": "The slug identifier for the card."
+                }
+              },
+              "required": []
+            },
+            "strict": false
+          }
+        ],
+        "tool_choice": "auto",
+        "parallel_tool_calls": true
+      },
+      "expected_actions": [
+        {
+          "name": "getplatformlist",
+          "arguments": "{\"page\": 6}"
+        },
+        {
+          "name": "user_aliases",
+          "arguments": "{\"is_id\": \"76561197998991414\"}"
+        },
+        {
+          "name": "gamesdata",
+          "arguments": "{\"app_id\": 730}"
+        },
+        {
+          "name": "get_card_by_slug",
+          "arguments": "{\"slug\": \"EX1_557\"}"
+        }
+      ],
+      "agent_ref": {
+        "type": "responses_api_agents",
+        "name": "tool_n1_multi_tool_call_agent"
+      }
+    },
+    {
+      "responses_create_params": {
+        "input": [
+          {
+            "role": "user",
+            "content": "Retrieve time zones that are in daylight savings time and have a code containing 'EST'.",
+            "type": "message"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "name": "measure_distance",
+            "description": "Calculates the distance between two geographic locations based on their latitude and longitude coordinates. The unit of measurement for the distance can be specified.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "lon2": {
+                  "type": "integer",
+                  "description": "Longitude of the second location."
+                },
+                "lat1": {
+                  "type": "integer",
+                  "description": "Latitude of the first location."
+                },
+                "lon1": {
+                  "type": "integer",
+                  "description": "Longitude of the first location."
+                },
+                "lat2": {
+                  "type": "integer",
+                  "description": "Latitude of the second location."
+                },
+                "unit": {
+                  "type": "string",
+                  "description": "Unit of distance measurement. Valid options are 'km' (default), 'mi', 'ft', and 'yd'."
+                }
+              },
+              "required": []
+            },
+            "strict": false
+          },
+          {
+            "type": "function",
+            "name": "timezones",
+            "description": "Fetch a list of the world's time zones with various filtering options.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "offset": {
+                  "type": "string",
+                  "description": "Filter on non-daylight savings offset in hours."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Filter as \"contains\" on timezone name in the chosen language."
+                },
+                "code": {
+                  "type": "string",
+                  "description": "Filter on 3-letter non-daylight savings timezone code (not unique)."
+                },
+                "timezone": {
+                  "type": "string",
+                  "description": "Filter on timezone name in English."
+                },
+                "daylights_offset": {
+                  "type": "string",
+                  "description": "Filter on daylight savings offset in hours."
+                },
+                "lang": {
+                  "type": "string",
+                  "description": "Language selection ISO 639-1 two-letter code. Overrides the Accept-Language header. Default is 'de'."
+                },
+                "daylights_code": {
+                  "type": "string",
+                  "description": "Filter on daylight savings letter code (not unique)."
+                },
+                "fields": {
+                  "type": "string",
+                  "description": "Select fields to return in the result. Default is 'offset,daylights_offset,daylights,daylights_code,timezone'."
+                },
+                "daylights": {
+                  "type": "string",
+                  "description": "Filter on daylight savings/non-daylight savings time zones (`true` or `false`)."
+                }
+              },
+              "required": [
+                "offset",
+                "name",
+                "code",
+                "timezone",
+                "daylights_offset",
+                "daylights_code",
+                "daylights"
+              ]
+            },
+            "strict": false
+          },
+          {
+            "type": "function",
+            "name": "get_countries",
+            "description": "Fetches a list of countries based on various search criteria.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "keyword": {
+                  "type": "string",
+                  "description": "Search countries by keyword. Defaults to 'ind'."
+                },
+                "subregion_id": {
+                  "type": "string",
+                  "description": "Filter countries by subregion ID."
+                },
+                "state_id": {
+                  "type": "string",
+                  "description": "Filter countries by state ID."
+                },
+                "timezone_id": {
+                  "type": "string",
+                  "description": "Filter countries by timezone ID."
+                },
+                "region_id": {
+                  "type": "string",
+                  "description": "Filter countries by subregion ID."
+                },
+                "perpage": {
+                  "type": "integer",
+                  "description": "Number of results per page. Defaults to 50."
+                },
+                "is_id": {
+                  "type": "string",
+                  "description": "Filter countries by country ID."
+                },
+                "page": {
+                  "type": "integer",
+                  "description": "Number of results per page. Defaults to 50."
+                }
+              },
+              "required": [
+                "subregion_id",
+                "state_id",
+                "timezone_id",
+                "region_id",
+                "is_id"
+              ]
+            },
+            "strict": false
+          }
+        ],
+        "tool_choice": "auto",
+        "parallel_tool_calls": true
+      },
+      "expected_actions": [
+        {
+          "name": "timezones",
+          "arguments": "{\"daylights\": \"true\", \"code\": \"EST\"}"
+        }
+      ],
+      "agent_ref": {
+        "type": "responses_api_agents",
+        "name": "tool_n1_multi_tool_call_agent"
+      }
+    }
+  ]
+}

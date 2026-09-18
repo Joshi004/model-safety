@@ -1,0 +1,28 @@
+{
+  "_regenerate_with": "head -n 2 /home/shared/agentic_slm/data/sft/curriculum/mixes/s1_1_0810/train_shards_keep/removed_rows.jsonl",
+  "_note": "Real records only, pulled verbatim from the file above. Strings over 500 chars are shortened for display and marked [TRUNCATED FOR DISPLAY]; nothing was invented or reworded.",
+  "family": "Family 9b -- not training data, nothing to scan in this variant",
+  "format_name": "Internal decontamination/near-duplicate audit log (metadata only, no text)",
+  "format_notes": "Same pipeline artifact as 09a, but this variant carries no text fields at all -- nothing to scan regardless of scope decision.",
+  "source_file": "/home/shared/agentic_slm/data/sft/curriculum/mixes/s1_1_0810/train_shards_keep/removed_rows.jsonl",
+  "records": [
+    {
+      "source": "general_if_50k",
+      "row": 764,
+      "id": "s12_general_if_50k_3964",
+      "bench": "mmlu_pro",
+      "item": "6668",
+      "rule": "R1",
+      "detail": "1 shared 10-grams"
+    },
+    {
+      "source": "general_if_50k",
+      "row": 1256,
+      "id": "s12_general_if_50k_33371",
+      "bench": "aime25",
+      "item": "16",
+      "rule": "R1",
+      "detail": "1 shared 10-grams"
+    }
+  ]
+}

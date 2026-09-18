@@ -1,0 +1,32 @@
+{
+  "_regenerate_with": "head -n 2 /home/shared/agentic_slm/data/rl/processed/qwen35-xml/decontaminated/envfactory-xml/removed_rows.jsonl",
+  "_note": "Real records only, pulled verbatim from the file above. Strings over 500 chars are shortened for display and marked [TRUNCATED FOR DISPLAY]; nothing was invented or reworded.",
+  "family": "Family 9a -- not training data, a pipeline report; decide if in scope",
+  "format_name": "Internal decontamination/near-duplicate audit log (with matched text)",
+  "format_notes": "Custom to this repo's own dedup/decontamination step, not a public or named format -- written by the pipeline itself, not received from any team.",
+  "source_file": "/home/shared/agentic_slm/data/rl/processed/qwen35-xml/decontaminated/envfactory-xml/removed_rows.jsonl",
+  "records": [
+    {
+      "split": "train",
+      "row": 799,
+      "data_source": "EnvFactory",
+      "bench": "mmlu_pro",
+      "item": "4919",
+      "rule": "R1",
+      "detail": "2 shared 10-grams",
+      "train_text": "\nI want to check the last few lines of my raw_corpus.txt to make sure the data ends correctly, and then create a new empty file called extracted_constructions.txt where I can start putting the syntactic examples I find.\n <tool_response>\n{\n  \"current_directory_content\": [\n    \"raw_corpus.txt\",\n    \"reference_version.txt\",\n    \"temp_analysis\",\n    \"temp_backup\"\n  ]\n}\n</tool_response>\n <tool_response",
+      "bench_text": "This question refers to the following information.\nBoth authors below were speaking of the French Revolution.\nIt was the best of times, it was the worst of times, it was the age of wisdom, it was the age of foolishness, it was the epoch of belief, it was the epoch of incredulity, it was the season of Light, it was the season of Darkness, it was the spring of hope, it was the winter of despair, we "
+    },
+    {
+      "split": "train",
+      "row": 1876,
+      "data_source": "EnvFactory",
+      "bench": "bfcl",
+      "item": "live_multiple_112-43-10",
+      "rule": "R2",
+      "detail": "LCS 13/18 words",
+      "train_text": "\nI'm starting to prepare my Q3 budget proposal for tomorrow's meeting. First, in my Excel file at C:\\Users\\mchen\\Documents\\Work\\Budget_Proposals\\Q3_Departmental_Budget.xlsx, I need to make a copy of the \"Proposal\" sheet and name the new one \"Presentation Draft\". Once that's done, could you show me a list of all the sheets in the file so I can see what I'm working with? <tool_response>\n{\n  \"srcShee",
+      "bench_text": "Could you show me a list of all the PostgreSQL servers that are currently registered in our environment?"
+    }
+  ]
+}

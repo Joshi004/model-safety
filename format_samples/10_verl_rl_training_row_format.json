@@ -1,0 +1,411 @@
+{
+  "_regenerate_with": "head -n 2 /home/shared/agentic_slm/data/rl/processed/qwen35-xml/decontaminated/meddecoy_tooldecoy_only_s42/sample.jsonl",
+  "_note": "Real records only, pulled verbatim from the file above. Strings over 500 chars are shortened for display and marked [TRUNCATED FOR DISPLAY]; nothing was invented or reworded.",
+  "family": "One-off straggler -- only 1 file today",
+  "format_name": "verl RL-training row format (volcengine/verl)",
+  "format_notes": "data_source/prompt/ability/reward_model/extra_info match verl's documented 5-field row spec exactly (github.com/volcengine/verl). Real text lives in \"prompt\" (verl's field) -- \"conversations\" is an empty leftover field in this row.",
+  "source_file": "/home/shared/agentic_slm/data/rl/processed/qwen35-xml/decontaminated/meddecoy_tooldecoy_only_s42/sample.jsonl",
+  "records": [
+    {
+      "tools": "[{\"type\": \"function\", \"function\": {\"name\": \"Get Spell\", \"description\": \"Retrieve information about a D&D 5E spell, including its school, level, and description.\", \"parameters\": {\"type\": \"dict\", \"properties\": {\"spell_name\": {\"description\": \"The name of the spell to retrieve information about.\", \"type\": \"string\"}}, \"required\": [\"spell_name\"]}, \"required\": null}}, {\"type\": \"function\", \"function\": {\"name\": \"/oddsnames\", \"description\": \"Retrieve a list of odds names for football betting\", \"parameters ...[TRUNCATED FOR DISPLAY -- 2573 chars total in the real file]",
+      "conversations": [],
+      "answer": null,
+      "raw_system": null,
+      "data_source": "medqa_usmle::tooldecoy",
+      "prompt": [
+        {
+          "content": "# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"Get Spell\", \"description\": \"Retrieve information about a D&D 5E spell, including its school, level, and description.\", \"parameters\": {\"type\": \"dict\", \"properties\": {\"spell_name\": {\"description\": \"The name of the spell to retrieve information about.\", \"type\": \"string\"}}, \"required\": [\"spell_name\"]}, \"required\": null}}\n{\"type\": \"function\", \"function\": {\"name\": \"/oddsnames\", \"description\": \"Retr ...[TRUNCATED FOR DISPLAY -- 3456 chars total in the real file]",
+          "role": "system"
+        },
+        {
+          "content": "Answer the following multiple choice question. The last line of your response should be of the following format: 'ANSWER: $LETTER' (without quotes) where LETTER is one of Options(e.g. one of ABCD). Think step by step before answering.\n\nQuestion: A 20-year-old man presents to the emergency department by his father for not sleeping for 2 nights consecutively. His father noticed that the patient has been in an unusual mood. One day ago, the patient disrobed in front of guests after showering. He ha ...[TRUNCATED FOR DISPLAY -- 1317 chars total in the real file]",
+          "role": "user"
+        }
+      ],
+      "ability": "medical_reasoning",
+      "reward_model": {
+        "ground_truth": "C",
+        "style": "rule"
+      },
+      "extra_info": {
+        "answer": "C",
+        "benchmark": null,
+        "corrected_sentence": null,
+        "decline": null,
+        "difficulty": null,
+        "domain": null,
+        "error_flag": null,
+        "error_sentence": null,
+        "error_sentence_id": null,
+        "error_type": null,
+        "expected_type": null,
+        "graph_idx": null,
+        "group_id": null,
+        "hallucination_category": null,
+        "index": 14681.0,
+        "input": null,
+        "instruction": null,
+        "intent": null,
+        "matched_reference": null,
+        "n_calls": null,
+        "oc_aligned": true,
+        "orig_id": null,
+        "output": null,
+        "pass_rate": null,
+        "pass_score": null,
+        "presented_answer": null,
+        "presented_is_hallucinated": null,
+        "prompt": null,
+        "prompt_type": null,
+        "question": "Answer the following multiple choice question. The last line of your response should be of the following format: 'ANSWER: $LETTER' (without quotes) where LETTER is one of Options(e.g. one of ABCD). Think step by step before answering.\n\nQuestion: A 20-year-old man presents to the emergency department by his father for not sleeping for 2 nights consecutively. His father noticed that the patient has been in an unusual mood. One day ago, the patient disrobed in front of guests after showering. He ha ...[TRUNCATED FOR DISPLAY -- 1317 chars total in the real file]",
+        "reference_safe_response": null,
+        "rubric": null,
+        "source": "medqa_usmle",
+        "source_data_source": null,
+        "source_index": null,
+        "source_line": null,
+        "split": "train",
+        "subject": null,
+        "target_group": null,
+        "text": null,
+        "text_id": null,
+        "tooldecoy": true,
+        "tools_json": null,
+        "topic": null,
+        "toxicity_ai": null,
+        "toxicity_human": null,
+        "v3_subset": null,
+        "v31_subset": null,
+        "orig_source": null,
+        "plain_of_decoy": null
+      },
+      "task_id": "medqa",
+      "split": "train"
+    },
+    {
+      "tools": "[{\"type\": \"function\", \"function\": {\"name\": \"constructors_standings\", \"description\": \"Retrieve constructor standings for a specified F1 championship year.\", \"parameters\": {\"year\": {\"description\": \"The year of the F1 championship to retrieve standings for. Defaults to 2005.\", \"type\": \"int, optional\", \"default\": \"2005\"}}}}, {\"type\": \"function\", \"function\": {\"name\": \"Cricket Live Matches API\", \"description\": \"Retrieve live cricket matches information, including match details, teams, and scores.\", \"p ...[TRUNCATED FOR DISPLAY -- 836 chars total in the real file]",
+      "conversations": [],
+      "answer": null,
+      "raw_system": null,
+      "data_source": "rubrichub-medical::tooldecoy",
+      "prompt": [
+        {
+          "content": "# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"constructors_standings\", \"description\": \"Retrieve constructor standings for a specified F1 championship year.\", \"parameters\": {\"year\": {\"description\": \"The year of the F1 championship to retrieve standings for. Defaults to 2005.\", \"type\": \"int, optional\", \"default\": \"2005\"}}}}\n{\"type\": \"function\", \"function\": {\"name\": \"Cricket Live Matches API\", \"description\": \"Retrieve live cricket matches i ...[TRUNCATED FOR DISPLAY -- 1721 chars total in the real file]",
+          "role": "system"
+        },
+        {
+          "content": "What is the role of pyruvate kinase in pyruvate metabolism and how does pyruvate kinase deficiency lead to anemia?",
+          "role": "user"
+        }
+      ],
+      "ability": "medical",
+      "reward_model": {
+        "ground_truth": "",
+        "style": "rubric"
+      },
+      "extra_info": {
+        "answer": null,
+        "benchmark": null,
+        "corrected_sentence": null,
+        "decline": null,
+        "difficulty": null,
+        "domain": null,
+        "error_flag": null,
+        "error_sentence": null,
+        "error_sentence_id": null,
+        "error_type": null,
+        "expected_type": null,
+        "graph_idx": null,
+        "group_id": null,
+        "hallucination_category": null,
+        "index": null,
+        "input": null,
+        "instruction": null,
+        "intent": null,
+        "matched_reference": null,
+        "n_calls": null,
+        "oc_aligned": null,
+        "orig_id": null,
+        "output": null,
+        "pass_rate": null,
+        "pass_score": null,
+        "presented_answer": null,
+        "presented_is_hallucinated": null,
+        "prompt": null,
+        "prompt_type": null,
+        "question": "What is the role of pyruvate kinase in pyruvate metabolism and how does pyruvate kinase deficiency lead to anemia?",
+        "reference_safe_response": null,
+        "rubric": [
+          {
+            "criterion": "The answer states that pyruvate kinase catalyzes the conversion of phosphoenolpyruvate (PEP) and ADP into pyruvate and ATP.",
+            "weight": 10.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer accurately notes that the pyruvate kinase reaction generates ATP from ADP.",
+            "weight": 9.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response explains that the pyruvate kinase step provides substrate‑level phosphorylation and is a major source of ATP in glycolysis.",
+            "weight": 9.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer identifies pyruvate kinase as the final, irreversible and regulatory step of the glycolytic pathway.",
+            "weight": 7.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response describes that pyruvate can be converted to acetyl‑CoA for the TCA cycle under aerobic conditions or reduced to lactate anaerobically to regenerate NAD⁺.",
+            "weight": 7.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer explains that mature red blood cells lack mitochondria and depend exclusively on anaerobic glycolysis for ATP production.",
+            "weight": 10.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response notes that pyruvate kinase is a key regulatory enzyme in glycolysis and mentions the RBC‑specific isoform (PK‑R).",
+            "weight": 5.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer states that pyruvate kinase deficiency is an inherited defect, usually affecting the PK‑R isoform and causing chronic hemolytic anemia.",
+            "weight": 7.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response clearly connects pyruvate kinase deficiency with decreased ATP production in red blood cells due to impaired conversion of PEP to pyruvate.",
+            "weight": 10.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer describes how ATP depletion impairs Na⁺/K⁺‑ATPase and Ca²⁺‑ATPase activity, leading to loss of ion homeostasis and membrane integrity.",
+            "weight": 7.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response links reduced ATP to failure of Na⁺/K⁺‑ATPase pumps, resulting in potassium loss, sodium gain, and cellular dehydration.",
+            "weight": 9.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer explains that ATP shortage makes red blood cells rigid and less deformable (e.g., echinocyte formation), predisposing them to destruction.",
+            "weight": 8.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response describes how cellular dehydration leads to increased rigidity, causing red blood cells to be trapped and destroyed in the spleen.",
+            "weight": 9.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer states that rigid, damaged red blood cells are removed by splenic macrophages, producing extravascular hemolysis.",
+            "weight": 8.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response explicitly connects the increased hemolysis and shortened red blood cell lifespan to chronic hemolytic anemia.",
+            "weight": 9.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer mentions accumulation of upstream glycolytic intermediates, especially an increase in 2,3‑bisphosphoglycerate (2,3‑BPG), in pyruvate kinase deficiency.",
+            "weight": 5.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response notes that elevated 2,3‑BPG lowers hemoglobin’s oxygen affinity, facilitating oxygen release to tissues.",
+            "weight": 5.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer explains that the rise in 2,3‑BPG causes a right shift of the oxyhemoglobin dissociation curve, partially improving tissue oxygen delivery.",
+            "weight": 6.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response lists typical clinical or laboratory findings of hemolytic anemia (e.g., jaundice, splenomegaly, reticulocytosis, elevated indirect bilirubin).",
+            "weight": 4.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer clarifies that the primary pathological problem in the deficiency is ATP depletion rather than reduced pyruvate or lactate production.",
+            "weight": 5.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response notes that tissues possessing mitochondria are less affected, making red blood cell manifestations the most prominent.",
+            "weight": 4.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer is organized into two clearly separated sections: (1) the normal role of pyruvate kinase in metabolism and (2) the mechanism by which its deficiency causes anemia.",
+            "weight": 6.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response provides sufficient mechanistic detail without unnecessary digressions, directly addressing both the enzyme’s role and the anemia mechanism.",
+            "weight": 6.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer explicitly identifies the PK‑R isoform as the primary isoform affected in hereditary pyruvate kinase deficiency.",
+            "weight": 7.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer states that ATP depletion impairs both Na⁺/K⁺‑ATPase **and** Ca²⁺‑ATPase activity in red blood cells.",
+            "weight": 7.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response lists at least two hallmark laboratory findings of hemolytic anemia (e.g., reticulocytosis, elevated indirect bilirubin, increased LDH, decreased haptoglobin).",
+            "weight": 4.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer mentions accumulation of 2,3‑BPG **and** at least one additional upstream glycolytic intermediate such as phosphoenolpyruvate (PEP) or 1,3‑bisphosphoglycerate.",
+            "weight": 5.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The response notes both allosteric regulation (activation by F‑1,6‑BP, inhibition by ATP/alanine) **and** hormonal regulation via phosphorylation (glucagon‑mediated inactivation) of the hepatic pyruvate kinase isoform.",
+            "weight": 5.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer explicitly contrasts red blood cells (lacking mitochondria) with other cells that can compensate through oxidative phosphorylation, explaining why anemia is the predominant clinical manifestation.",
+            "weight": 4.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer is organized with clearly labeled separate sections (e.g., headings or numbered parts) for (1) the normal role of pyruvate kinase in metabolism and (2) the mechanism by which its deficiency causes anemia.",
+            "weight": 6.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          },
+          {
+            "criterion": "The answer quantifies the ATP yield of the pyruvate kinase step (one ATP per PEP converted) and explicitly states that this represents the sole substrate‑level phosphorylation event in red blood cells.",
+            "weight": 9.0,
+            "category": null,
+            "verifier": null,
+            "function": null,
+            "parameters": null
+          }
+        ],
+        "source": null,
+        "source_data_source": null,
+        "source_index": null,
+        "source_line": null,
+        "split": null,
+        "subject": null,
+        "target_group": null,
+        "text": null,
+        "text_id": null,
+        "tooldecoy": true,
+        "tools_json": null,
+        "topic": null,
+        "toxicity_ai": null,
+        "toxicity_human": null,
+        "v3_subset": null,
+        "v31_subset": null,
+        "orig_source": null,
+        "plain_of_decoy": null
+      },
+      "task_id": "rubrichub",
+      "split": "train"
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "_regenerate_with": "head -n 2 /home/shared/agentic_slm/data/sft/raw/toolbench/train.jsonl",
+  "_note": "Real records only, pulled verbatim from the file above. Strings over 500 chars are shortened for display and marked [TRUNCATED FOR DISPLAY]; nothing was invented or reworded.",
+  "family": "Family 5 -- needs new adapter (real reshaping, not a rename)",
+  "format_name": "ShareGPT vocabulary (from/value), stored as parallel array COLUMNS instead of ShareGPT's usual list of turn objects",
+  "format_notes": "Standard ShareGPT is [{\"from\":..,\"value\":..}, ...] (a list). This file has {\"from\":[...], \"value\":[...]} (two separate lists) -- same words, different structure. Released by the ToolLLM paper (arXiv:2307.16789).",
+  "source_file": "/home/shared/agentic_slm/data/sft/raw/toolbench/train.jsonl",
+  "records": [
+    {
+      "id": "Step 7: I'm conducting a research project on social media influencers, and I'm particularly interested in gathering data from Instagram. Can you help me retrieve user information for a specific username, such as 'nike'? Additionally, I would like to access their recent media posts. Thank you!",
+      "conversations": {
+        "from": [
+          "system",
+          "user",
+          "assistant",
+          "function",
+          "assistant",
+          "function",
+          "assistant"
+        ],
+        "value": [
+          "You are AutoGPT, you can use many tools(functions) to do the following task.\nFirst I will give you the task description, and your task start.\nAt each step, you need to give your thought to analyze the status now and what to do next, with a function call to actually excute your step. Your output should follow this format:\nThought:\nAction\nAction Input:\n\nAfter the call, you will get the call result, and you are now in a new state.\nThen you will analyze your status now, then decide what to do next.. ...[TRUNCATED FOR DISPLAY -- 3244 chars total in the real file]",
+          "\nI'm conducting a research project on social media influencers, and I'm particularly interested in gathering data from Instagram. Can you help me retrieve user information for a specific username, such as 'nike'? Additionally, I would like to access their recent media posts. Thank you!\nBegin!\n",
+          "\nThought: I need to gather user information for a specific Instagram username, 'nike', as requested by the user. They also want access to the user's recent media posts. To achieve this, I will call the 'userinfo_for_instagram_cheapest' function with the argument of {\"username\": \"nike\"}. This will help me retrieve the desired data efficiently and fulfill the user's request effectively.\nAction: userinfo_for_instagram_cheapest\nAction Input: {\n  \"username\": \"nike\"\n}",
+          "{\"error\": \"\", \"response\": \"{'data': {'user': {'biography': 'Spotlighting athlete* and\\\\xa0\\ud83d\\udc5f\\\\xa0stories\\\\n#BlackLivesMatter, #StopAsianHate, and #NoPrideNoSport', 'bio_links': [{'title': '', 'lynx_url': 'https://l.instagram.com/?u=https%3A%2F%2Flinkin.bio%2Fnike&e=AT063fG4N158ZbZOaZ_A32batiXwR-0Yih5XNa5wfSNPCiDo546PSV0a8mm72ElVxWgNJdgYeHNOTMMTOe_kn7R-C-f2N9ym', 'url': 'https://linkin.bio/nike', 'link_type': 'external'}], 'biography_with_entities': {'raw_text': 'Spotlighting athlete* a ...[TRUNCATED FOR DISPLAY -- 1027 chars total in the real file]",
+          "\nThought: To fulfill the user's request for gathering user information and recent media posts from Instagram for a specific username 'nike', I previously called the 'userinfo_for_instagram_cheapest' function with the argument {\"username\": \"nike\"}. By doing so, I efficiently retrieved the desired user data, including their biography, bio links, biographical information, and other relevant details. Now, to proceed with accessing the user's recent media posts, I will call the 'user_medias_for_insta ...[TRUNCATED FOR DISPLAY -- 801 chars total in the real file]",
+          "{\"error\": \"\", \"response\": \"{'items': [], 'num_results': 0, 'status': 'ok'}\"}",
+          "\nThought: Based on the data retrieved, the user 'nike' has the following information: \n- Biography: \"Spotlighting athlete* and 🌟 stories\\n#BlackLivesMatter, #StopAsianHate, and #NoPrideNoSport\"\n- External URL: [https://linkin.bio/nike](https://linkin.bio/nike)\n\nHowever, there are no recent media posts available for this user.\n\nIf you need any further assistance or have any other queries, please let me know!\nAction: Finish\nAction Input: {\n  \"return_type\": \"give_answer\",\n  \"final_answer\": \"The use ...[TRUNCATED FOR DISPLAY -- 813 chars total in the real file]"
+        ]
+      }
+    },
+    {
+      "id": "Step 3: I want to surprise my friends with a beer tasting party. Can you provide a list of breweries in New York that offer tours? Additionally, fetch the nutritional analysis for a recipe containing chicken, broccoli, and quinoa.",
+      "conversations": {
+        "from": [
+          "system",
+          "user",
+          "user",
+          "assistant"
+        ],
+        "value": [
+          "You are AutoGPT, you can use many tools(functions) to do the following task.\nFirst I will give you the task description, and your task start.\nAt each step, you need to give your thought to analyze the status now and what to do next, with a function call to actually excute your step. Your output should follow this format:\nThought:\nAction\nAction Input:\n\nAfter the call, you will get the call result, and you are now in a new state.\nThen you will analyze your status now, then decide what to do next.. ...[TRUNCATED FOR DISPLAY -- 6924 chars total in the real file]",
+          "\nI want to surprise my friends with a beer tasting party. Can you provide a list of breweries in New York that offer tours? Additionally, fetch the nutritional analysis for a recipe containing chicken, broccoli, and quinoa.\nBegin!\n",
+          "This is not the first time you try this task, all previous trails failed.\nBefore you generate my thought for this state, I will first show you your previous actions for this state, and then you must generate actions that is different from all of them. Here are some previous actions candidates:\n[\n  {\n    \"name\": \"breweries_for_open_brewery_db\",\n    \"arguments\": \"{}\",\n    \"function_output\": \"{\\\"error\\\": \\\"request invalid, data error. status_code=400\\\", \\\"response\\\": \\\"\\\"}\",\n    \"mento-carlo-action ...[TRUNCATED FOR DISPLAY -- 706 chars total in the real file]",
+          "\nThought: Based on the previous action candidates, it seems that the function \"breweries_for_open_brewery_db\" failed with an invalid request error. \nTo avoid repeating the same failed action, I will try a different function called \"search_for_open_brewery_db\" to search for breweries in New York that offer tours. I will also use the function \"api_nutrition_data_for_edamam_nutrition_analysis\" to fetch the nutritional analysis for a recipe containing chicken, broccoli, and quinoa.\nAction: search_fo ...[TRUNCATED FOR DISPLAY -- 534 chars total in the real file]"
+        ]
+      }
+    }
+  ]
+}

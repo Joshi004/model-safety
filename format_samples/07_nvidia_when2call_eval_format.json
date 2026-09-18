@@ -1,0 +1,52 @@
+{
+  "_regenerate_with": "head -n 2 /home/shared/agentic_slm/data/sft/raw/when2call/test/when2call_test_mcq.jsonl",
+  "_note": "Real records only, pulled verbatim from the file above. Strings over 500 chars are shortened for display and marked [TRUNCATED FOR DISPLAY]; nothing was invented or reworded.",
+  "family": "Family 7 -- needs adapter (--map text=question covers half; answers dict needs separate handling)",
+  "format_name": "NVIDIA When2Call benchmark evaluation format (MCQ / LLM-judge split)",
+  "format_notes": "Confirmed against the official nvidia/When2Call dataset card on Hugging Face and GitHub (arXiv:2504.18851, NAACL 2025). Derived from Berkeley Function-Calling Leaderboard (BFCL) v2 Live.",
+  "source_file": "/home/shared/agentic_slm/data/sft/raw/when2call/test/when2call_test_mcq.jsonl",
+  "records": [
+    {
+      "uuid": "5ce19067-938e-41f5-acd5-0e8e66683f62",
+      "source": "BFCL v2 Live Multiple",
+      "source_id": "live_multiple_0-0-0",
+      "question": "update my latte to a large size with coconut milk and make it extra sweet? make it served boiling hot.",
+      "correct_answer": "cannot_answer",
+      "answers": {
+        "direct": "Your large latte with coconut milk, extra sweet, and served boiling hot is on its way. Enjoy!",
+        "tool_call": "{\"name\": \"ChaDri.change_drink\", \"arguments\": {\"drink_id\": \"latte\", \"new_preferences\": {\"size\": [\"large\"], \"milk_type\": [\"coconut\"], \"sweetness_level\": [\"extra\"], \"temperature\": [\"hot\"], \"special_instructions\": [\"served boiling hot\", \"serve boiling hot\", \"boiling hot\"]}}}",
+        "request_for_info": "Sure, I can help with that. Just to confirm, what is the unique identifier for your drink order?",
+        "cannot_answer": "I'm sorry for the inconvenience, but I'm unable to process your request as I'm designed to provide information and assistance, not to prepare or modify beverages."
+      },
+      "target_tool": null,
+      "tools": [
+        "{\"name\": \"ChaFod\", \"description\": \"Changes the food item based on the customer's request, allowing for modifications to the ingredients or preparation method.\", \"parameters\": {\"type\": \"dict\", \"required\": [\"foodItem\"], \"properties\": {\"foodItem\": {\"type\": \"string\", \"description\": \"The name of the food item to be modified as requested by the customer.\"}, \"newIngredients\": {\"type\": \"string\", \"description\": \"A comma-separated list of new ingredients to include in the food item, if any.\", \"default\": \" ...[TRUNCATED FOR DISPLAY -- 826 chars total in the real file]"
+      ],
+      "orig_tools": [
+        "{\"name\": \"ChaFod\", \"description\": \"Changes the food item based on the customer's request, allowing for modifications to the ingredients or preparation method.\", \"parameters\": {\"type\": \"dict\", \"required\": [\"foodItem\"], \"properties\": {\"foodItem\": {\"type\": \"string\", \"description\": \"The name of the food item to be modified as requested by the customer.\"}, \"newIngredients\": {\"type\": \"string\", \"description\": \"A comma-separated list of new ingredients to include in the food item, if any.\", \"default\": \" ...[TRUNCATED FOR DISPLAY -- 826 chars total in the real file]",
+        "{\"name\": \"ChaDri.change_drink\", \"description\": \"Modifies the existing drink order to accommodate the customer's new request, ensuring the drink is updated according to the specified preferences.\", \"parameters\": {\"type\": \"dict\", \"required\": [\"new_preferences\"], \"properties\": {\"drink_id\": {\"type\": \"string\", \"description\": \"The unique identifier of the drink to be changed.\", \"default\": \"0000-0000-0000\"}, \"new_preferences\": {\"type\": \"dict\", \"description\": \"The updated preferences for the drink order ...[TRUNCATED FOR DISPLAY -- 1348 chars total in the real file]"
+      ]
+    },
+    {
+      "uuid": "ca90b386-643b-4103-8b1d-30f0c44df933",
+      "source": "BFCL v2 Live Multiple",
+      "source_id": "live_multiple_1-0-1",
+      "question": "NO SUGAR in my coffee loll. Can you change my drink order to have no sweetness, and also make sure it's served hot?",
+      "correct_answer": "cannot_answer",
+      "answers": {
+        "direct": "Absolutely, your coffee will be unsweetened and served hot. Enjoy your drink!",
+        "tool_call": "{\"name\": \"ChaDri.change_drink\", \"arguments\": {\"new_preferences\": {\"sweetness_level\": [\"none\"], \"temperature\": [\"hot\"]}}}",
+        "request_for_info": "Certainly! To proceed, I'll need the unique identifier of your drink order. Also, would you prefer any specific type of milk in your coffee?",
+        "cannot_answer": "I apologize, but I'm unable to modify your drink order as I'm an assistant designed to provide information and answer questions, not perform physical tasks."
+      },
+      "target_tool": null,
+      "tools": [
+        "{\"name\": \"ChaFod\", \"description\": \"Changes the food item based on the customer's request, allowing for modifications to the ingredients or preparation method.\", \"parameters\": {\"type\": \"dict\", \"required\": [\"foodItem\"], \"properties\": {\"foodItem\": {\"type\": \"string\", \"description\": \"The name of the food item to be modified as requested by the customer.\"}, \"newIngredients\": {\"type\": \"string\", \"description\": \"A comma-separated list of new ingredients to include in the food item, if any.\", \"default\": \" ...[TRUNCATED FOR DISPLAY -- 826 chars total in the real file]"
+      ],
+      "orig_tools": [
+        "{\"name\": \"ChaFod\", \"description\": \"Changes the food item based on the customer's request, allowing for modifications to the ingredients or preparation method.\", \"parameters\": {\"type\": \"dict\", \"required\": [\"foodItem\"], \"properties\": {\"foodItem\": {\"type\": \"string\", \"description\": \"The name of the food item to be modified as requested by the customer.\"}, \"newIngredients\": {\"type\": \"string\", \"description\": \"A comma-separated list of new ingredients to include in the food item, if any.\", \"default\": \" ...[TRUNCATED FOR DISPLAY -- 826 chars total in the real file]",
+        "{\"name\": \"ChaDri.change_drink\", \"description\": \"Modifies the existing drink order to accommodate the customer's new request, ensuring the drink is updated according to the specified preferences.\", \"parameters\": {\"type\": \"dict\", \"required\": [\"drink_id\", \"new_preferences\"], \"properties\": {\"drink_id\": {\"type\": \"string\", \"description\": \"The unique identifier of the drink to be changed.\"}, \"new_preferences\": {\"type\": \"dict\", \"description\": \"The updated preferences for the drink order.\", \"properties\": ...[TRUNCATED FOR DISPLAY -- 1331 chars total in the real file]"
+      ]
+    }
+  ]
+}

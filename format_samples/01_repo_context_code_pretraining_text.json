@@ -1,0 +1,16 @@
+{
+  "_regenerate_with": "head -n 2 /home/shared/agentic_slm/data/mid/_megatron/full/jsonl/code_000.jsonl",
+  "_note": "Real records only, pulled verbatim from the file above. Strings over 500 chars are shortened for display and marked [TRUNCATED FOR DISPLAY]; nothing was invented or reworded.",
+  "family": "Family 1 -- already matches target, no adapter needed",
+  "format_name": "Repo-context code pretraining format (plain \"text\" field)",
+  "format_notes": "Tags resemble BigCode's \"The Stack v2\" / StarCoder2 repo-name + file-path convention (arXiv:2402.19173), though exact tag spelling differs (<REPO_NAME>/<FILE_PATH> here vs <repo_name>/<file_sep> there).",
+  "source_file": "/home/shared/agentic_slm/data/mid/_megatron/full/jsonl/code_000.jsonl",
+  "records": [
+    {
+      "text": "<REPO_NAME>rnadigital/agentcloud <FILE_PATH>.gitignore\n.idea\n.DS_Store\n*/**/.DS_Store\ndocker-compose.yml\nairbyte/\n\n.env\n\n# Personal vscode settings\nagent-backend/src/.vscode/\nagent-backend/src/OAI_CONFIG_LIST\n\n# Local Cache\nagent-backend/src/local_cache/\n.vscode/\nwebapp/keyfile.json\n.aider*\n*.code-workspace\n"
+    },
+    {
+      "text": "<REPO_NAME>rnadigital/agentcloud <FILE_PATH>install.sh\n#!/usr/bin/env bash\n\n# set -e\n# set -o pipefail\n# trap 'echo \"An error occurred during installation. Exiting...\"; exit 1; echo \"Please forward relevant error logs to the Agentcloud team.\"' ERR SIGINT\n# set -e\n# set -o pipefail\n# trap 'echo \"An error occurred during installation. Exiting...\"; exit 1; echo \"Please forward relevant error logs to the Agentcloud team.\"' ERR SIGINT\n\n# Get the width of the terminal\nterminal_width=$(tput cols)\n\nif ! ...[TRUNCATED FOR DISPLAY -- 8134 chars total in the real file]"
+    }
+  ]
+}

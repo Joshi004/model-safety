@@ -1,0 +1,49 @@
+{
+  "_regenerate_with": "head -n 2 /home/shared/agentic_slm/data/sft/raw/when2call/train/when2call_train_pref.jsonl",
+  "_note": "Real records only, pulled verbatim from the file above. Strings over 500 chars are shortened for display and marked [TRUNCATED FOR DISPLAY]; nothing was invented or reworded.",
+  "family": "Family 8 -- needs adapter (append chosen_response/rejected_response onto messages)",
+  "format_name": "NVIDIA When2Call preference-tuning (DPO) training format",
+  "format_notes": "Same When2Call family, training-time preference split -- adds chosen_response/rejected_response alongside a messages array that only holds the opening user turn.",
+  "source_file": "/home/shared/agentic_slm/data/sft/raw/when2call/train/when2call_train_pref.jsonl",
+  "records": [
+    {
+      "tools": [
+        "{\"name\": \"get_ico_calendar\", \"description\": \"Fetches the ICO (Initial Coin Offering) calendar based on the given parameters.\", \"parameters\": {\"type\": \"dict\", \"properties\": {\"category\": {\"description\": \"Comma-separated list of categories to filter the ICOs. For example: \\\"_ico_cat_gaming,_ico_cat_ecomm,_ico_cat_finance,_ico_cat_healthcare\\\".\", \"type\": \"str, optional\", \"default\": \"\"}, \"time_utc_offset\": {\"description\": \"UTC offset in seconds. For instance, UTC+8 is represented as 8 * 60 * 60 = 288 ...[TRUNCATED FOR DISPLAY -- 1054 chars total in the real file]"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show me completed ICOs in the e-commerce and finance sectors, sorted by funds raised, with a UTC offset of 8 hours."
+        }
+      ],
+      "chosen_response": {
+        "role": "assistant",
+        "content": "<TOOLCALL>[{\"name\": \"get_ico_calendar\", \"arguments\": {\"category\": \"_ico_cat_ecomm,_ico_cat_finance\", \"time_utc_offset\": 28800, \"tabname\": \"completed\", \"sort\": \"funds_raised\"}}]</TOOLCALL>"
+      },
+      "rejected_response": {
+        "role": "assistant",
+        "content": "Which language do you prefer for the response? The options are English (default), Chinese, or Russian."
+      }
+    },
+    {
+      "tools": [
+        "{\"name\": \"monthly_mortgage_payment\", \"description\": \"Calculates the monthly mortgage payment based on the loan amount, annual interest rate, and loan term.\", \"parameters\": {\"type\": \"dict\", \"properties\": {\"loan_amount\": {\"description\": \"The total amount of the loan.\", \"type\": \"float\"}, \"annual_interest_rate\": {\"description\": \"The annual interest rate as a decimal (e.g., 0.05 for 5%).\", \"type\": \"float\"}, \"loan_term_years\": {\"description\": \"The loan term in years.\", \"type\": \"int\"}}}, \"required\": [\" ...[TRUNCATED FOR DISPLAY -- 557 chars total in the real file]",
+        "{\"name\": \"cosine_similarity\", \"description\": \"Calculates the cosine similarity between two vectors.\", \"parameters\": {\"type\": \"dict\", \"properties\": {\"vector_a\": {\"description\": \"The first vector.\", \"type\": \"List[float]\"}, \"vector_b\": {\"description\": \"The second vector.\", \"type\": \"List[float]\"}}}, \"required\": [\"vector_a\", \"vector_b\"]}"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Find the 99% confidence interval for a sample with a standard deviation of 3, mean of 12, and size of 40."
+        }
+      ],
+      "chosen_response": {
+        "role": "assistant",
+        "content": "Apologies, but I'm unable to calculate the 99% confidence interval. This task requires statistical analysis that I currently cannot perform."
+      },
+      "rejected_response": {
+        "role": "assistant",
+        "content": "To calculate the 99% confidence interval, I also need to know the desired confidence level. Could you please provide that?"
+      }
+    }
+  ]
+}

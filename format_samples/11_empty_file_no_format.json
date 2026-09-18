@@ -1,0 +1,12 @@
+{
+  "_regenerate_with": "head -n 2 /home/shared/agentic_slm/data/rl/processed/qwen35-xml/decontaminated/ef_interactive_es_mix_1to1/removed_rows.jsonl",
+  "_note": "Real records only, pulled verbatim from the file above. Strings over 500 chars are shortened for display and marked [TRUNCATED FOR DISPLAY]; nothing was invented or reworded.",
+  "family": "Edge case",
+  "format_name": "N/A -- file is 0 bytes",
+  "format_notes": "No format to identify, nothing to read. Confirmed harmless: the PII scanner produces zero chunks for a truly empty file and does not crash (unlike a non-empty-but-corrupted file, which does crash).",
+  "source_file": "/home/shared/agentic_slm/data/rl/processed/qwen35-xml/decontaminated/ef_interactive_es_mix_1to1/removed_rows.jsonl",
+  "records": [
+    null,
+    null
+  ]
+}

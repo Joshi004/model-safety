@@ -1,0 +1,160 @@
+{
+  "_regenerate_with": "head -n 2 /home/shared/agentic_slm/data/sft/raw/toolmind/graph_syn_datasets/graphsyn.jsonl",
+  "_note": "Real records only, pulled verbatim from the file above. Strings over 500 chars are shortened for display and marked [TRUNCATED FOR DISPLAY]; nothing was invented or reworded.",
+  "family": "Family 3 -- rename only, --map messages=conversations already works",
+  "format_name": "OpenAI-style chat/function-calling conversation format, under \"conversations\" instead of \"messages\"",
+  "format_notes": "role/content vocabulary matches OpenAI's Chat Completions shape exactly -- this is NOT ShareGPT (ShareGPT uses from/value, see file 05). Only the top-level key name differs from the target.",
+  "source_file": "/home/shared/agentic_slm/data/sft/raw/toolmind/graph_syn_datasets/graphsyn.jsonl",
+  "records": [
+    {
+      "conversations": [
+        {
+          "role": "user",
+          "content": "What's the current time in New York?"
+        },
+        {
+          "tool_calls": [
+            {
+              "function": {
+                "name": "get_current_time",
+                "arguments": {
+                  "timezone": "America/New_York"
+                }
+              }
+            }
+          ],
+          "role": "assistant",
+          "content": ""
+        },
+        {
+          "role": "tool",
+          "content": "{\"time\": \"10:00 AM\"}"
+        },
+        {
+          "role": "assistant",
+          "content": "The current time in New York is 10:00 AM."
+        },
+        {
+          "role": "user",
+          "content": "And what about in London?"
+        },
+        {
+          "tool_calls": [
+            {
+              "function": {
+                "name": "get_current_time",
+                "arguments": {
+                  "timezone": "Europe/London"
+                }
+              }
+            }
+          ],
+          "role": "assistant",
+          "content": "<think>\nOkay, the user first asked for the current time in New York, and I used the get_current_time tool with America/New_York. Now they're asking \"And what about in London?\" so they want the time in London.\n\nI need to check the available tools. The get_current_time function requires a timezone. London's timezone is Europe/London. I should call the same function but with the Europe/London timezone parameter.\n\nMake sure to structure the tool call correctly. The parameters need to be a JSON objec ...[TRUNCATED FOR DISPLAY -- 850 chars total in the real file]"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_time",
+            "description": "Get the current time",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "timezone": {
+                  "type": "string",
+                  "description": "The timezone, e.g. America/New_York"
+                }
+              },
+              "required": [
+                "timezone"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "search_books",
+            "description": "Search for books by title or author",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "keyword": {
+                  "type": "string",
+                  "description": "The keyword to search for in book titles or authors"
+                }
+              },
+              "required": [
+                "keyword"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "conversations": [
+        {
+          "role": "user",
+          "content": "What's the current time in New York?"
+        },
+        {
+          "tool_calls": [
+            {
+              "function": {
+                "name": "get_current_time",
+                "arguments": {
+                  "timezone": "America/New_York"
+                }
+              }
+            }
+          ],
+          "role": "assistant",
+          "content": "<think>\nOkay, the user is asking for the current time in New York. Let me see which tool I can use here.\n\nLooking at the provided tools, there's one called get_current_time that requires a timezone. The parameters need a timezone string like America/New_York. Since New York is in the America/New_York timezone, I should call that function with that specific timezone.\n\nThe other tool is for searching books, which isn't relevant here. So I'll focus on the get_current_time function.\n\nI need to make  ...[TRUNCATED FOR DISPLAY -- 661 chars total in the real file]"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_current_time",
+            "description": "Get the current time",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "timezone": {
+                  "type": "string",
+                  "description": "The timezone, e.g. America/New_York"
+                }
+              },
+              "required": [
+                "timezone"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "search_books",
+            "description": "Search for books by title or author",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "keyword": {
+                  "type": "string",
+                  "description": "The keyword to search for in book titles or authors"
+                }
+              },
+              "required": [
+                "keyword"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

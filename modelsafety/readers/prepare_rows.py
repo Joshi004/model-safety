@@ -70,12 +70,33 @@ def _read_rows(args: argparse.Namespace) -> List[Dict[str, Any]]:
     elif args.input_type == "parquet":
         rows = pd.read_parquet(input_path).to_dict("records")
     elif args.input_type == "huggingface":
-        from datasets import load_dataset
+        if (input_path / "state.json").exists():
+            # A single Dataset saved with Dataset.save_to_disk() -- load_dataset()
+            # refuses these (it checks for this exact file and tells you to use
+            # load_from_disk instead), so go straight to the function that works.
+            from datasets import load_from_disk
 
-        kwargs: Dict[str, Any] = {"split": args.split}
-        if args.hf_config:
-            kwargs["name"] = args.hf_config
-        rows = list(load_dataset(args.input_path, **kwargs))
+            rows = list(load_from_disk(str(input_path)))
+        elif (input_path / "dataset_dict.json").exists():
+            # A DatasetDict saved with DatasetDict.save_to_disk() -- same idea,
+            # but we also need to pick the requested split out of the dict.
+            from datasets import load_from_disk
+
+            ds_dict = load_from_disk(str(input_path))
+            if args.split not in ds_dict:
+                raise ValueError(
+                    f"Split '{args.split}' not found; available splits: {sorted(ds_dict.keys())}"
+                )
+            rows = list(ds_dict[args.split])
+        else:
+            # Not a save_to_disk folder -- a Hugging Face Hub dataset ID, or a
+            # local folder of raw data files a builder can auto-detect.
+            from datasets import load_dataset
+
+            kwargs: Dict[str, Any] = {"split": args.split}
+            if args.hf_config:
+                kwargs["name"] = args.hf_config
+            rows = list(load_dataset(args.input_path, **kwargs))
     else:
         raise ValueError(f"Unsupported input type: {args.input_type}")
 

@@ -1,0 +1,88 @@
+{
+  "_regenerate_with": "head -n 2 /home/shared/agentic_slm/data/areal_tau2/tau2_rl_train.jsonl",
+  "_note": "Real records only, pulled verbatim from the file above. Strings over 500 chars are shortened for display and marked [TRUNCATED FOR DISPLAY]; nothing was invented or reworded.",
+  "family": "Family 6 -- needs bespoke adapter, no messages concept at all",
+  "format_name": "tau2-bench (τ²-bench) task/scenario definition format (tasks.json schema)",
+  "format_notes": "Not a conversation -- the simulated-user task spec tau2-bench runs against. user_scenario.instructions.task_instructions holds the actual text. Confirmed against sierra-research/tau2-bench source.",
+  "source_file": "/home/shared/agentic_slm/data/areal_tau2/tau2_rl_train.jsonl",
+  "records": [
+    {
+      "id": "airline_1",
+      "description": {
+        "purpose": "Customer service simulation for airline domain"
+      },
+      "user_scenario": {
+        "instructions": {
+          "task_instructions": "YOUR GOAL: You want to change the flight date on reservation HKEG34 to the best available nonstop option and then add two checked bags.\n\nSCENARIO CONTEXT:\nMia Li, a Gold member from Austin, has a one-way business reservation HKEG34 from Denver to Las Vegas on May 27. Her conference in Las Vegas was rescheduled and she now wants to push the trip earlier by one day if possible and ensure the flight is nonstop, departing between 8am and 9pm. She prefers the premium option. After confirming the flig ...[TRUNCATED FOR DISPLAY -- 3450 chars total in the real file]",
+          "domain": "airline",
+          "reason_for_call": "You want to change the flight date on reservation HKEG34 to the best available nonstop option and then add two checked bags.",
+          "known_info": "You are Mia Li.\nYour user id is mia_li_3668.\n\nPAYMENT METHODS AVAILABLE:\n- PRIMARY: Credit Card credit_card_4421486\n- BACKUP: Credit Card credit_card_1955700, Travel Certificate certificate_7504069 ($250.0)\nSTRATEGY: Prefer credit_card_4421486, but be flexible if insufficient balance."
+        }
+      },
+      "evaluation_criteria": "{\"actions\": [{\"action_id\": \"train_18_0\", \"name\": \"get_user_details\", \"arguments\": {\"user_id\": \"mia_li_3668\"}, \"info\": null}, {\"action_id\": \"train_18_1\", \"name\": \"get_reservation_details\", \"arguments\": {\"reservation_id\": \"HKEG34\"}, \"info\": null}, {\"action_id\": \"train_18_2\", \"name\": \"search_direct_flight\", \"arguments\": {\"origin\": \"DEN\", \"destination\": \"LAS\", \"date\": \"2024-05-26\"}, \"info\": null}, {\"action_id\": \"train_18_3\", \"name\": \"update_reservation_flights\", \"arguments\": {\"reservation_id\": \"HKEG ...[TRUNCATED FOR DISPLAY -- 896 chars total in the real file]",
+      "db_path": "tau2_rl_database/tau2_airline_new_db_3.json"
+    },
+    {
+      "id": "telecom_1",
+      "description": {
+        "purpose": "Test resolution path: MMS (Picture/Group Messaging) Issues.",
+        "task_type": "mms_issue",
+        "difficulty": "easy"
+      },
+      "user_scenario": {
+        "persona": "\nAs a 41-year-old office administrator, you use your cellphone daily for both work and personal tasks. While you're familiar with common phone functions, you wouldn't call yourself a tech enthusiast.\n\nYour technical skills are average - you handle standard smartphone features like calls, texts, email, and basic apps with ease. You understand the fundamental settings, but prefer clear, step-by-step guidance when trying something new.\n\nIn interactions, you're naturally friendly and patient. When r ...[TRUNCATED FOR DISPLAY -- 681 chars total in the real file]",
+        "instructions": {
+          "domain": "telecom",
+          "reason_for_call": "You are unable to send MMS messages using your messaging app for the past few hours. You want to fix it and successfully send an MMS message.",
+          "known_info": "You are John Smith with phone number 555-123-2002. You are currently at home in the United States.",
+          "unknown_info": null,
+          "task_instructions": "If the agent suggests actions that don't immediately fix the issue, follow their guidance but express mild frustration after the first unsuccessful attempt. You are willing to refuel 2.0 GB of data if necessary, but you do not want to change your mobile data plan. If the tool call does not return updated status information, you might need to perform another tool call to get the updated status. \nWhenever the agent asks you about your device, always ground your responses on the results of tool cal ...[TRUNCATED FOR DISPLAY -- 971 chars total in the real file]"
+        }
+      },
+      "evaluation_criteria": "{\"actions\": [{\"action_id\": \"mms_E_0188_act_0\", \"name\": \"toggle_wifi_calling\", \"arguments\": {}, \"requestor\": \"user\", \"info\": null, \"compare_args\": null}, {\"action_id\": \"mms_E_0188_act_1\", \"name\": \"reset_apn_settings\", \"arguments\": {}, \"requestor\": \"user\", \"info\": null, \"compare_args\": null}, {\"action_id\": \"mms_E_0188_act_2\", \"name\": \"reboot_device\", \"arguments\": {}, \"requestor\": \"user\", \"info\": null, \"compare_args\": null}, {\"action_id\": \"mms_E_0188_act_3\", \"name\": \"refuel_data\", \"arguments\": {\"cu ...[TRUNCATED FOR DISPLAY -- 1136 chars total in the real file]",
+      "db_path": "tau2_rl_database/tau2_telecom_db.toml",
+      "initial_state": {
+        "initialization_data": null,
+        "initialization_actions": [
+          {
+            "env_type": "user",
+            "func_name": "set_user_info",
+            "arguments": {
+              "name": "John Smith",
+              "phone_number": "555-123-2002"
+            }
+          },
+          {
+            "env_type": "user",
+            "func_name": "set_wifi_calling",
+            "arguments": {
+              "enabled": true,
+              "mms_over_wifi": true
+            }
+          },
+          {
+            "env_type": "user",
+            "func_name": "break_apn_mms_setting",
+            "arguments": {}
+          },
+          {
+            "env_type": "assistant",
+            "func_name": "set_data_usage",
+            "arguments": {
+              "customer_id": "C1001",
+              "line_id": "L1002",
+              "data_used_gb": 15.1
+            }
+          },
+          {
+            "env_type": "user",
+            "func_name": "unseat_sim_card",
+            "arguments": {}
+          }
+        ],
+        "message_history": null
+      },
+      "ticket": "The user has been unable to send MMS messages using their messaging app for the past few hours. Customer name: John Smith, phone number: 555-123-2002, current location: at home in the United States. They will consider the issue resolved when an MMS message can be successfully sent."
+    }
+  ]
+}

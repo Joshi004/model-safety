@@ -309,63 +309,83 @@ together into `{"role": from[i], "content": value[i]}` pairs. That needs
 real transformation code (in a preprocessing script, or a new
 `prepare_rows.py` feature), not just a rename.
 
-### One more real failure mode: a nested column inside a table (parquet/csv) — this one actually crashes
+### One more real failure mode: a nested column inside a table (parquet/csv) — FIXED
 
 Chat-style datasets stored as a *table* (not `.jsonl`) sometimes hold the
-whole list of turns in one cell per row. I built a two-row parquet file
-shaped exactly that way and ran it through the real converter:
+whole list of turns in one cell per row. This used to be a hard crash.
+**It's now fixed — verified against real production files, not just a
+synthetic example, shown below.**
+
+The reason it crashed: `pandas`/`pyarrow` hand back a nested list-of-dicts
+column as a `numpy.ndarray`, not a plain Python `list` — and Python's own
+`json.dumps` doesn't know how to write a `numpy.ndarray` to JSON. Unlike
+Families 2 and 3, this one never failed silently — it was a hard crash,
+part-way through, after it already told you `Prepared N rows` — and it
+left a 0-byte `.jsonl` file behind rather than cleaning up after itself.
+
+**The fix:** `_clean_value()` in
+[`modelsafety/readers/prepare_rows.py`](modelsafety/readers/prepare_rows.py)
+— the one function every row from every input type passes through before
+anything else touches it — now converts a `numpy.ndarray` to a plain
+Python `list` (via `.tolist()`, then re-checked recursively so a `NaN`
+hiding inside a nested dict still gets caught) before the row ever reaches
+`json.dumps`. `numpy` is now also declared directly in
+`modelsafety/readers/requirements.txt` rather than arriving only as an
+undeclared transitive dependency of `pandas`.
+
+**Reconfirmed on the exact same real production file used above** —
+`rl/processed/qwen35-xml/sft-stage1_0714/train.parquet` (1.9 GB, 603,683
+rows, the **verl RL-training row format**:
+`prompt`/`reward_model`/`ability`/`data_source`/`extra_info`, `prompt`
+being the nested `list<struct<role,content>>` column). Pulled a real slice
+out of it (without loading the full 1.9 GB into memory — read one
+`pyarrow` row group and sliced it) and ran it through the real converter:
 
 ```bash
-$ python3 prepare_rows.py --input-path fake_chat.parquet --input-type parquet \
-  --map messages=chat --output-dir ./out
-Prepared 2 rows; skipped 0 rows.
-Traceback (most recent call last):
-  ...
-  File ".../chunked_writer.py", line 70, in write_chunked_output
-    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-TypeError: Object of type ndarray is not JSON serializable
-```
-
-The reason: `pandas`/`pyarrow` hand back a nested list-of-dicts column as
-a `numpy.ndarray`, not a plain Python `list` — and Python's own
-`json.dumps` doesn't know how to write a `numpy.ndarray` to JSON. Unlike
-Families 2 and 3, this one doesn't fail silently — it's a hard crash,
-part-way through, after it already told you `Prepared 2 rows` — and it
-leaves a 0-byte `.jsonl` file behind rather than cleaning up after itself.
-
-**Checked this isn't just a synthetic-example problem — reconfirmed it on
-a real production file.**
-`rl/processed/qwen35-xml/sft-stage1_0714/train.parquet` is a real 1.9 GB
-file (603,683 rows), already identified as the **verl RL-training row
-format** (`prompt`/`reward_model`/`ability`/`data_source`/`extra_info`).
-Its `prompt` column holds exactly the same shape as the synthetic test
-above — a list of `{role, content}` dicts. Pulled 5 real rows out of it
-(without loading the full 1.9 GB into memory — read just one row group
-with `pyarrow` and sliced it) and ran them through the real converter:
-
-```
-$ python3 prepare_rows.py --input-path tiny_real_verl_sample.parquet \
+$ modelsafety/readers/.venv/bin/python modelsafety/readers/prepare_rows.py \
+  --input-path tiny_real_verl_sample.parquet \
   --input-type parquet --map messages=prompt --output-dir ./out
-Prepared 5 rows; skipped 0 rows.
-TypeError: Object of type ndarray is not JSON serializable
+Prepared 200 rows; skipped 0 rows.
 ```
 
-Same crash, real data this time. Given how much of
-`rl/processed/qwen35-xml/` looks like this exact format — several files
-in that folder run from a few hundred MB up to multiple GB — this crash is
-likely to matter well beyond the one file tested here.
+No crash. Also reconfirmed on the real `medmcqa_think.parquet` referenced
+elsewhere in this doc (29,986 rows, `messages` already correctly named but
+still the same nested-array shape):
+
+```bash
+$ modelsafety/readers/.venv/bin/python modelsafety/readers/prepare_rows.py \
+  --input-path .../general_warmup_sft_0903/clean_parquet/medmcqa_think.parquet \
+  --input-type parquet --require messages --output-dir ./out
+Prepared 29986 rows; skipped 0 rows.
+```
+
+Both outputs were checked beyond just "didn't crash": `extract_record_text()`
+returns real, non-empty text for sampled rows from each, and the
+`medmcqa_think` conversion was fed straight into `run_pii_scan.sbatch`,
+which scanned all 29,986 lines end-to-end and produced a real result (not
+an empty one) — stage 1 found 1,370 raw regex hits, stage 2 validated 6 of
+them.
+
+Given how much of `rl/processed/qwen35-xml/` looks like this exact
+format — several files in that folder run from a few hundred MB up to
+multiple GB — and that other parquet groups hit the same `numpy.ndarray`
+shape (see `FULL_DATASET_INVENTORY.md`), this fix reaches well beyond the
+one file tested here.
 
 ### The pattern across all of this
 
 Two out of the three real `.jsonl` tool-call shapes I tested convert
 "successfully" (no error, no crash, a normal-looking output file) and then
 scan as 100% clean — because there was never any text in them to begin
-with. Only the tabular (parquet/csv) case crashes loudly. **That's the
-single riskiest thing about this whole layer: for `.jsonl` sources,
-success and silent failure look identical unless you actually open a
-converted file and read it yourself.** The smoke-test habit from the other
-doc — always look at a few real converted rows before trusting a "0 hits"
-report — matters most exactly here.
+with. The tabular (parquet/csv) case used to be the exception that crashed
+loudly instead of failing silently — now that the `numpy.ndarray` bug
+above is fixed, it converts successfully too, so this silent-failure
+pattern is now the thing to watch for across every format, not just
+`.jsonl`. **That's the single riskiest thing about this whole layer: for
+Families 2 and 3 above, success and silent failure look identical unless
+you actually open a converted file and read it yourself.** The smoke-test
+habit from the other doc — always look at a few real converted rows before
+trusting a "0 hits" report — matters most exactly here.
 
 ### What this means in practice
 
@@ -375,20 +395,23 @@ report — matters most exactly here.
 | `"responses_create_params": {"input": [...], "tools": [...]}` — conversation nested inside another object | **No — silently empty.** Needs a small preprocessing script or a `--map` upgrade for nested paths (Family 2) |
 | `"conversations": {"from": [...], "value": [...]}` — parallel arrays instead of a list | **No — silently empty.** Needs real reshaping code, not just a rename (Family 3) |
 | Any of the above, but with real function-call arguments only inside `tool_calls`, never restated in plain `content` | **No — invisible regardless of which family above** (see the Family 1 caveat above) |
-| A table (parquet/csv) with one column holding a whole nested conversation | **No — actually crashes the converter**, tested above |
+| A table (parquet/csv) with one column holding a whole nested conversation | **Yes — fixed.** Used to be a hard crash (`numpy.ndarray` not JSON-serializable); now converts cleanly, tested above |
 | Several source files that need to become one converted dataset | **No** — `.csv`/`.parquet`/`.json` inputs are one file per run (see the other doc) |
 
 ## 6. If this matters enough to fix — options, not a decision
 
-I haven't changed any code here — this document is about understanding
-what's there today. If and when it's worth investing in, here's roughly
-what each fix would look like, from smallest to largest:
+**Update: the first item below has since been fixed** (see section 5
+above for the details and verification). Everything else in this section
+is still just an option, not something that's been built — no other code
+has changed. If and when the rest is worth investing in, here's roughly
+what each remaining fix would look like, from smallest to largest:
 
-- **Stop the tabular crash:** teach `chunked_writer.py` to convert a
-  `numpy.ndarray` to a plain `list` before handing it to `json.dumps`.
-  Small, safe, localized change — worth bumping up the priority list given
-  this is now confirmed on real multi-GB production files, not just the
-  synthetic test.
+- ~~**Stop the tabular crash:**~~ **Done.** `_clean_value()` in
+  `prepare_rows.py` now converts a `numpy.ndarray` to a plain `list`
+  (recursively, so nested `NaN`s are still caught) before it reaches
+  `json.dumps`, and `numpy` is now declared in
+  `modelsafety/readers/requirements.txt`. Verified on real multi-GB
+  production files, not just a synthetic test — see section 5.
 - **Add provenance (section 4):** have `prepare_rows.py` stamp
   `source_file` and `source_row_index` into every row's `metadata`
   automatically, instead of relying on the source data to already have an

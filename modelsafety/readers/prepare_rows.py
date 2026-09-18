@@ -15,6 +15,7 @@ import random
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+import numpy as np
 import pandas as pd
 
 from chunked_writer import write_chunked_output
@@ -38,6 +39,14 @@ def _parse_mapping(values: List[str]) -> Dict[str, str]:
 
 
 def _clean_value(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        # pandas hands back list-typed parquet/csv columns (e.g. a "messages"
+        # column holding a list of {role, content} dicts) as numpy arrays,
+        # not plain Python lists. json.dumps has no idea what a numpy array
+        # is, so this converts it back to something JSON-serializable --
+        # then re-runs _clean_value on each item to still catch NaNs nested
+        # inside (e.g. a NaN inside one of the dicts in the array).
+        return [_clean_value(item) for item in value.tolist()]
     if isinstance(value, float) and math.isnan(value):
         return None
     if isinstance(value, dict):

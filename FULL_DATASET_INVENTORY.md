@@ -23,8 +23,8 @@ reasoning, it's the numbers-and-commands index that sits on top of them:
 | `.jsonl` — `responses_create_params` | 83 | 30.0 GB | not split by family | No — needs the nested-path adapter |
 | `.jsonl` — everything else (9 more small families) | ~28 | ~7.3 GB | not split by family | Mixed — see `DATA_FORMAT_INVENTORY.md` |
 | **`.jsonl` — all families combined** | **155** | **143.6 GB** | **16,689,866** | — |
-| `.parquet` — verl RL-training row (nested `prompt`) | 674 | 60.8 GB | 23,699,693 | **No — crashes** the converter |
-| `.parquet` — already `messages` (nested column) | 144 | 21.0 GB | 2,005,103 | **No — crashes**, same reason |
+| `.parquet` — verl RL-training row (nested `prompt`) | 674 | 60.8 GB | 23,699,693 | **Yes** — fixed, `prepare_rows.py` handles the nested column directly now |
+| `.parquet` — already `messages` (nested column) | 144 | 21.0 GB | 2,005,103 | **Yes** — same fix |
 | `.parquet` — raw source, flat `text` column | 118 | 39.8 GB | 11,225,711 | **Yes** — confirmed working |
 | `.parquet` — manifest/audit, no text | 30 | 0.3 GB | 3,270,545 | N/A — nothing to scan |
 | `.arrow` — already `messages` | 3,950 | 84.5 GB | ~40.7M (estimated, see note) | **Yes** — fixed, `prepare_rows.py` handles it directly now |
@@ -70,25 +70,41 @@ sbatch --export=ALL,PII_BASE_DIR=/home/shared/agentic_slm/data/mid/_megatron/ful
 
 **verl RL-training row format — 674 files, 60.8 GB, 23,699,693 rows.** This is
 the biggest parquet group by far. `prompt` is a nested
-`list<struct<role,content>>` column — confirmed crashing the converter on a
-real 1.9 GB file in `HOW_DATA_CONVERSION_WORKS.md`. Needs the bypass:
+`list<struct<role,content>>` column — used to crash the converter (see
+`HOW_DATA_CONVERSION_WORKS.md`), now fixed. No bypass needed, just the
+normal converter with `--map`:
 
 ```bash
 cd /home/naresh/model-safety
-PYTHONPATH="$PWD/modelsafety/readers" modelsafety/readers/.venv/bin/python -c "
-import pyarrow.parquet as pq
-from chunked_writer import write_chunked_output
-table = pq.ParquetFile('YOUR_FILE.parquet').read()
-rows = [{'messages': row['prompt'], 'metadata': {k: v for k, v in row.items() if k != 'prompt'}} for row in table.to_pylist()]
-write_chunked_output(rows, output_dir='output/my_conversion/converted', num_chunks=1, rows_per_file=5000)
-"
+PYTHONPATH="$PWD" modelsafety/readers/.venv/bin/python modelsafety/readers/prepare_rows.py \
+  --input-path YOUR_FILE.parquet \
+  --input-type parquet --map messages=prompt \
+  --output-dir output/my_conversion/converted
 ```
+
+Real result, confirmed on a real slice of
+`rl/processed/qwen35-xml/sft-stage1_0714/train.parquet` (the same 1.9 GB,
+603,683-row file used to confirm the crash originally):
+`Prepared 200 rows; skipped 0 rows.` — confirmed scanning correctly
+afterward too.
 
 **Already `messages`-shaped — 144 files, 21.0 GB, 2,005,103 rows** (smoltalk2,
 toucan, a pre-converted `medmcqa_think`). Same nested-column problem, same
-bypass — just swap `row['prompt']` for `row['messages']` above. Confirmed
-this crashes too, even though the schema is already exactly right — the
-crash is about the column being a list, not about which name it has.
+fix — the column's already correctly named, so use `--require messages`
+instead of `--map`:
+
+```bash
+cd /home/naresh/model-safety
+PYTHONPATH="$PWD" modelsafety/readers/.venv/bin/python modelsafety/readers/prepare_rows.py \
+  --input-path /home/shared/agentic_slm/data/sft/curriculum/mixes/general_warmup_sft_0903/clean_parquet/medmcqa_think.parquet \
+  --input-type parquet --require messages \
+  --output-dir output/my_conversion/converted
+```
+
+Real result: `Prepared 29986 rows; skipped 0 rows.` — fed straight into
+`run_pii_scan.sbatch` afterward, which scanned all 29,986 lines end to
+end (1,370 raw hits, 6 validated after stage 2), confirming this isn't
+just "didn't crash" but genuinely scans.
 
 **Raw source, flat `text` column — 118 files, 39.8 GB, 11,225,711 rows**
 (`mid/MidTool-Mix/{code,web,pdf,native-agent-traj}/*.parquet` — the literal

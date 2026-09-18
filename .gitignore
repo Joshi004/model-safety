@@ -1,0 +1,43 @@
+# Python environments and caches
+**/venv/
+**/.venv/
+**/.venv-isolated/
+**/.venv.lock
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Secrets and local environment overrides
+.env
+.env.*
+*.env
+!.env.example
+!**/*.env.example
+!**/config.env.example
+
+# Data, generated outputs, caches, and logs
+data/
+output/
+logs/*
+!logs/slurm/
+logs/slurm/*
+!logs/slurm/.gitkeep
+cache/
+artifacts/
+tmp/
+.cache/
+
+# Generated container images
+containers/*.sqsh
+containers/*.sif
+
+# OS cruft
+.DS_Store

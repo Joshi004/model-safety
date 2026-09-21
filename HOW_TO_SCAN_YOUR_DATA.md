@@ -261,6 +261,17 @@ optional stage 4a (LLM double-check) is for.
 3. The converted output can be scanned by the PII tool immediately, with no
    extra steps.
 
+**Update: the converter now checks its own output, too.** Re-running the
+exact command above prints one more line — `Text coverage: 6150/6150 rows
+(100.0%) have scannable text.` — and writes a `summary.json` next to the
+converted data: the row count reconciled against the parquet's own footer
+count (`expected_rows: 6150`, from `expected_rows_from: "parquet file
+footers"`), the text-coverage numbers, and a `skipped_by_required_column`
+breakdown instead of a bare skip total. A `_SUCCESS` marker is only written
+once every check passes; a count that doesn't reconcile, zero rows written,
+or 0% text coverage fails the run instead. See `DATA_VALIDATION_OPTIONS.md`
+for the full reasoning — this is the first tier of what it recommends.
+
 **Update — this is now fixed.** The rest of this section originally
 described a real limit and a workaround for it. Keeping the explanation
 below since the "why" is still useful context, but the short version:
@@ -298,7 +309,7 @@ $ python3 prepare_rows.py --input-path .../envgen_solo_v1 \
 Prepared 999 rows; skipped 0 rows.
 ```
 
-No error, and the output scans correctly (checked with
+No error, and the◊ output scans correctly (checked with
 `extract_record_text()`, same as every other example in these docs). Also
 re-verified on the "flat rendered template" family
 (`sft/_sdft_cache/.../eval`) — 243 rows, same clean result.

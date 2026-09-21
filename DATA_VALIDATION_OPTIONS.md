@@ -1,8 +1,10 @@
 # How do we know a conversion actually worked? Every option, and which ones are worth doing
 
-This is a decision document. **Nothing here is built yet** — it's a map of the
-validation options we have, what each one really buys us, what each one costs,
-and a recommendation at the end so we can stop re-arguing it.
+This is a decision document. ~~**Nothing here is built yet**~~ **Update:
+tier one below (options 4, 1, and 3) is now built, inline in
+`modelsafety/readers/prepare_rows.py`.** It's still a map of the validation
+options we have, what each one really buys us, what each one costs, and a
+recommendation for the rest, so we can stop re-arguing it.
 
 Same rule as the other docs in this folder: every number below was measured on
 the real data on this machine, not estimated. Where something is a rough
@@ -330,8 +332,9 @@ permanent no.
 Three tiers. The reasoning is in the previous sections; this is just the
 shortlist.
 
-**Do these first — they're nearly free and they cover what we've actually been
-bitten by:**
+~~**Do these first — they're nearly free and they cover what we've actually
+been bitten by:**~~ **Done.** All three now run inline inside
+`modelsafety/readers/prepare_rows.py`:
 
 - **Option 4, text coverage.** Highest value on the list. It's the only thing
   standing between us and a meaningless "0 hits" report, and it's the cheapest
@@ -342,6 +345,22 @@ bitten by:**
   terminal output nobody re-reads into a file sitting next to the data, and
   it's the thing that makes the numbers auditable next week. It also doubles
   as the metrics history that option 10 would need later.
+
+Every run now writes a `summary.json` next to the output — the free source
+row count when one exists (parquet footer, or a HuggingFace dataset's own
+`num_rows`), the write-side counts with a `skipped_by_required_column`
+breakdown instead of a bare total, and the text-coverage numbers — and only
+touches a `_SUCCESS` marker once every check passes. A count that doesn't
+reconcile, zero rows written, or 0% text coverage fails the run (exit code
+2, no marker); partial coverage is a warning, not a failure, on purpose (see
+the "score first, filter second" note above). Re-running Conversion B from
+the top of this doc now says so instead of exiting clean:
+
+```
+Prepared 200 rows; skipped 0 rows.
+Text coverage: 0/200 rows (0.0%) have scannable text.
+FAILED: 0% text coverage -- extract_record_text() finds no scannable text in any written row
+```
 
 **Do these next, once the first three are in and we trust them:**
 

@@ -87,6 +87,26 @@ use) instead of `messages`. If you ran the PII scanner over this file
 today, it would come back completely clean, and that report would be
 meaningless.
 
+**Update: `prepare_rows.py` now catches exactly this, on its own.** Running
+this same file through the converter --
+
+```bash
+$ prepare_rows.py --input-path .../Tool-N1-hermes/train.jsonl \
+    --input-type jsonl --map messages=responses_create_params \
+    --output-dir ./out --max-rows 200
+Prepared 200 rows; skipped 0 rows.
+Text coverage: 0/200 rows (0.0%) have scannable text.
+FAILED: 0% text coverage -- extract_record_text() finds no scannable text in any written row
+```
+
+-- now exits with a non-zero status and never writes the `_SUCCESS` marker
+that downstream jobs check for, instead of the silent "job's done" it used
+to report. Every run also gets a `summary.json` recording the row counts
+and this coverage number, whether or not it passes. See
+`DATA_VALIDATION_OPTIONS.md` for the three checks this ships (text
+coverage, row-count reconciliation, and the marker file) and why those
+three specifically.
+
 ## 3. Can we make the scanners understand other key names? (your first question)
 
 Short answer: **easy for a simple rename, harder for anything more than

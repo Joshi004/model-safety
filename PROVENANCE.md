@@ -19,6 +19,23 @@ byte-identical except for the import fixes listed at the bottom of this file.
 | `modelsafety/readers/prepare_rows.py` | `prepare_rows.py` |
 | `modelsafety/readers/prepare_jsonl_chunks.py` | `prepare_jsonl_chunks.py` |
 | `modelsafety/readers/prepare_pipeline_chunks.py` | `prepare_pipeline_chunks.py` |
+| `modelsafety/readers/chunked_writer.py` | `chunked_writer.py` |
+
+`chunked_writer.py` is a byte-identical copy. `prepare_rows.py` has an
+unconditional top-level `from chunked_writer import write_chunked_output`,
+and this file was missed in the original scaffold pass — without it,
+`prepare_rows.py` cannot be imported at all. Restored here.
+
+`modelsafety/readers/requirements.txt` (`pandas`, `datasets`, `pyarrow`) is
+**not** a medpsy file — it's new. In medpsy, `prepare_rows.py` ran inside the
+single shared `synth_data_gen/venv`, built from the project-root
+`requirements.txt` (`distilabel`, `datasets`, `pytest`, `huggingface-hub`,
+`jinja2`, `pyarrow`, `python-dotenv`, `pyyaml`, `pandas`, `openai`,
+`pydantic`, `transformers`) — medpsy never isolated a dependency list for
+just this script. This file lists only the three packages `prepare_rows.py`
+actually imports, so `readers/` follows the same one-`requirements.txt`-
+per-module convention already used by `pii_scan/`, `pii_privacy_filter/`,
+`toxicity/`, and `dedup/` below.
 
 ## data_screening/pii/regex/ (from `pii_scan/`)
 

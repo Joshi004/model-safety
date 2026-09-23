@@ -11,6 +11,7 @@ RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT:-${REPO}/output/medpsy2/privacy_filter_nemot
 MODE="${PRIVACY_FILTER_MODE:-pilot}"
 BACKEND="${PRIVACY_FILTER_BACKEND:-transformers}"
 MODEL="${PRIVACY_FILTER_MODEL:-OpenMed/privacy-filter-nemotron-v2}"
+PARTITION="${PRIVACY_FILTER_PARTITION:-health}"
 
 if [[ "${MODE}" != "pilot" && "${MODE}" != "full" ]]; then
   echo "PRIVACY_FILTER_MODE must be pilot or full" >&2
@@ -32,7 +33,7 @@ if [[ ! -f "${manifest}" ]]; then
     export_values+=",PRIVACY_FILTER_UNIT_MIB=${PRIVACY_FILTER_UNIT_MIB:-256}"
   fi
   prepare_job="$(
-    sbatch --parsable --export="${export_values}" \
+    sbatch --parsable --partition="${PARTITION}" --export="${export_values}" \
       "${SCRIPT_DIR}/prepare_privacy_filter.sbatch"
   )"
   dependency=(--dependency="afterok:${prepare_job}")
@@ -46,8 +47,9 @@ else
   scan_script="${SCRIPT_DIR}/run_privacy_filter_node.sbatch"
 fi
 scan_job="$(
-  sbatch --parsable "${dependency[@]}" --export="${export_values}" "${scan_script}"
+  sbatch --parsable --partition="${PARTITION}" "${dependency[@]}" --export="${export_values}" "${scan_script}"
 )"
 echo "Privacy Filter ${MODE} job: ${scan_job}"
+echo "Partition: ${PARTITION}"
 echo "Run root: ${RUN_ROOT}"
 

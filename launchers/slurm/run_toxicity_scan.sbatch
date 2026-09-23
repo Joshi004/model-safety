@@ -143,6 +143,7 @@ start_vllm() {
       --host 127.0.0.1 \
       --port "${GUARD_PORT}" \
       --model "${GUARD_MODEL}" \
+      --served-model-name "${GUARD_MODEL}" \
       --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}" \
       --max-model-len "${VLLM_MAX_MODEL_LEN}" \
       --trust-remote-code \

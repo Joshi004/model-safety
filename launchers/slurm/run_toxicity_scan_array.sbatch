@@ -89,7 +89,9 @@ else
     --model_name "${TOX_STAGE1_MODEL:-multilingual}" \
     --dest_file "${FLAGGED_FILE}" \
     --batch_size "${TOX_BATCH_SIZE:-32}" \
-    --threshold "${TOX_THRESHOLD:-0.5}"
+    --threshold "${TOX_THRESHOLD:-0.5}" \
+    --summary-file "${SHARD_ROOT}/detoxify_summary.json" \
+    --snapshot-manifest "${MANIFEST_DIR}/manifest.json"
 fi
 touch "${SHARD_ROOT}/_DETOXIFY_SUCCESS"
 if [[ "${TOX_STAGE1_ONLY:-0}" == "1" ]]; then

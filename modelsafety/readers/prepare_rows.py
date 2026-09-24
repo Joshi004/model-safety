@@ -82,6 +82,32 @@ def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
     return _iter_jsonl_files(_discover_files(path, "*.jsonl"))
 
 
+def _arrow_ipc_row_count(dataset_dir: Path) -> int:
+    """Independently count rows in a ``Dataset.save_to_disk()`` folder.
+
+    Reads the exact ``.arrow`` file(s) ``load_from_disk()`` would use --
+    listed in the folder's own ``state.json`` -- through ``pyarrow.ipc``
+    instead of the ``datasets`` library. This is a second, independent
+    reader of the same data, the same role the parquet footer check above
+    plays for parquet input: it can catch a problem in how ``datasets``
+    loaded the rows, which comparing a count against itself cannot.
+    """
+    import pyarrow as pa
+
+    state = json.loads((dataset_dir / "state.json").read_text(encoding="utf-8"))
+    total = 0
+    for entry in state["_data_files"]:
+        file_path = dataset_dir / entry["filename"]
+        with pa.memory_map(str(file_path), "rb") as source:
+            try:
+                reader = pa.ipc.open_stream(source)
+            except pa.ArrowInvalid:
+                source.seek(0)
+                reader = pa.ipc.open_file(source)
+            total += reader.read_all().num_rows
+    return total
+
+
 def _read_rows(args: argparse.Namespace) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Read source rows, plus whatever row count the source gives us for free.
 
@@ -129,9 +155,15 @@ def _read_rows(args: argparse.Namespace) -> tuple[List[Dict[str, Any]], Dict[str
             from datasets import load_from_disk
 
             dataset = load_from_disk(str(input_path))
-            expected_rows = dataset.num_rows
-            expected_rows_from = "huggingface dataset num_rows"
             rows = list(dataset)
+            try:
+                expected_rows = _arrow_ipc_row_count(input_path)
+                expected_rows_from = "arrow ipc row count"
+            except Exception as exc:  # best-effort -- never block a real conversion on this
+                expected_rows = dataset.num_rows
+                expected_rows_from = (
+                    f"huggingface dataset num_rows (arrow ipc read failed: {exc})"
+                )
         elif (input_path / "dataset_dict.json").exists():
             # A DatasetDict saved with DatasetDict.save_to_disk() -- same idea,
             # but we also need to pick the requested split out of the dict.
@@ -143,9 +175,17 @@ def _read_rows(args: argparse.Namespace) -> tuple[List[Dict[str, Any]], Dict[str
                     f"Split '{args.split}' not found; available splits: {sorted(ds_dict.keys())}"
                 )
             dataset = ds_dict[args.split]
-            expected_rows = dataset.num_rows
-            expected_rows_from = "huggingface dataset num_rows"
             rows = list(dataset)
+            try:
+                # Each split of a saved DatasetDict is itself a save_to_disk
+                # folder, at <root>/<split>/, with its own state.json.
+                expected_rows = _arrow_ipc_row_count(input_path / args.split)
+                expected_rows_from = "arrow ipc row count"
+            except Exception as exc:  # best-effort -- never block a real conversion on this
+                expected_rows = dataset.num_rows
+                expected_rows_from = (
+                    f"huggingface dataset num_rows (arrow ipc read failed: {exc})"
+                )
         else:
             # Not a save_to_disk folder -- a Hugging Face Hub dataset ID, or a
             # local folder of raw data files a builder can auto-detect.

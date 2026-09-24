@@ -28,6 +28,11 @@ from common import (
 )
 from policy import CandidatePolicy
 
+# The default 128 KiB csv field limit is too small for some scanned message
+# text (observed up to ~650 KiB); raise it well above anything seen so far
+# so aggregate() can't be taken down by one oversized field.
+csv.field_size_limit(10 * 1024 * 1024)
+
 
 CANDIDATE_FIELDS = [
     "file",
@@ -340,6 +345,20 @@ def aggregate(args: argparse.Namespace) -> int:
     if missing and not args.allow_incomplete:
         raise RuntimeError(f"{len(missing)} work units are incomplete")
 
+    # Rows each source file is expected to have, purely from the work
+    # manifest -- units_for_source() walks a source sequentially, so the
+    # largest end_line seen across a source's units is that file's total
+    # row count, independent of whether every unit actually succeeded.
+    missing_ids = set(missing)
+    rows_expected_by_source: dict[str, int] = {}
+    sources_missing_units: set[str] = set()
+    for unit in units:
+        rows_expected_by_source[unit.source_file] = max(
+            rows_expected_by_source.get(unit.source_file, 0), unit.end_line
+        )
+        if unit.unit_id in missing_ids:
+            sources_missing_units.add(unit.source_file)
+
     spans_temp = output_root / ".all_spans.jsonl.partial"
     candidates_temp = output_root / ".llm_candidates.csv.partial"
     spans_final = output_root / "all_spans.jsonl"
@@ -417,16 +436,46 @@ def aggregate(args: argparse.Namespace) -> int:
         candidates_output.flush()
         os.fsync(spans_output.fileno())
         os.fsync(candidates_output.fileno())
+
+    # Every source file with no missing units must have scanned exactly as
+    # many rows as the manifest says it has -- every unit reporting
+    # _SUCCESS is not, by itself, proof nothing was double-counted or
+    # skipped inside a unit's own byte range. Checked (and, if it fails,
+    # raised) before the atomic replace below, so a bad aggregate never
+    # becomes the final summary.json / all_spans.jsonl.
+    row_mismatches = [
+        {
+            "source_file": source_file,
+            "rows_expected": expected,
+            "rows_scanned": sources.get(source_file, Counter()).get("rows", 0),
+        }
+        for source_file, expected in sorted(rows_expected_by_source.items())
+        if source_file not in sources_missing_units
+        and sources.get(source_file, Counter()).get("rows", 0) != expected
+    ]
+    if row_mismatches:
+        spans_temp.unlink(missing_ok=True)
+        candidates_temp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"{len(row_mismatches)} source file(s) scanned a different row count "
+            f"than the work manifest expects, despite every relevant unit "
+            f"reporting success: {row_mismatches[:5]}"
+        )
+
     spans_temp.replace(spans_final)
     candidates_temp.replace(candidates_final)
     totals["llm_candidates"] = len(candidate_hashes)
     summary = {
         **dict(totals),
+        "rows_expected": sum(rows_expected_by_source.values()),
         "labels": dict(sorted(labels.items())),
         "tiers": dict(sorted(tiers.items())),
         "policy_exclusions": dict(sorted(policy_exclusions.items())),
         "sources": {
-            source_file: dict(values)
+            source_file: {
+                **dict(values),
+                "rows_expected": rows_expected_by_source.get(source_file, 0),
+            }
             for source_file, values in sorted(sources.items())
         },
         "completed_units": len(units) - len(missing),

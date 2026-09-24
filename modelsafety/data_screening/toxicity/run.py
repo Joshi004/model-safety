@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
 from typing import Any, Iterator
@@ -14,6 +16,12 @@ from accelerate.utils import gather_object
 from tqdm import tqdm
 
 from detoxify import Detoxify
+
+# Not on sys.path by default when this script is run standalone (cd'd into
+# this directory, no PYTHONPATH export) -- added defensively so the
+# optional snapshot check below can import the shared contract module
+# regardless of how this script is invoked.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 
 def content_text(content: Any) -> str:
@@ -118,6 +126,64 @@ def iter_candidates(input_root: Path, files: list[Path]) -> Iterator[dict[str, A
                     }
 
 
+def count_candidates(
+    candidates: Iterator[dict[str, Any]], stats: dict[str, Any]
+) -> Iterator[dict[str, Any]]:
+    """Wrap ``iter_candidates()``, counting rows and messages per source file
+    as they stream through -- without buffering anything or changing what's
+    yielded. A "row" is one source JSONL line; a plain-``text`` row and a
+    conversation row with N messages both count as one row, but N and 1
+    messages respectively (candidates for the same row are always yielded
+    consecutively by ``iter_candidates``, so a change in (file, line) is
+    exactly a new row).
+    """
+    last_row_key: tuple[str, int] | None = None
+    for candidate in candidates:
+        row_key = (candidate["source_file"], candidate["source_line"])
+        per_file = stats["per_file"].setdefault(
+            candidate["source_file"], {"rows": 0, "messages": 0}
+        )
+        if row_key != last_row_key:
+            per_file["rows"] += 1
+            stats["rows_read"] += 1
+            last_row_key = row_key
+        per_file["messages"] += 1
+        stats["messages_scored"] += 1
+        yield candidate
+
+
+def verify_snapshot(input_root: Path, files: list[Path], snapshot_manifest: Path) -> None:
+    """Confirm every file this run is about to scan still matches the size
+    and mtime recorded when the shard manifest (with its per-file SHA-256)
+    was built -- the same manifest.json shape, and the same check,
+    pii_extractor.py and quality_filter_finalize.py already run before
+    trusting a source file.
+    """
+    from modelsafety.contract.textract import load_source_snapshot, verify_source_snapshot
+
+    snapshots = load_source_snapshot(snapshot_manifest, input_root)
+    for path in files:
+        relative = path.relative_to(input_root).as_posix()
+        expected = snapshots.get(relative)
+        if expected is None:
+            raise RuntimeError(f"{relative} is not present in the snapshot manifest")
+        verify_source_snapshot(path, expected)
+
+
+def histogram_to_dict(histogram: list[int]) -> dict[str, int]:
+    return {
+        f"{index * 0.05:.2f}-{(index + 1) * 0.05:.2f}": count
+        for index, count in enumerate(histogram)
+    }
+
+
+def write_summary_atomic(summary_file: Path, summary: dict[str, Any]) -> None:
+    summary_file.parent.mkdir(parents=True, exist_ok=True)
+    temp = summary_file.with_name(f".{summary_file.name}.partial")
+    temp.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp.replace(summary_file)
+
+
 def normalize_predictions(result: dict[str, Any], expected: int) -> list[dict[str, float]]:
     columns: dict[str, list[float]] = {}
     for category, values in result.items():
@@ -153,9 +219,15 @@ def run(
     dest_file: Path,
     batch_size: int,
     threshold: float,
+    summary_file: Path | None = None,
+    snapshot_manifest: Path | None = None,
 ) -> None:
+    if snapshot_manifest is not None:
+        verify_snapshot(input_root, files, snapshot_manifest)
+
     accelerator = accelerate.Accelerator()
-    candidates = iter_candidates(input_root, files)
+    stats: dict[str, Any] = {"rows_read": 0, "messages_scored": 0, "messages_flagged": 0, "per_file": {}}
+    candidates = count_candidates(iter_candidates(input_root, files), stats)
     model = Detoxify(model_name, device=accelerator.device)
 
     if accelerator.is_main_process:
@@ -186,6 +258,7 @@ def run(
                     max_category, max_score = max(class_scores.items(), key=lambda item: item[1])
                     histogram[min(int(max_score / 0.05), 19)] += 1
                     if max_score > threshold:
+                        stats["messages_flagged"] += 1
                         output = dict(candidate)
                         output["toxicity"] = max_score
                         output["trigger_category"] = max_category
@@ -198,6 +271,23 @@ def run(
             output_handle.close()
             progress.close()
             print_histogram(histogram)
+            if summary_file is not None:
+                write_summary_atomic(
+                    summary_file,
+                    {
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "source": "native",
+                        "model_name": model_name,
+                        "threshold": threshold,
+                        "rows_read": stats["rows_read"],
+                        "messages_scored": stats["messages_scored"],
+                        "messages_flagged": stats["messages_flagged"],
+                        "histogram": histogram_to_dict(histogram),
+                        "per_file": stats["per_file"],
+                        "guard_total_records": None,
+                        "guard_errors": None,
+                    },
+                )
         accelerator.end_training()
 
 
@@ -210,6 +300,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dest_file", type=Path, required=True)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--summary-file",
+        type=Path,
+        help="Optional: write a JSON summary (rows read, messages scored/"
+        "flagged, score histogram, per-source-file counts) here after the "
+        "run, so coverage can be checked without parsing logs.",
+    )
+    parser.add_argument(
+        "--snapshot-manifest",
+        type=Path,
+        help="Optional: verify every input file's size and mtime against "
+        "this manifest.json before scanning -- the same check "
+        "pii_extractor.py runs before trusting a source file.",
+    )
     return parser.parse_args()
 
 
@@ -226,6 +330,10 @@ def main() -> int:
         dest_file=args.dest_file.expanduser().resolve(),
         batch_size=args.batch_size,
         threshold=args.threshold,
+        summary_file=args.summary_file.expanduser().resolve() if args.summary_file else None,
+        snapshot_manifest=(
+            args.snapshot_manifest.expanduser().resolve() if args.snapshot_manifest else None
+        ),
     )
     return 0
 

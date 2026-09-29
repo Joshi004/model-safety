@@ -19,6 +19,11 @@ and can write the deduplicated dataset.
   assistant message, so equal prompts with different generated answers are
   duplicates. Plain `text` records use the complete value.
 - `--text-scope all` hashes every chat message instead.
+- `--exclude-system` (env `DEDUP_EXCLUDE_SYSTEM=1`) drops every `system`-role
+  message before `--text-scope` is applied. Off by default. System messages
+  usually carry tool/function definitions rather than conversation content;
+  comparing them can make unrelated rows that happen to share a similar tool
+  schema look more similar than they actually are.
 - Text is lowercased, punctuation is removed, and whitespace is collapsed
   before character n-grams are generated.
 - The default n-gram width is 60 characters, matching the intended source
@@ -55,6 +60,35 @@ sbatch launchers/slurm/run_dedup_scan.sbatch
 
 An existing non-empty run directory is rejected. Set `DEDUP_OVERWRITE=1` only
 when intentionally replacing that run.
+
+## Tool-team wrapper
+
+`scripts/tool_team_dedup_scan.sh` wraps the global-mode launcher above for
+the tool team's converted data (`output/tool_team_converted`), the same
+input the PII and toxicity wrappers already use. It's interactive when run
+with no arguments, and fully scriptable otherwise:
+
+```bash
+./scripts/tool_team_dedup_scan.sh pilot                       # ~50 files, first
+./scripts/tool_team_dedup_scan.sh full --partition toolCall   # every file, one job
+./scripts/tool_team_dedup_scan.sh report --run-dir output/tool_team_dedup_pilot
+```
+
+Two defaults differ from the launcher above, on purpose:
+
+- **`--exclude-system` defaults to on** in this wrapper (the launcher and
+  `run.py` still default it off). This data is tool-calling traces with a
+  system prompt full of tool/function definitions; see the "Worth knowing"
+  notes in this repo's data-readiness docs for why that text shouldn't count
+  toward similarity.
+- **Only global mode is exposed.** Cross/decontamination mode isn't offered
+  by the wrapper — call `run.py` directly with `--reference-input` /
+  `--candidate-input` for that, as described below.
+
+`report` reads an existing run's `summary.json` and `dedup_results.jsonl`
+locally (no SLURM job) and adds a breakdown of duplicate rows by sub-dataset
+(e.g. `sft_mix/toolbench_v1`) that the launcher's own output doesn't provide.
+Run `./scripts/tool_team_dedup_scan.sh --help` for the full flag list.
 
 ## Cross-deduplicate one dataset against another
 
@@ -125,6 +159,7 @@ counted in `manifest.json`.
 | `DEDUP_CANDIDATE_ROOT` | empty | Cross mode candidate root |
 | `DEDUP_RUN_DIR` | `tmp/qa_scan_test/dedup_out` | Output root |
 | `DEDUP_TEXT_SCOPE` | `prompt` | `prompt` or `all` |
+| `DEDUP_EXCLUDE_SYSTEM` | `0` | Set to `1` to drop `system`-role messages before comparing |
 | `DEDUP_NGRAM_SIZE` | `60` | Character n-gram width (roughly 8–12 words) |
 | `DEDUP_NUM_PERM` | `256` | MinHash permutations |
 | `DEDUP_BANDS` | `32` | LSH bands |

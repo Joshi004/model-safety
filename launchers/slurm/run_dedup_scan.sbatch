@@ -21,6 +21,7 @@ DEDUP_REFERENCE_ROOT="${DEDUP_REFERENCE_ROOT:-}"
 DEDUP_CANDIDATE_ROOT="${DEDUP_CANDIDATE_ROOT:-}"
 DEDUP_RUN_DIR="${DEDUP_RUN_DIR:-${REPO}/tmp/qa_scan_test/dedup_out}"
 DEDUP_TEXT_SCOPE="${DEDUP_TEXT_SCOPE:-prompt}"
+DEDUP_EXCLUDE_SYSTEM="${DEDUP_EXCLUDE_SYSTEM:-0}"
 DEDUP_NGRAM_SIZE="${DEDUP_NGRAM_SIZE:-60}"
 DEDUP_NUM_PERM="${DEDUP_NUM_PERM:-256}"
 DEDUP_BANDS="${DEDUP_BANDS:-32}"
@@ -63,6 +64,9 @@ args=(
   --chunksize "${DEDUP_CHUNKSIZE}"
   --report-text-chars "${DEDUP_REPORT_TEXT_CHARS}"
 )
+if [[ "${DEDUP_EXCLUDE_SYSTEM}" == "1" ]]; then
+  args+=(--exclude-system)
+fi
 
 if [[ -n "${DEDUP_REFERENCE_ROOT}" || -n "${DEDUP_CANDIDATE_ROOT}" ]]; then
   if [[ -z "${DEDUP_REFERENCE_ROOT}" || -z "${DEDUP_CANDIDATE_ROOT}" ]]; then
@@ -105,6 +109,7 @@ echo "Reference:     ${DEDUP_REFERENCE_ROOT:-none}"
 echo "Candidate:     ${DEDUP_CANDIDATE_ROOT:-none}"
 echo "Run dir:       ${DEDUP_RUN_DIR}"
 echo "Text scope:    ${DEDUP_TEXT_SCOPE}"
+echo "Exclude system: ${DEDUP_EXCLUDE_SYSTEM}"
 echo "N-gram size:   ${DEDUP_NGRAM_SIZE}"
 echo "LSH shape:     ${DEDUP_BANDS} x ${DEDUP_ROWS_PER_BAND}"
 echo "Workers:       ${DEDUP_WORKERS}"

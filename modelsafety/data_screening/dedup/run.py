@@ -54,12 +54,19 @@ def content_text(content: Any) -> str:
     return "\n".join(parts)
 
 
-def extract_text(record: dict[str, Any], text_scope: str) -> str:
+def extract_text(record: dict[str, Any], text_scope: str, exclude_system: bool = False) -> str:
     """Extract the content used for deduplication.
 
     ``prompt`` follows the intent of the source implementation: when the final
     message is an assistant response, it is excluded so repeated prompts with
     different generated answers still deduplicate.
+
+    ``exclude_system`` drops every ``system``-role message before that rule is
+    applied. System messages typically carry tool/function definitions rather
+    than conversation content, and comparing them can make otherwise-unrelated
+    rows look similar just because they share the same (or a similarly shaped)
+    tool schema. Off by default: existing runs are unaffected unless this is
+    explicitly requested.
     """
     text = record.get("text")
     if isinstance(text, str):
@@ -69,6 +76,10 @@ def extract_text(record: dict[str, Any], text_scope: str) -> str:
     if not isinstance(messages, list):
         return ""
     usable = [message for message in messages if isinstance(message, dict)]
+    if exclude_system:
+        usable = [
+            message for message in usable if str(message.get("role") or "").lower() != "system"
+        ]
     if text_scope == "prompt" and len(usable) > 1:
         last_role = str(usable[-1].get("role") or "").lower()
         if last_role == "assistant":
@@ -188,6 +199,7 @@ def iter_candidates(
     text_scope: str,
     stats: ScanStats,
     dataset: str = "input",
+    exclude_system: bool = False,
 ) -> Iterator[Candidate]:
     order = 0
     for path in files:
@@ -204,7 +216,7 @@ def iter_candidates(
                     raise ValueError(f"Malformed JSON at {path}:{source_line}") from exc
                 if not isinstance(record, dict):
                     raise ValueError(f"Expected a JSON object at {path}:{source_line}")
-                text = extract_text(record, text_scope)
+                text = extract_text(record, text_scope, exclude_system)
                 if not normalize_text(text):
                     stats.rows_without_text += 1
                     continue
@@ -269,6 +281,7 @@ def detect_duplicates(
     pairs_file: Path,
     *,
     text_scope: str,
+    exclude_system: bool,
     width: int,
     num_perm: int,
     bands: int,
@@ -281,7 +294,9 @@ def detect_duplicates(
 
     index = MinHashLSH(num_perm=num_perm, params=(bands, rows))
     components = UnionFind()
-    source = iter_candidates(input_root, files, text_scope, stats)
+    source = iter_candidates(
+        input_root, files, text_scope, stats, exclude_system=exclude_system
+    )
     pairs_file.parent.mkdir(parents=True, exist_ok=True)
 
     with pairs_file.open("w", encoding="utf-8") as pairs_handle:
@@ -353,6 +368,7 @@ def detect_cross_duplicates(
     pairs_file: Path,
     *,
     text_scope: str,
+    exclude_system: bool,
     width: int,
     num_perm: int,
     bands: int,
@@ -376,6 +392,7 @@ def detect_cross_duplicates(
         text_scope,
         reference_stats,
         dataset="reference",
+        exclude_system=exclude_system,
     )
     reference_rows_by_file: Counter[str] = Counter()
     for reference, minhash in hashed_candidates(
@@ -399,6 +416,7 @@ def detect_cross_duplicates(
         text_scope,
         candidate_stats,
         dataset="candidate",
+        exclude_system=exclude_system,
     )
     with pairs_file.open("w", encoding="utf-8") as pairs_handle:
         for candidate, minhash in hashed_candidates(
@@ -528,8 +546,10 @@ def record_identifier(record: dict[str, Any]) -> str:
     return ""
 
 
-def report_text(record: dict[str, Any], text_scope: str, max_chars: int) -> str:
-    text = extract_text(record, text_scope)
+def report_text(
+    record: dict[str, Any], text_scope: str, max_chars: int, exclude_system: bool = False
+) -> str:
+    text = extract_text(record, text_scope, exclude_system)
     if max_chars > 0 and len(text) > max_chars:
         return text[:max_chars] + "…"
     return text
@@ -541,6 +561,7 @@ def write_matched_samples_csv(
     datasets: dict[str, tuple[Path, list[Path]]],
     *,
     text_scope: str,
+    exclude_system: bool,
     max_chars: int,
 ) -> None:
     if max_chars < 0:
@@ -599,14 +620,16 @@ def write_matched_samples_csv(
                     "source_file": decision["source_file"],
                     "source_line": decision["source_line"],
                     "source_id": record_identifier(source_record),
-                    "source_text": report_text(source_record, text_scope, max_chars),
+                    "source_text": report_text(
+                        source_record, text_scope, max_chars, exclude_system
+                    ),
                     "reference_dataset": reference_dataset,
                     "reference_root": str(datasets[reference_dataset][0]),
                     "reference_file": reference["source_file"],
                     "reference_line": reference["source_line"],
                     "reference_id": record_identifier(reference_record),
                     "reference_text": report_text(
-                        reference_record, text_scope, max_chars
+                        reference_record, text_scope, max_chars, exclude_system
                     ),
                     "method": decision["method"],
                 }
@@ -722,6 +745,7 @@ def run(
     output_dir: Path,
     *,
     text_scope: str = "prompt",
+    exclude_system: bool = False,
     width: int = 60,
     num_perm: int = 256,
     bands: int = 32,
@@ -751,6 +775,7 @@ def run(
         files,
         output_dir / "duplicate_pairs.jsonl",
         text_scope=text_scope,
+        exclude_system=exclude_system,
         width=width,
         num_perm=num_perm,
         bands=bands,
@@ -765,6 +790,7 @@ def run(
         decisions,
         {"input": (input_root, files)},
         text_scope=text_scope,
+        exclude_system=exclude_system,
         max_chars=report_text_chars,
     )
 
@@ -789,6 +815,7 @@ def run(
         "filtered_duplicate_rows": filtered_duplicate_rows,
         "configuration": {
             "text_scope": text_scope,
+            "exclude_system": exclude_system,
             "ngram_size": width,
             "num_perm": num_perm,
             "bands": bands,
@@ -816,6 +843,7 @@ def run_cross(
     output_dir: Path,
     *,
     text_scope: str = "prompt",
+    exclude_system: bool = False,
     width: int = 60,
     num_perm: int = 256,
     bands: int = 32,
@@ -855,6 +883,7 @@ def run_cross(
         candidate_files,
         output_dir / "duplicate_pairs.jsonl",
         text_scope=text_scope,
+        exclude_system=exclude_system,
         width=width,
         num_perm=num_perm,
         bands=bands,
@@ -873,6 +902,7 @@ def run_cross(
             "candidate": (candidate_root, candidate_files),
         },
         text_scope=text_scope,
+        exclude_system=exclude_system,
         max_chars=report_text_chars,
     )
     contamination_summary = write_contamination_by_benchmark_csv(
@@ -915,6 +945,7 @@ def run_cross(
         "output_dir": str(output_dir),
         "configuration": {
             "text_scope": text_scope,
+            "exclude_system": exclude_system,
             "ngram_size": width,
             "num_perm": num_perm,
             "bands": bands,
@@ -951,6 +982,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--text-scope", choices=["prompt", "all"], default="prompt")
+    parser.add_argument(
+        "--exclude-system",
+        action="store_true",
+        help="Drop system-role messages before comparing (default: keep them)",
+    )
     parser.add_argument("--ngram-size", type=int, default=60)
     parser.add_argument("--num-perm", type=int, default=256)
     parser.add_argument("--bands", type=int, default=32)
@@ -974,6 +1010,7 @@ def main() -> int:
         cross_requested = args.reference_input is not None or args.candidate_input is not None
         common = {
             "text_scope": args.text_scope,
+            "exclude_system": args.exclude_system,
             "width": args.ngram_size,
             "num_perm": args.num_perm,
             "bands": args.bands,

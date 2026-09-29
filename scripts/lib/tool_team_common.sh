@@ -1,6 +1,7 @@
 #!/bin/bash
 # Shared interactive/config helpers for scripts/tool_team_data.sh,
-# scripts/tool_team_ner_scan.sh, and scripts/tool_team_toxicity_scan.sh.
+# scripts/tool_team_ner_scan.sh, scripts/tool_team_toxicity_scan.sh,
+# scripts/tool_team_dedup_scan.sh, and scripts/tool_team_regurgitation.sh.
 # Meant to be sourced, not executed:
 #   source "${SCRIPT_DIR}/lib/tool_team_common.sh"
 # The sourcing script is expected to already have `set -euo pipefail` active.

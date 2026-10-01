@@ -119,6 +119,36 @@ next to the code that loads it rather than moved to `configs/`.
 |---|---|
 | `pii_regurgitation_check.py` | `pii_scan/pii_regurgitation_check.py` |
 
+One change beyond the import rewrite: `csv.field_size_limit(sys.maxsize)`
+right after the imports. Without it, a full run stops in `load_rows()` with
+`_csv.Error: field larger than field limit (131072)`, because 26 of the
+30,437 rows in the tool team's probe input have a "whole line" value over
+that size (up to ~437k characters). A 200-row pilot never sampled one.
+
+## serving/
+
+Unlike every other section in this file, `modelsafety/serving/` is not a copy
+from medpsy -- `serve.py` and `vllm_config.py` are new code, written for
+this repo. `serve.py` does, however, adapt several specific patterns (not
+code) from a different, non-medpsy codebase: the tool team's own vLLM
+evaluation harness, `qvac-research-tool-call/evaluation/src/qvac_eval/`
+(`serving.py` and `environment.py`). Each is called out in a comment at its
+use site in `serve.py`; listed together here for anyone auditing where this
+module's ideas came from:
+
+| Idea in `modelsafety/serving/serve.py` | Adapted from (`qvac_eval/`) |
+|---|---|
+| Per-job port block (`base_port_for_job`, `claim_ports`) so two jobs sharing a node never reach for the same port | `serving.py`'s `_pick_port()` |
+| Checking `/v1/models` for *our* served name, not just that the port answers -- catches two servers silently sharing one port via `SO_REUSEPORT` | `serving.py`'s `VLLMServer._await_ready()` / `_served_model_ids()` |
+| `visible_gpu_ids()`: `CUDA_VISIBLE_DEVICES` if set, else Slurm's own GPU count, else `nvidia-smi` | `serving.py`'s `visible_gpus()` / `_gpu_count()` |
+| A single replica using the whole allocation inherits `CUDA_VISIBLE_DEVICES` as-is rather than restating it | `serving.py`'s `VLLMServer.start()` |
+| Signalling the vLLM process's whole process group, not just its pid, on shutdown -- vLLM 0.19 forks EngineCore workers that outlive a plain `SIGTERM` | `serving.py`'s `_signal_group()` |
+| Moving flashinfer's JIT cache to `/tmp` -- its default under `$HOME` hits an NFS file-lock error on some nodes that silently breaks the first real request | `environment.py`'s `_pin_flashinfer_cache()` |
+
+`vllm_config.py` moved here unchanged (byte-for-byte) from
+`model_screening/targets/vllm_config.py`. It was already new code written
+for this repo before that move, not a medpsy copy.
+
 ## launchers/slurm/
 
 | This repo | Source |

@@ -30,6 +30,13 @@ from urllib.parse import urlparse, urlunparse
 
 from modelsafety.contract.textract import extract_content_text, parse_record_text
 
+# The "whole line" column can hold a very long line (some rows are 400k+
+# characters). Python's csv module refuses any field over 131072 characters by
+# default, which stopped a full run at load_rows() with "field larger than
+# field limit". Long contexts are cut later by --max-context-chars, so raise
+# the reader's limit and keep every row.
+csv.field_size_limit(sys.maxsize)
+
 try:
     from tqdm import tqdm
 except ModuleNotFoundError:

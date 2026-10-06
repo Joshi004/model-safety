@@ -514,6 +514,15 @@ side by side). It also writes a de-duplicated copy of your data into
 `<DEDUP_RUN_DIR>/filtered/` if you want to use it directly — this is a
 **new copy**, your original files are untouched.
 
+**For the tool team's converted data specifically**, there's an interactive
+wrapper the same shape as the PII and toxicity ones:
+`./scripts/tool_team_dedup_scan.sh pilot` (try first) or `full`, then
+`./scripts/tool_team_dedup_scan.sh report` to read the results. It also
+turns on `--exclude-system` by default, since this data's system prompts are
+tool definitions, not conversation — see
+[`docs/data-screening/dedup.md`](docs/data-screening/dedup.md) for why that
+matters and what else the wrapper changes from the defaults above.
+
 ## 8. The toxicity scanner (needs more setup first)
 
 This one checks for unsafe/harmful content. It's split into two stages, and
@@ -655,6 +664,7 @@ running AI model server:
 | `DEDUP_INPUT_ROOT` | Folder to search for `.jsonl` files | `tmp/qa_scan_test/input` under the repo |
 | `DEDUP_RUN_DIR` | Where to write results | `tmp/qa_scan_test/dedup_out` under the repo |
 | `DEDUP_TEXT_SCOPE` | `prompt` = ignore the AI's final answer and only compare the question/setup; `all` = compare everything | `prompt` |
+| `DEDUP_EXCLUDE_SYSTEM` | Set to `1` to also drop system-prompt / tool-definition text before comparing, on top of whatever `DEDUP_TEXT_SCOPE` already excludes | `0` (keep system prompt) |
 | `DEDUP_WORKERS` | How many files to check in parallel | 16 |
 | `DEDUP_WRITE_FILTERED` | Whether to write out a clean, de-duplicated copy of the data | `1` (yes) |
 | `DEDUP_REFERENCE_ROOT` / `DEDUP_CANDIDATE_ROOT` | Set both together instead of `DEDUP_INPUT_ROOT` if you want to check one dataset against a *different* dataset (e.g. "does our training data overlap with this benchmark?") | not set |

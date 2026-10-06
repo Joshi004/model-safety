@@ -9,6 +9,7 @@ directories, matching the layout expected by ``run_with_slurm.sh``:
         ...
 """
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -24,7 +25,7 @@ def write_chunked_output(
     rows_per_file: int,
     dir_prefix: str = "chunk-",
     file_prefix: str = "data",
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     """Write records into JSONL files distributed round-robin across chunks.
 
     Parameters
@@ -45,13 +46,17 @@ def write_chunked_output(
     Returns
     -------
     dict
-        ``{"files": int, "rows_on_disk": int, "bytes_on_disk": int}`` counted
-        directly from the files this call wrote -- not a directory glob, so a
-        rerun into a non-empty output directory can't inflate the counts.
+        ``{"files": int, "rows_on_disk": int, "bytes_on_disk": int,
+        "files_written": list}`` counted directly from the files this call
+        wrote -- not a directory glob, so a rerun into a non-empty output
+        directory can't inflate the counts. ``files_written`` has one
+        ``{"path", "rows", "bytes", "sha256"}`` entry per file, in write
+        order, with ``path`` relative to ``output_dir`` and ``sha256`` taken
+        from the exact bytes written.
     """
     if not records:
         log.info("No records to write")
-        return {"files": 0, "rows_on_disk": 0, "bytes_on_disk": 0}
+        return {"files": 0, "rows_on_disk": 0, "bytes_on_disk": 0, "files_written": []}
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -73,17 +78,30 @@ def write_chunked_output(
     chunk_file_counts = [0] * num_chunks
     chunk_row_counts = [0] * num_chunks
     bytes_on_disk = 0
+    written_files: List[Dict[str, Any]] = []
 
     for file_idx, batch in enumerate(file_batches):
         chunk_idx = file_idx % num_chunks
         filename = f"{file_prefix}_{file_idx:06d}.jsonl"
         filepath = chunk_dirs[chunk_idx] / filename
-        with open(filepath, "w", encoding="utf-8") as f:
+        digest = hashlib.sha256()
+        with open(filepath, "wb") as f:
             for rec in batch:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
+                digest.update(line)
+                f.write(line)
+        file_bytes = filepath.stat().st_size
         chunk_file_counts[chunk_idx] += 1
         chunk_row_counts[chunk_idx] += len(batch)
-        bytes_on_disk += filepath.stat().st_size
+        bytes_on_disk += file_bytes
+        written_files.append(
+            {
+                "path": filepath.relative_to(output_path).as_posix(),
+                "rows": len(batch),
+                "bytes": file_bytes,
+                "sha256": digest.hexdigest(),
+            }
+        )
 
     # Summary
     for i, d in enumerate(chunk_dirs):
@@ -98,4 +116,5 @@ def write_chunked_output(
         "files": files_written,
         "rows_on_disk": rows_on_disk,
         "bytes_on_disk": bytes_on_disk,
+        "files_written": written_files,
     }

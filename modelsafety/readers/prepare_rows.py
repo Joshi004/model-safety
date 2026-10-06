@@ -9,6 +9,7 @@ single metadata column.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
@@ -27,6 +28,13 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from chunked_writer import write_chunked_output  # noqa: E402
+from modelsafety.contract.fingerprints import file_sha256  # noqa: E402
+from modelsafety.contract.run_identity import (  # noqa: E402
+    RunIdentityError,
+    check_run_identity,
+    describe_input_files,
+    make_identity,
+)
 from modelsafety.contract.textract import extract_record_text  # noqa: E402
 
 
@@ -70,12 +78,64 @@ def _discover_files(path: Path, pattern: str) -> List[Path]:
     return sorted(path.rglob(pattern)) if path.is_dir() else [path]
 
 
+def _source_file_entry(path: Path, fingerprint: str) -> Dict[str, Any]:
+    """The ``summary.json`` ``source.files`` entry for one original file."""
+    stat = path.stat()
+    modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+    return {
+        "path": str(path.resolve()),
+        "size_bytes": stat.st_size,
+        "modified": modified.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "fingerprint": fingerprint,
+    }
+
+
+def _read_jsonl_file(file_path: Path) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Read one JSONL file: its rows, plus its fingerprint and line counts.
+
+    The file is read as bytes so every line is counted and fingerprinted
+    exactly as it sits on disk. Any line that can't be read stops the run
+    with ``<path>:<line>:`` at the front of the message.
+    """
+    resolved = file_path.resolve()
+    digest = hashlib.sha256()
+    rows: List[Dict[str, Any]] = []
+    lines = 0
+    blank_lines = 0
+
+    with file_path.open("rb") as handle:
+        for raw in handle:
+            digest.update(raw)
+            lines += 1
+            if not raw.strip():
+                blank_lines += 1
+                continue
+            # Decode before json.loads, because json.loads on bytes quietly
+            # accepts a byte order mark and UTF-16/32.
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"{resolved}:{lines}: not valid UTF-8 ({exc})") from exc
+            try:
+                row = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{resolved}:{lines}: not valid JSON ({exc})") from exc
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"{resolved}:{lines}: not a JSON object (found {type(row).__name__})"
+                )
+            rows.append(row)
+
+    entry = _source_file_entry(file_path, digest.hexdigest())
+    entry["lines"] = lines
+    entry["blank_lines"] = blank_lines
+    entry["rows_read"] = len(rows)
+    return rows, entry
+
+
 def _iter_jsonl_files(paths: Iterable[Path]) -> Iterable[Dict[str, Any]]:
     for file_path in paths:
-        with file_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if line.strip():
-                    yield json.loads(line)
+        yield from _read_jsonl_file(file_path)[0]
 
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
@@ -108,8 +168,94 @@ def _arrow_ipc_row_count(dataset_dir: Path) -> int:
     return total
 
 
-def _read_rows(args: argparse.Namespace) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _arrow_data_files(dataset_dir: Path) -> List[Path]:
+    """The ``.arrow`` files a ``save_to_disk()`` folder's own ``state.json`` lists."""
+    state_path = dataset_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    files = []
+    for entry in state["_data_files"]:
+        filename = Path(entry["filename"])
+        if filename.is_absolute() or ".." in filename.parts:
+            raise ValueError(
+                f"{state_path} lists a data file outside its own folder: {entry['filename']}"
+            )
+        files.append(dataset_dir / filename)
+    return files
+
+
+def _discover_input_files(args: argparse.Namespace) -> List[Path]:
+    """The original files ``_read_rows`` will read, found without reading any data.
+
+    A Hugging Face Hub dataset ID has no local files, so it gives an empty list.
+    """
+    input_path = Path(args.input_path)
+
+    if args.input_type == "jsonl":
+        return _discover_files(input_path, "*.jsonl")
+    if args.input_type == "parquet":
+        return _discover_files(input_path, "*.parquet")
+    if args.input_type in ("csv", "json"):
+        return [input_path]
+    if args.input_type != "huggingface":
+        raise ValueError(f"Unsupported input type: {args.input_type}")
+
+    if (input_path / "state.json").exists():
+        return _arrow_data_files(input_path)
+    if (input_path / "dataset_dict.json").exists():
+        dict_info = json.loads((input_path / "dataset_dict.json").read_text(encoding="utf-8"))
+        splits = dict_info.get("splits", [])
+        if args.split not in splits:
+            raise ValueError(
+                f"Split '{args.split}' not found; available splits: {sorted(splits)}"
+            )
+        return _arrow_data_files(input_path / args.split)
+    if input_path.is_dir():
+        return sorted(
+            path
+            for path in input_path.rglob("*")
+            if path.is_file()
+            and not any(part.startswith(".") for part in path.relative_to(input_path).parts)
+        )
+    if input_path.is_file():
+        return [input_path]
+    return []
+
+
+def _run_identity(args: argparse.Namespace, input_files: List[Path]) -> Dict[str, Any]:
+    """What this run is, for ``run_identity.json``.
+
+    Every setting counts except ``--output-dir`` (where the run lives) and
+    ``--input-path`` (recorded as ``input_root``, resolved), because a
+    different setting would leave the folder's old files behind.
+    """
+    input_path = Path(args.input_path)
+    settings = {
+        name: value
+        for name, value in vars(args).items()
+        if name not in ("output_dir", "input_path")
+    }
+    if input_path.exists():
+        input_root = str(input_path.resolve())
+        base_dir = input_path if input_path.is_dir() else input_path.parent
+    else:
+        # A Hub dataset ID: recorded as given, with no files.
+        input_root = args.input_path
+        base_dir = input_path
+    return make_identity(
+        tool="prepare_rows",
+        mode=None,
+        settings=settings,
+        input_root=input_root,
+        input_files=describe_input_files(base_dir, input_files),
+    )
+
+
+def _read_rows(
+    args: argparse.Namespace, input_files: List[Path]
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Read source rows, plus whatever row count the source gives us for free.
+
+    ``input_files`` is what ``_discover_input_files`` found.
 
     Returns ``(rows, source_info)``. ``source_info["expected_rows"]`` is an
     independent row count read from source metadata (a parquet footer, or a
@@ -122,11 +268,19 @@ def _read_rows(args: argparse.Namespace) -> tuple[List[Dict[str, Any]], Dict[str
     expected_rows: Optional[int] = None
     expected_rows_from = "unavailable"
     files_discovered: Optional[int] = None
+    source_files: List[Dict[str, Any]] = []
+
+    if args.input_type != "jsonl":
+        # JSONL files are fingerprinted while they are read, below.
+        source_files = [_source_file_entry(path, file_sha256(path)) for path in input_files]
 
     if args.input_type == "jsonl":
-        jsonl_files = _discover_files(input_path, "*.jsonl")
-        files_discovered = len(jsonl_files)
-        rows = list(_iter_jsonl_files(jsonl_files))
+        files_discovered = len(input_files)
+        rows = []
+        for file_path in input_files:
+            file_rows, file_entry = _read_jsonl_file(file_path)
+            rows.extend(file_rows)
+            source_files.append(file_entry)
         expected_rows_from = "unavailable: jsonl has no free row count"
     elif args.input_type == "json":
         with input_path.open("r", encoding="utf-8") as handle:
@@ -137,12 +291,11 @@ def _read_rows(args: argparse.Namespace) -> tuple[List[Dict[str, Any]], Dict[str
         rows = pd.read_csv(input_path).to_dict("records")
         expected_rows_from = "unavailable: csv has no free row count"
     elif args.input_type == "parquet":
-        parquet_files = _discover_files(input_path, "*.parquet")
-        files_discovered = len(parquet_files)
+        files_discovered = len(input_files)
         try:
             import pyarrow.parquet as pq
 
-            expected_rows = sum(pq.ParquetFile(f).metadata.num_rows for f in parquet_files)
+            expected_rows = sum(pq.ParquetFile(f).metadata.num_rows for f in input_files)
             expected_rows_from = "parquet file footers"
         except Exception as exc:  # best-effort -- never block a real conversion on this
             expected_rows_from = f"unavailable: parquet footer read failed ({exc})"
@@ -210,6 +363,7 @@ def _read_rows(args: argparse.Namespace) -> tuple[List[Dict[str, Any]], Dict[str
         "expected_rows": expected_rows,
         "expected_rows_from": expected_rows_from,
         "files_discovered": files_discovered,
+        "files": source_files,
     }
     return rows, source_info
 
@@ -270,8 +424,11 @@ def _prepare_row(
 
 def prepare_rows(
     args: argparse.Namespace,
+    input_files: List[Path],
 ) -> tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
     """Return ``(prepared_rows, source_info, rows_info)``.
+
+    ``input_files`` is what ``_discover_input_files`` found.
 
     ``source_info`` comes straight from ``_read_rows`` (option 1's free
     metadata count, see ``DATA_VALIDATION_OPTIONS.md``). ``rows_info`` adds
@@ -280,7 +437,7 @@ def prepare_rows(
     each skip.
     """
     mapping = _parse_mapping(args.map or [])
-    rows, source_info = _read_rows(args)
+    rows, source_info = _read_rows(args, input_files)
     if args.shuffle:
         random.seed(args.seed)
         random.shuffle(rows)
@@ -406,6 +563,16 @@ def _run_checks(
             f"{written} written + {skipped} skipped"
         )
 
+    for file_info in source_info["files"]:
+        if "lines" not in file_info:
+            continue
+        if file_info["lines"] != file_info["blank_lines"] + file_info["rows_read"]:
+            failures.append(
+                f"Line accounting does not add up for {file_info['path']}: "
+                f"{file_info['lines']} lines != {file_info['blank_lines']} blank + "
+                f"{file_info['rows_read']} rows read"
+            )
+
     rows_on_disk = output_info["rows_on_disk"]
     if rows_on_disk != written:
         failures.append(
@@ -443,15 +610,24 @@ def _run_checks(
 
 def main() -> None:
     args = build_parser().parse_args()
+    output_dir = Path(args.output_dir)
+
+    # Before anything is touched: refuse an output folder that holds a
+    # different run, so old and new files never end up side by side.
+    input_files = _discover_input_files(args)
+    try:
+        check_run_identity(output_dir, _run_identity(args, input_files))
+    except RunIdentityError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2)
 
     # Option 3: a stale marker from a previous, possibly-failed run must not
     # be mistaken for this run having succeeded.
-    output_dir = Path(args.output_dir)
     success_marker = output_dir / "_SUCCESS"
     if success_marker.exists():
         success_marker.unlink()
 
-    prepared_rows, source_info, rows_info = prepare_rows(args)
+    prepared_rows, source_info, rows_info = prepare_rows(args, input_files)
     coverage_info = _text_coverage(prepared_rows)
     output_info = write_chunked_output(
         prepared_rows,

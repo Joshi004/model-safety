@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 import detect
 import preview
 import sources
+from reader_imports import json_safe
 
 DEFAULT_SAMPLE_ROWS = 2
 MAX_SAMPLE_ROWS = 200
@@ -124,8 +125,8 @@ def run_preview(body: PreviewRequest) -> dict[str, Any]:
     return {
         "source_info": source_info,
         # The exact rows _prepare_row() receives -- same cleaned sample,
-        # just made JSON-safe for the browser (see preview.to_display).
-        "input_rows": [preview.to_display(row) for row in rows],
+        # just made JSON-safe for the browser (see origin.json_safe).
+        "input_rows": [json_safe(row) for row in rows],
         "suggested_mapping": suggestion,
         "preview": result,
         "command": command,

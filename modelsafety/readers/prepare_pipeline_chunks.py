@@ -30,6 +30,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+# Run as a script, so only this folder is on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from modelsafety.contract.origin import check_first_line  # noqa: E402
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s: %(message)s",
@@ -70,6 +75,8 @@ def collect_sources(input_dir: Path, pattern: str) -> list[SourceSpec]:
     paths = sorted(path for path in input_dir.glob(pattern) if path.is_file())
     if not paths:
         raise SystemExit(f"No files matching {pattern!r} found in {input_dir}")
+    for path in paths:
+        check_first_line(path)
 
     specs = []
     for index, path in enumerate(paths):

@@ -16,12 +16,18 @@ import os
 import re
 import shutil
 import string
+import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from datasketch import MinHash, MinHashLSH
+
+# Run as a script from this folder, so the repo root isn't on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from modelsafety.contract.origin import check_first_line, check_line  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -123,6 +129,11 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
     return True
 
 
+def _refuse_skipped_entries(files: list[Path]) -> None:
+    for path in files:
+        check_first_line(path)
+
+
 def resolve_inputs(
     input_path: Path | None,
     input_root: Path | None,
@@ -157,6 +168,7 @@ def resolve_inputs(
             seen.add(candidate)
         if not files:
             raise ValueError(f"Manifest has no JSONL inputs: {manifest}")
+        _refuse_skipped_entries(files)
         return root, files
 
     if input_path is None:
@@ -165,12 +177,14 @@ def resolve_inputs(
     if resolved.is_file():
         if resolved.suffix != ".jsonl":
             raise ValueError(f"Input file must be JSONL: {resolved}")
+        _refuse_skipped_entries([resolved])
         return resolved.parent, [resolved]
     if not resolved.is_dir():
         raise ValueError(f"Input path does not exist: {resolved}")
     files = sorted(path.resolve() for path in resolved.rglob("*.jsonl") if path.is_file())
     if not files:
         raise ValueError(f"No JSONL files found under: {resolved}")
+    _refuse_skipped_entries(files)
     return resolved, files
 
 
@@ -725,6 +739,7 @@ def write_partition(
             duplicate_path.open("wb") as duplicate_handle,
         ):
             for source_line, raw_line in enumerate(source_handle, 1):
+                check_line(source, source_line, raw_line)
                 key = (relative.as_posix(), source_line)
                 if key in duplicate_keys:
                     duplicate_handle.write(raw_line)

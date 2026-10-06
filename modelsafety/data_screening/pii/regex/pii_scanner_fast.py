@@ -22,6 +22,7 @@ from pii_output import (
     stage1_paths,
     write_stage1_metrics,
 )
+from modelsafety.contract.origin import check_first_line
 from modelsafety.contract.textract import (
     extract_record_text,
     load_source_snapshot,
@@ -207,13 +208,6 @@ def main():
     manifest_path = os.environ.get("PII_INPUT_MANIFEST")
     run_dir = resolve_run_dir()
     paths = stage1_paths(run_dir)
-    paths["stage_dir"].mkdir(parents=True, exist_ok=True)
-    if paths["hits_dir"].exists():
-        shutil.rmtree(paths["hits_dir"])
-    paths["hits_dir"].mkdir(parents=True, exist_ok=True)
-    if paths["workers_dir"].exists():
-        shutil.rmtree(paths["workers_dir"])
-    paths["workers_dir"].mkdir(parents=True, exist_ok=True)
 
     num_workers = int(os.environ.get("PII_NUM_WORKERS", "100"))
 
@@ -231,6 +225,18 @@ def main():
 
     print("Discovering JSONL files...")
     jsonl_files = discover_jsonl_files(base_dir, manifest_path)
+    # Before the folders below are cleared, so a refused run keeps earlier results.
+    for file_path in jsonl_files:
+        check_first_line(file_path)
+
+    paths["stage_dir"].mkdir(parents=True, exist_ok=True)
+    if paths["hits_dir"].exists():
+        shutil.rmtree(paths["hits_dir"])
+    paths["hits_dir"].mkdir(parents=True, exist_ok=True)
+    if paths["workers_dir"].exists():
+        shutil.rmtree(paths["workers_dir"])
+    paths["workers_dir"].mkdir(parents=True, exist_ok=True)
+
     snapshot_path = os.environ.get("PII_SNAPSHOT_MANIFEST")
     snapshots = {}
     if snapshot_path:

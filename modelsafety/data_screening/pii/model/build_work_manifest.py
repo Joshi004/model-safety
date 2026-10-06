@@ -6,11 +6,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from common import WorkUnit, make_unit_id
+# Run as a script from this folder, so the repo root isn't on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+
+from common import WorkUnit, make_unit_id  # noqa: E402
+from modelsafety.contract.origin import check_first_line  # noqa: E402
 
 
 def resolve_sources(input_root: Path, source_manifest: Path | None) -> list[Path]:
@@ -97,6 +102,8 @@ def build_manifest(
         sources = sources[:max_files]
     if not sources:
         raise ValueError("No JSONL sources found")
+    for source in sources:
+        check_first_line(source)
 
     output.mkdir(parents=True, exist_ok=True)
     units_path = output / "work_units.jsonl"

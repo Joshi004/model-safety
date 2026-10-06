@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from modelsafety.contract.origin import check_line
 from modelsafety.contract.textract import load_source_snapshot, verify_source_snapshot
 
 
@@ -215,6 +216,7 @@ def process_source_file(
             rejected_tmp.open("wb")
         ) as rejected_handle:
             for source_line, raw_line in enumerate(input_handle, 1):
+                check_line(source, source_line, raw_line)
                 file_digest.update(raw_line)
                 location = (relative, source_line)
                 pii_items = pii.get(location, [])

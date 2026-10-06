@@ -14,12 +14,12 @@ import json
 import shlex
 from typing import Any
 
-from reader_imports import extract_record_text, prepare_row
+from reader_imports import extract_record_text, json_safe, prepare_row
 
 # -------------------------------------------------------------------------
 # Structure tree -- inferred from sample rows. Not part of the API
 # response (the UI shows the real sample rows directly instead -- see
-# `to_display()` below), but still built internally: `suggest_mapping()`
+# `json_safe()`), but still built internally: `suggest_mapping()`
 # reads this tree, not the raw rows, to decide what to suggest.
 # -------------------------------------------------------------------------
 
@@ -110,32 +110,6 @@ def build_structure_tree(rows: list[dict[str, Any]]) -> dict[str, Any]:
     tree = _finalize_node(root)
     tree["sample_size"] = len(rows)
     return tree
-
-
-# -------------------------------------------------------------------------
-# Display conversion -- makes a real sampled or converted row safe to send
-# to the browser as JSON, without hiding or inventing anything. A plain
-# string/number/bool/null/list/dict passes through completely unchanged.
-# Only a value `json.dumps` itself can't write (a pandas Timestamp, raw
-# bytes, a numpy scalar, inf/-inf) is replaced by a small marker that
-# names the real Python type and shows its real repr() -- the UI then
-# shows that marker instead of a plain-looking value for something that
-# would actually make a real conversion crash.
-# -------------------------------------------------------------------------
-
-NON_JSON_KEY = "__non_json_value__"
-
-
-def to_display(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): to_display(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [to_display(item) for item in value]
-    try:
-        json.dumps(value, allow_nan=False)
-        return value
-    except (TypeError, ValueError):
-        return {NON_JSON_KEY: {"type": type(value).__name__, "repr": repr(value)[:MAX_EXAMPLE_STR_LEN]}}
 
 
 # -------------------------------------------------------------------------
@@ -380,7 +354,7 @@ def preview_rows(
 
         # The write check above ran on the raw `prepared` dict -- exactly
         # what a real run would try to json.dumps(). Only now, once that's
-        # confirmed to succeed, is it converted for display: to_display()
+        # confirmed to succeed, is it converted for display: json_safe()
         # would otherwise quietly mask the very problem the check above is
         # looking for.
         scanned_text = extract_record_text(prepared)
@@ -389,7 +363,7 @@ def preview_rows(
         output_rows.append(
             {
                 "row_index": index,
-                "prepared": to_display(prepared),
+                "prepared": json_safe(prepared),
                 "scanned_text": scanned_text,
                 "scanned_text_length": len(scanned_text),
             }

@@ -6,10 +6,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+
+# Run as a script by the launchers, so only this folder is on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from modelsafety.contract.origin import check_first_line  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -27,6 +33,7 @@ def discover_jsonl(input_root: Path) -> list[SourceFile]:
     for path in root.rglob("*.jsonl"):
         if not path.is_file():
             continue
+        check_first_line(path)
         stat = path.stat()
         digest = hashlib.sha256()
         with path.open("rb") as handle:

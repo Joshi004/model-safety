@@ -7,8 +7,14 @@ import argparse
 import json
 import logging
 import shutil
+import sys
 from pathlib import Path
 from typing import Iterable
+
+# Run as a script, so only this folder is on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from modelsafety.contract.origin import check_first_line  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +35,8 @@ def collect_input_files(input_dir: Path, pattern: str) -> list[Path]:
     files = sorted(path for path in input_dir.glob(pattern) if path.is_file())
     if not files:
         raise SystemExit(f"No files matching {pattern!r} found in {input_dir}")
+    for path in files:
+        check_first_line(path)
     return files
 
 

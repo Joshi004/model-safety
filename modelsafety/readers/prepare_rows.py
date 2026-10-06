@@ -28,7 +28,13 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from chunked_writer import write_chunked_output  # noqa: E402
-from modelsafety.contract.fingerprints import file_sha256  # noqa: E402
+from modelsafety.contract.fingerprints import (  # noqa: E402
+    FINGERPRINT_RECIPE_VERSION,
+    file_sha256,
+    line_fingerprint,
+    row_fingerprint,
+)
+from modelsafety.contract.origin import ORIGIN_KEY, json_safe  # noqa: E402
 from modelsafety.contract.run_identity import (  # noqa: E402
     RunIdentityError,
     check_run_identity,
@@ -39,6 +45,11 @@ from modelsafety.contract.textract import extract_record_text  # noqa: E402
 
 
 SUPPORTED_INPUT_TYPES = ("jsonl", "json", "csv", "parquet", "huggingface")
+SKIPPED_ROWS_FILENAME = "skipped_rows.ndjson"
+
+# One original row: its ``_origin`` note, the row itself, and the
+# ``source.files`` entry it counts towards (None when no per-file counts exist).
+_SourceRow = tuple[Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]]]
 
 
 def _parse_mapping(values: List[str]) -> Dict[str, str]:
@@ -90,23 +101,36 @@ def _source_file_entry(path: Path, fingerprint: str) -> Dict[str, Any]:
     }
 
 
-def _read_jsonl_file(file_path: Path) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Read one JSONL file: its rows, plus its fingerprint and line counts.
+def _start_counts(file_entry: Dict[str, Any]) -> None:
+    """Add the per-file counters that ``prepare_rows()`` fills in."""
+    file_entry["rows_written"] = 0
+    file_entry["rows_skipped"] = 0
+    file_entry["rows_left_out"] = 0
+
+
+def _read_jsonl_file(
+    file_path: Path,
+) -> tuple[List[tuple[Dict[str, Any], Dict[str, Any]]], Dict[str, Any]]:
+    """Read one JSONL file: ``(origin, row)`` pairs, plus its fingerprint and line counts.
 
     The file is read as bytes so every line is counted and fingerprinted
-    exactly as it sits on disk. Any line that can't be read stops the run
-    with ``<path>:<line>:`` at the front of the message.
+    exactly as it sits on disk, and so each row's ``_origin`` can say where
+    its line starts. Any line that can't be read stops the run with
+    ``<path>:<line>:`` at the front of the message.
     """
     resolved = file_path.resolve()
     digest = hashlib.sha256()
-    rows: List[Dict[str, Any]] = []
+    pairs: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
     lines = 0
     blank_lines = 0
+    next_byte = 0
 
     with file_path.open("rb") as handle:
         for raw in handle:
             digest.update(raw)
             lines += 1
+            line_start = next_byte
+            next_byte += len(raw)
             if not raw.strip():
                 blank_lines += 1
                 continue
@@ -124,38 +148,48 @@ def _read_jsonl_file(file_path: Path) -> tuple[List[Dict[str, Any]], Dict[str, A
                 raise ValueError(
                     f"{resolved}:{lines}: not a JSON object (found {type(row).__name__})"
                 )
-            rows.append(row)
+            origin = {
+                "path": str(resolved),
+                "line": lines,
+                "byte": line_start,
+                "fingerprint": line_fingerprint(raw),
+                "v": FINGERPRINT_RECIPE_VERSION,
+            }
+            pairs.append((origin, row))
 
     entry = _source_file_entry(file_path, digest.hexdigest())
     entry["lines"] = lines
     entry["blank_lines"] = blank_lines
-    entry["rows_read"] = len(rows)
-    return rows, entry
+    entry["rows_read"] = len(pairs)
+    _start_counts(entry)
+    return pairs, entry
 
 
 def _iter_jsonl_files(paths: Iterable[Path]) -> Iterable[Dict[str, Any]]:
     for file_path in paths:
-        yield from _read_jsonl_file(file_path)[0]
+        for _origin, row in _read_jsonl_file(file_path)[0]:
+            yield row
 
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
     return _iter_jsonl_files(_discover_files(path, "*.jsonl"))
 
 
-def _arrow_ipc_row_count(dataset_dir: Path) -> int:
-    """Independently count rows in a ``Dataset.save_to_disk()`` folder.
+def _arrow_file_row_counts(dataset_dir: Path) -> List[int]:
+    """Independently count the rows in each file of a ``Dataset.save_to_disk()`` folder.
 
     Reads the exact ``.arrow`` file(s) ``load_from_disk()`` would use --
-    listed in the folder's own ``state.json`` -- through ``pyarrow.ipc``
-    instead of the ``datasets`` library. This is a second, independent
-    reader of the same data, the same role the parquet footer check above
-    plays for parquet input: it can catch a problem in how ``datasets``
-    loaded the rows, which comparing a count against itself cannot.
+    listed in the folder's own ``state.json``, and returned in that order --
+    through ``pyarrow.ipc`` instead of the ``datasets`` library. This is a
+    second, independent reader of the same data, the same role the parquet
+    footer check above plays for parquet input: it can catch a problem in
+    how ``datasets`` loaded the rows, which comparing a count against itself
+    cannot.
     """
     import pyarrow as pa
 
     state = json.loads((dataset_dir / "state.json").read_text(encoding="utf-8"))
-    total = 0
+    counts = []
     for entry in state["_data_files"]:
         file_path = dataset_dir / entry["filename"]
         with pa.memory_map(str(file_path), "rb") as source:
@@ -164,8 +198,42 @@ def _arrow_ipc_row_count(dataset_dir: Path) -> int:
             except pa.ArrowInvalid:
                 source.seek(0)
                 reader = pa.ipc.open_file(source)
-            total += reader.read_all().num_rows
-    return total
+            counts.append(reader.read_all().num_rows)
+    return counts
+
+
+def _arrow_ipc_row_count(dataset_dir: Path) -> int:
+    """Total rows in a ``Dataset.save_to_disk()`` folder, counted independently."""
+    return sum(_arrow_file_row_counts(dataset_dir))
+
+
+def _arrow_items(
+    root: Path,
+    split: Optional[str],
+    rows: List[Dict[str, Any]],
+    source_files: List[Dict[str, Any]],
+    file_row_counts: Optional[List[int]],
+) -> List[_SourceRow]:
+    """``(origin, row, file_entry)`` for every row loaded from a ``save_to_disk`` folder.
+
+    ``datasets`` loads the folder's files one after the other, so each row
+    belongs to the file whose row range it falls in. That needs the per-file
+    counts to add up to the rows loaded. If they weren't readable or don't,
+    no row is assigned to a file, and the whole-split check in
+    ``_run_checks`` reports the difference instead.
+    """
+    path = str(root.resolve())
+    file_entries: List[Optional[Dict[str, Any]]] = [None] * len(rows)
+    if file_row_counts is not None and sum(file_row_counts) == len(rows):
+        file_entries = []
+        for file_entry, count in zip(source_files, file_row_counts):
+            file_entry["rows_in_footer"] = count
+            _start_counts(file_entry)
+            file_entries.extend([file_entry] * count)
+    return [
+        ({"path": path, "split": split, "row": index}, row, file_entry)
+        for index, (row, file_entry) in enumerate(zip(rows, file_entries))
+    ]
 
 
 def _arrow_data_files(dataset_dir: Path) -> List[Path]:
@@ -250,14 +318,28 @@ def _run_identity(args: argparse.Namespace, input_files: List[Path]) -> Dict[str
     )
 
 
+def _numbered_items(
+    file_path: Path, rows: List[Dict[str, Any]], file_entry: Dict[str, Any]
+) -> List[_SourceRow]:
+    """``(origin, row, file_entry)`` for the rows of one file, numbered from 0."""
+    path = str(file_path.resolve())
+    _start_counts(file_entry)
+    return [({"path": path, "row": index}, row, file_entry) for index, row in enumerate(rows)]
+
+
 def _read_rows(
     args: argparse.Namespace, input_files: List[Path]
-) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+) -> tuple[List[_SourceRow], Dict[str, Any]]:
     """Read source rows, plus whatever row count the source gives us for free.
 
     ``input_files`` is what ``_discover_input_files`` found.
 
-    Returns ``(rows, source_info)``. ``source_info["expected_rows"]`` is an
+    Returns ``(items, source_info)``. ``items`` has one ``(origin, row,
+    file_entry)`` per row, in the original order: files in the order found,
+    rows in the order the reader gives them. ``origin`` is the row's
+    ``_origin`` note.
+
+    ``source_info["expected_rows"]`` is an
     independent row count read from source metadata (a parquet footer, or a
     HuggingFace dataset's own ``num_rows``) when one exists at no extra I/O
     cost, and ``None`` otherwise -- getting an independent count for jsonl,
@@ -274,32 +356,43 @@ def _read_rows(
         # JSONL files are fingerprinted while they are read, below.
         source_files = [_source_file_entry(path, file_sha256(path)) for path in input_files]
 
+    items: List[_SourceRow] = []
+
     if args.input_type == "jsonl":
         files_discovered = len(input_files)
-        rows = []
         for file_path in input_files:
-            file_rows, file_entry = _read_jsonl_file(file_path)
-            rows.extend(file_rows)
+            pairs, file_entry = _read_jsonl_file(file_path)
+            items.extend((origin, row, file_entry) for origin, row in pairs)
             source_files.append(file_entry)
         expected_rows_from = "unavailable: jsonl has no free row count"
     elif args.input_type == "json":
         with input_path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
         rows = data if isinstance(data, list) else [data]
+        source_files[0]["rows_read"] = len(rows)
+        items = _numbered_items(input_path, rows, source_files[0])
         expected_rows_from = "unavailable: json has no free row count"
     elif args.input_type == "csv":
         rows = pd.read_csv(input_path).to_dict("records")
+        source_files[0]["rows_read"] = len(rows)
+        items = _numbered_items(input_path, rows, source_files[0])
         expected_rows_from = "unavailable: csv has no free row count"
     elif args.input_type == "parquet":
-        files_discovered = len(input_files)
-        try:
-            import pyarrow.parquet as pq
+        import pyarrow.parquet as pq
 
-            expected_rows = sum(pq.ParquetFile(f).metadata.num_rows for f in input_files)
-            expected_rows_from = "parquet file footers"
-        except Exception as exc:  # best-effort -- never block a real conversion on this
-            expected_rows_from = f"unavailable: parquet footer read failed ({exc})"
-        rows = pd.read_parquet(input_path).to_dict("records")
+        files_discovered = len(input_files)
+        expected_rows = 0
+        # One file at a time, one row group at a time, so every row knows its
+        # file and a later lookup can read just the one row group.
+        for file_path, file_entry in zip(input_files, source_files):
+            parquet_file = pq.ParquetFile(file_path)
+            file_rows: List[Dict[str, Any]] = []
+            for group in range(parquet_file.num_row_groups):
+                file_rows.extend(parquet_file.read_row_group(group).to_pandas().to_dict("records"))
+            file_entry["rows_in_footer"] = parquet_file.metadata.num_rows
+            expected_rows += parquet_file.metadata.num_rows
+            items.extend(_numbered_items(file_path, file_rows, file_entry))
+        expected_rows_from = "parquet file footers"
     elif args.input_type == "huggingface":
         if (input_path / "state.json").exists():
             # A single Dataset saved with Dataset.save_to_disk() -- load_dataset()
@@ -309,14 +402,17 @@ def _read_rows(
 
             dataset = load_from_disk(str(input_path))
             rows = list(dataset)
+            file_row_counts: Optional[List[int]] = None
             try:
-                expected_rows = _arrow_ipc_row_count(input_path)
+                file_row_counts = _arrow_file_row_counts(input_path)
+                expected_rows = sum(file_row_counts)
                 expected_rows_from = "arrow ipc row count"
             except Exception as exc:  # best-effort -- never block a real conversion on this
                 expected_rows = dataset.num_rows
                 expected_rows_from = (
                     f"huggingface dataset num_rows (arrow ipc read failed: {exc})"
                 )
+            items = _arrow_items(input_path, None, rows, source_files, file_row_counts)
         elif (input_path / "dataset_dict.json").exists():
             # A DatasetDict saved with DatasetDict.save_to_disk() -- same idea,
             # but we also need to pick the requested split out of the dict.
@@ -329,16 +425,19 @@ def _read_rows(
                 )
             dataset = ds_dict[args.split]
             rows = list(dataset)
+            file_row_counts = None
             try:
                 # Each split of a saved DatasetDict is itself a save_to_disk
                 # folder, at <root>/<split>/, with its own state.json.
-                expected_rows = _arrow_ipc_row_count(input_path / args.split)
+                file_row_counts = _arrow_file_row_counts(input_path / args.split)
+                expected_rows = sum(file_row_counts)
                 expected_rows_from = "arrow ipc row count"
             except Exception as exc:  # best-effort -- never block a real conversion on this
                 expected_rows = dataset.num_rows
                 expected_rows_from = (
                     f"huggingface dataset num_rows (arrow ipc read failed: {exc})"
                 )
+            items = _arrow_items(input_path, args.split, rows, source_files, file_row_counts)
         else:
             # Not a save_to_disk folder -- a Hugging Face Hub dataset ID, or a
             # local folder of raw data files a builder can auto-detect.
@@ -351,21 +450,42 @@ def _read_rows(
             expected_rows = dataset.num_rows
             expected_rows_from = "huggingface dataset num_rows"
             rows = list(dataset)
+            # A Hub ID is recorded as given; a local folder by its full path.
+            path = str(input_path.resolve()) if input_path.exists() else args.input_path
+            origin_start: Dict[str, Any] = {"path": path}
+            if args.hf_config:
+                origin_start["config"] = args.hf_config
+            origin_start["split"] = args.split
+            # No per-file counts here: there's no way to tell which file of a
+            # builder-loaded dataset a row came from.
+            items = [({**origin_start, "row": index}, row, None) for index, row in enumerate(rows)]
     else:
         raise ValueError(f"Unsupported input type: {args.input_type}")
 
     if args.max_rows is not None:
-        rows = rows[: args.max_rows]
-    rows = [_clean_value(row) for row in rows]
+        for _origin, _row, file_entry in items[args.max_rows :]:
+            if file_entry is not None:
+                file_entry["rows_left_out"] += 1
+        items = items[: args.max_rows]
+
+    # A JSONL origin already carries the fingerprint of its raw line. Every
+    # other format is fingerprinted on the row as cleaned here, which is
+    # what a later lookup can reproduce.
+    for index, (origin, row, file_entry) in enumerate(items):
+        row = _clean_value(row)
+        if "fingerprint" not in origin:
+            origin["fingerprint"] = row_fingerprint(row)
+            origin["v"] = FINGERPRINT_RECIPE_VERSION
+        items[index] = (origin, row, file_entry)
 
     source_info = {
-        "rows_read": len(rows),
+        "rows_read": len(items),
         "expected_rows": expected_rows,
         "expected_rows_from": expected_rows_from,
         "files_discovered": files_discovered,
         "files": source_files,
     }
-    return rows, source_info
+    return items, source_info
 
 
 def _is_present(value: Any) -> bool:
@@ -422,31 +542,90 @@ def _prepare_row(
     return prepared, None
 
 
+def _origin_location(origin: Dict[str, Any]) -> str:
+    if "line" in origin:
+        return f"{origin['path']}:{origin['line']}"
+    return f"{origin['path']} row {origin['row']}"
+
+
+def _refuse_existing_origin(
+    row: Dict[str, Any], origin: Dict[str, Any], metadata_column: str
+) -> None:
+    """Stop if the row already has the ``_origin`` name this step adds itself.
+
+    That also happens when the input is data this step already prepared.
+    """
+    if not isinstance(row, dict):
+        return
+    existing_metadata = row.get(metadata_column)
+    if ORIGIN_KEY in row:
+        where = "a top-level column"
+    elif isinstance(existing_metadata, dict) and ORIGIN_KEY in existing_metadata:
+        where = f"a key inside its '{metadata_column}' column"
+    else:
+        return
+    raise ValueError(
+        f"{_origin_location(origin)}: the row already has '{ORIGIN_KEY}' as {where}. "
+        f"The preparing step adds its own '{ORIGIN_KEY}' note to every row, so it "
+        "can't read rows that already have one (for example, rows it prepared earlier)."
+    )
+
+
+def _skipped_entry(
+    origin: Dict[str, Any],
+    row: Dict[str, Any],
+    target: str,
+    mapping: Dict[str, str],
+) -> Dict[str, Any]:
+    """The ``skipped_rows.ndjson`` entry for a row whose ``target`` came up empty.
+
+    ``_origin`` has to stay the first key: the tripwire in
+    ``modelsafety/contract/origin.py`` recognises these entries by it.
+    """
+    source = mapping.get(target, target)
+    reason = "missing_column" if source not in row and target not in row else "empty_column"
+    if source in row:
+        column = source
+    elif target in row:
+        column = target
+    else:
+        column = source
+    return {
+        ORIGIN_KEY: origin,
+        "reason": reason,
+        "column": column,
+        "used_as": target,
+        "row": json_safe(row),
+    }
+
+
 def prepare_rows(
     args: argparse.Namespace,
     input_files: List[Path],
-) -> tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
-    """Return ``(prepared_rows, source_info, rows_info)``.
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
+    """Return ``(prepared_rows, skipped_entries, source_info, rows_info)``.
 
     ``input_files`` is what ``_discover_input_files`` found.
 
-    ``source_info`` comes straight from ``_read_rows`` (option 1's free
-    metadata count, see ``DATA_VALIDATION_OPTIONS.md``). ``rows_info`` adds
-    the write-side counts: how many rows were kept, how many were skipped,
-    and -- unlike the original bare total -- which required column caused
-    each skip.
+    ``source_info`` comes from ``_read_rows`` (option 1's free metadata
+    count, see ``DATA_VALIDATION_OPTIONS.md``). ``rows_info`` adds the
+    write-side counts: how many rows were kept, how many were skipped, and
+    -- unlike the original bare total -- which required column caused each
+    skip.
+
+    Every row is judged in its original order, so ``skipped_entries`` reads
+    file by file, line by line. Only the kept rows are shuffled, afterwards.
     """
     mapping = _parse_mapping(args.map or [])
-    rows, source_info = _read_rows(args, input_files)
-    if args.shuffle:
-        random.seed(args.seed)
-        random.shuffle(rows)
+    items, source_info = _read_rows(args, input_files)
 
     prepared_rows: List[Dict[str, Any]] = []
+    skipped_entries: List[Dict[str, Any]] = []
     skipped_by_required_column: Dict[str, int] = {}
     exclude_metadata = set(args.exclude_metadata or [])
 
-    for row in rows:
+    for origin, row, file_entry in items:
+        _refuse_existing_origin(row, origin, args.metadata_column)
         prepared, missing_column = _prepare_row(
             row=row,
             mapping=mapping,
@@ -457,8 +636,18 @@ def prepare_rows(
         if prepared is None:
             key = missing_column or "unknown"
             skipped_by_required_column[key] = skipped_by_required_column.get(key, 0) + 1
+            skipped_entries.append(_skipped_entry(origin, row, key, mapping))
+            if file_entry is not None:
+                file_entry["rows_skipped"] += 1
             continue
+        prepared[args.metadata_column][ORIGIN_KEY] = origin
         prepared_rows.append(prepared)
+        if file_entry is not None:
+            file_entry["rows_written"] += 1
+
+    if args.shuffle:
+        random.seed(args.seed)
+        random.shuffle(prepared_rows)
 
     skipped = sum(skipped_by_required_column.values())
     print(f"Prepared {len(prepared_rows)} rows; skipped {skipped} rows.")
@@ -468,7 +657,7 @@ def prepare_rows(
         "skipped": skipped,
         "skipped_by_required_column": skipped_by_required_column,
     }
-    return prepared_rows, source_info, rows_info
+    return prepared_rows, skipped_entries, source_info, rows_info
 
 
 def _text_coverage(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -495,6 +684,34 @@ def _text_coverage(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "coverage": rows_with_text / len(rows),
         "total_characters": total_characters,
         "mean_characters": total_characters / len(rows),
+    }
+
+
+def _write_skipped_rows(output_dir: Path, entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Write ``skipped_rows.ndjson`` (always, even with no entries) and report on it.
+
+    ``entries`` is the number of lines found on disk afterwards, not the
+    number written. No ``sort_keys``: ``_origin`` has to stay the first key.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    skipped_path = output_dir / SKIPPED_ROWS_FILENAME
+    with skipped_path.open("w", encoding="utf-8") as handle:
+        for entry in entries:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    with skipped_path.open("rb") as handle:
+        entries_on_disk = sum(1 for _ in handle)
+
+    by_reason: Dict[str, int] = {}
+    by_file: Dict[str, int] = {}
+    for entry in entries:
+        by_reason[entry["reason"]] = by_reason.get(entry["reason"], 0) + 1
+        path = entry[ORIGIN_KEY]["path"]
+        by_file[path] = by_file.get(path, 0) + 1
+    return {
+        "file": SKIPPED_ROWS_FILENAME,
+        "entries": entries_on_disk,
+        "by_reason": by_reason,
+        "by_file": by_file,
     }
 
 
@@ -573,6 +790,34 @@ def _run_checks(
                 f"{file_info['rows_read']} rows read"
             )
 
+    for file_info in source_info["files"]:
+        if "rows_written" not in file_info:
+            continue
+        accounted = (
+            file_info["rows_written"] + file_info["rows_skipped"] + file_info["rows_left_out"]
+        )
+        if "lines" in file_info:
+            in_file, in_file_name = file_info["lines"], "lines"
+            accounted += file_info["blank_lines"]
+        elif "rows_in_footer" in file_info:
+            in_file, in_file_name = file_info["rows_in_footer"], "rows in the file's own count"
+        else:
+            in_file, in_file_name = file_info["rows_read"], "rows read"
+        if in_file != accounted:
+            failures.append(
+                f"File accounting does not add up for {file_info['path']}: {in_file} "
+                f"{in_file_name} != {file_info.get('blank_lines', 0)} blank + "
+                f"{file_info['rows_written']} written + {file_info['rows_skipped']} skipped + "
+                f"{file_info['rows_left_out']} left out"
+            )
+
+    skipped_entries_on_disk = rows_info["skipped_file"]["entries"]
+    if skipped_entries_on_disk != skipped:
+        failures.append(
+            f"{SKIPPED_ROWS_FILENAME} holds {skipped_entries_on_disk} entries on disk, "
+            f"but {skipped} rows were skipped"
+        )
+
     rows_on_disk = output_info["rows_on_disk"]
     if rows_on_disk != written:
         failures.append(
@@ -609,8 +854,18 @@ def _run_checks(
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
     output_dir = Path(args.output_dir)
+
+    # Checked before the output folder is touched, so a refusal leaves
+    # nothing behind.
+    reserved = f"the preparing step adds its own '{ORIGIN_KEY}' note to every row"
+    map_targets = [value.split("=", 1)[0].strip() for value in args.map or []]
+    if ORIGIN_KEY in map_targets:
+        parser.error(f"'{ORIGIN_KEY}' can't be a --map target: {reserved}.")
+    if args.metadata_column == ORIGIN_KEY:
+        parser.error(f"--metadata-column can't be '{ORIGIN_KEY}': {reserved}.")
 
     # Before anything is touched: refuse an output folder that holds a
     # different run, so old and new files never end up side by side.
@@ -627,7 +882,7 @@ def main() -> None:
     if success_marker.exists():
         success_marker.unlink()
 
-    prepared_rows, source_info, rows_info = prepare_rows(args, input_files)
+    prepared_rows, skipped_entries, source_info, rows_info = prepare_rows(args, input_files)
     coverage_info = _text_coverage(prepared_rows)
     output_info = write_chunked_output(
         prepared_rows,
@@ -637,6 +892,7 @@ def main() -> None:
         dir_prefix=args.dir_prefix,
         file_prefix=args.file_prefix,
     )
+    rows_info["skipped_file"] = _write_skipped_rows(output_dir, skipped_entries)
 
     print(
         f"Text coverage: {coverage_info['rows_with_text']}/{rows_info['written']} rows "

@@ -22,7 +22,14 @@ from pii_output import (
     stage1_paths,
     write_stage1_metrics,
 )
+from modelsafety.contract.fingerprints import input_block
 from modelsafety.contract.origin import check_first_line
+from modelsafety.contract.run_identity import (
+    RunIdentityError,
+    check_run_identity,
+    describe_input_files,
+    make_identity,
+)
 from modelsafety.contract.textract import (
     extract_record_text,
     load_source_snapshot,
@@ -71,6 +78,7 @@ def create_chunks(jsonl_files, expected_sha256=None):
     print("Pre-scanning files to create chunks...")
     chunks = []
     expected_sha256 = expected_sha256 or {}
+    sha256_by_file = {}
 
     for file_path in tqdm(jsonl_files, desc="Scanning files", unit="file"):
         digest = hashlib.sha256()
@@ -98,11 +106,12 @@ def create_chunks(jsonl_files, expected_sha256=None):
                         handle.tell(),
                     )
                 )
+        sha256_by_file[file_path] = digest.hexdigest()
         expected = expected_sha256.get(file_path)
-        if expected is not None and digest.hexdigest() != expected:
+        if expected is not None and sha256_by_file[file_path] != expected:
             raise RuntimeError(f"Source content differs from snapshot: {file_path}")
 
-    return chunks
+    return chunks, sha256_by_file
 
 
 def process_chunk(args):
@@ -229,6 +238,23 @@ def main():
     for file_path in jsonl_files:
         check_first_line(file_path)
 
+    identity = make_identity(
+        tool="pii_regex",
+        mode=None,
+        settings={
+            "input_manifest": (
+                str(Path(manifest_path).expanduser().resolve()) if manifest_path else None
+            )
+        },
+        input_root=base_dir,
+        input_files=describe_input_files(Path(base_dir), [Path(f) for f in jsonl_files]),
+    )
+    try:
+        run_state = check_run_identity(run_dir, identity)
+    except RunIdentityError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"Run identity: {run_state}")
+
     paths["stage_dir"].mkdir(parents=True, exist_ok=True)
     if paths["hits_dir"].exists():
         shutil.rmtree(paths["hits_dir"])
@@ -260,7 +286,7 @@ def main():
         if snapshots:
             relative = Path(file_path).relative_to(base_dir).as_posix()
             expected_sha256[file_path] = snapshots[relative]["sha256"]
-    chunks = create_chunks(jsonl_files, expected_sha256)
+    chunks, sha256_by_file = create_chunks(jsonl_files, expected_sha256)
     chunk_time = time.time() - start_chunk_time
     print(f"\nCreated {len(chunks)} chunks in {chunk_time:.2f}s\n")
 
@@ -310,6 +336,17 @@ def main():
         str(paths["hits_dir"]),
         str(paths["workers_dir"]),
         shard_names,
+    )
+
+    input_files = [
+        {
+            "path": Path(file_path).relative_to(base_dir).as_posix(),
+            "sha256": sha256_by_file[file_path],
+        }
+        for file_path in jsonl_files
+    ]
+    paths["input_files"].write_text(
+        json.dumps(input_block(base_dir, input_files), indent=2) + "\n", encoding="utf-8"
     )
 
     write_stage1_metrics(

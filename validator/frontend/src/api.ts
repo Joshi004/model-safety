@@ -1,7 +1,18 @@
 // Plain same-origin fetch wrapper -- no auth. This tool assumes a trusted
 // network (see ../run.sh and backend/app.py): anyone who can reach the
 // backend at all can use these routes.
-import type { HealthResponse, InspectResult, PreviewRequest, PreviewResponse, SourcesResponse } from './types'
+import type {
+  HealthResponse,
+  InspectResult,
+  LookupRequest,
+  LookupResponse,
+  PreviewRequest,
+  PreviewResponse,
+  RunResponse,
+  SkippedPageRequest,
+  SkippedPageResponse,
+  SourcesResponse,
+} from './types'
 
 export class ApiError extends Error {
   status: number
@@ -47,4 +58,16 @@ export function inspectPath(path: string): Promise<InspectResult> {
 
 export function runPreview(body: PreviewRequest): Promise<PreviewResponse> {
   return request<PreviewResponse>('/api/preview', body)
+}
+
+export function openRun(runDir: string): Promise<RunResponse> {
+  return request<RunResponse>('/api/run', { run_dir: runDir })
+}
+
+export function getSkippedPage(body: SkippedPageRequest): Promise<SkippedPageResponse> {
+  return request<SkippedPageResponse>('/api/run/skipped', body)
+}
+
+export function lookupOrigin(body: LookupRequest): Promise<LookupResponse> {
+  return request<LookupResponse>('/api/origin', body)
 }

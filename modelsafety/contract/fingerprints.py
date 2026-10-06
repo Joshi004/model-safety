@@ -52,3 +52,19 @@ def files_list_fingerprint(files: list[dict[str, Any]]) -> str:
     pairs = sorted([item["path"], item["sha256"]] for item in files)
     text = json.dumps(pairs, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def input_block(root: str, files: list[dict[str, Any]]) -> dict[str, Any]:
+    """The "what this run read" block every scan summary carries."""
+    return {"root": root, "files": files, "fingerprint": files_list_fingerprint(files)}
+
+
+def compare_files(expected: dict[str, str], actual: dict[str, str]) -> dict[str, list[str]]:
+    """Compare two ``{path: sha256}`` maps. Each returned list is sorted."""
+    return {
+        "missing": sorted(expected.keys() - actual.keys()),
+        "extra": sorted(actual.keys() - expected.keys()),
+        "different": sorted(
+            path for path in expected.keys() & actual.keys() if expected[path] != actual[path]
+        ),
+    }

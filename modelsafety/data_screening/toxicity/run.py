@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -18,10 +19,11 @@ from tqdm import tqdm
 from detoxify import Detoxify
 
 # Not on sys.path by default when this script is run standalone (cd'd into
-# this directory, no PYTHONPATH export) -- added defensively so the
-# optional snapshot check below can import the shared contract module
-# regardless of how this script is invoked.
+# this directory, no PYTHONPATH export) -- added so the shared contract
+# modules import regardless of how this script is invoked.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from modelsafety.contract.fingerprints import input_block, line_fingerprint  # noqa: E402
 
 
 def content_text(content: Any) -> str:
@@ -83,22 +85,33 @@ def resolve_inputs(
     return root, files
 
 
-def iter_candidates(input_root: Path, files: list[Path]) -> Iterator[dict[str, Any]]:
-    """Yield one Detoxify candidate per plain text or conversation message."""
+def iter_candidates(
+    input_root: Path, files: list[Path], input_files: list[dict[str, str]]
+) -> Iterator[dict[str, Any]]:
+    """Yield one Detoxify candidate per plain text or conversation message.
+
+    Every candidate carries ``source_sha256``, the fingerprint of its line. Each
+    file's path and SHA-256 is appended to ``input_files`` once the file has
+    been read to the end.
+    """
     for path in files:
         relative = path.relative_to(input_root).as_posix()
-        with path.open("r", encoding="utf-8") as handle:
-            for source_line, line in enumerate(handle, 1):
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for source_line, raw_line in enumerate(handle, 1):
+                digest.update(raw_line)
                 try:
-                    source_record = json.loads(line)
+                    source_record = json.loads(raw_line.decode("utf-8"))
                 except json.JSONDecodeError as exc:
                     raise ValueError(f"Malformed JSON at {path}:{source_line}") from exc
+                source_sha256 = line_fingerprint(raw_line)
 
                 text = source_record.get("text")
                 if isinstance(text, str):
                     yield {
                         "source_file": relative,
                         "source_line": source_line,
+                        "source_sha256": source_sha256,
                         "message_index": None,
                         "role": "user",
                         "text": text,
@@ -119,11 +132,13 @@ def iter_candidates(input_root: Path, files: list[Path]) -> Iterator[dict[str, A
                     yield {
                         "source_file": relative,
                         "source_line": source_line,
+                        "source_sha256": source_sha256,
                         "message_index": message_index,
                         "role": role,
                         "text": f"{role}: {content}",
                         "source_record": source_record,
                     }
+        input_files.append({"path": relative, "sha256": digest.hexdigest()})
 
 
 def count_candidates(
@@ -227,7 +242,8 @@ def run(
 
     accelerator = accelerate.Accelerator()
     stats: dict[str, Any] = {"rows_read": 0, "messages_scored": 0, "messages_flagged": 0, "per_file": {}}
-    candidates = count_candidates(iter_candidates(input_root, files), stats)
+    input_files: list[dict[str, str]] = []
+    candidates = count_candidates(iter_candidates(input_root, files, input_files), stats)
     model = Detoxify(model_name, device=accelerator.device)
 
     if accelerator.is_main_process:
@@ -284,6 +300,7 @@ def run(
                         "messages_flagged": stats["messages_flagged"],
                         "histogram": histogram_to_dict(histogram),
                         "per_file": stats["per_file"],
+                        "input": input_block(str(input_root), input_files),
                         "guard_total_records": None,
                         "guard_errors": None,
                     },

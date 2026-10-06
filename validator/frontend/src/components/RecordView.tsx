@@ -299,12 +299,17 @@ function RemainingFieldsSection({ record }: { record: Record<string, unknown> })
 export default function RecordView({
   record,
   written,
+  showScannerCoverage = true,
 }: {
   record: Record<string, unknown>
   // The real backend-computed preview.rows entry for this same row index
   // -- undefined when this row was skipped or errored instead of
   // written, in which case there's no real scanned_text to show.
   written: PreviewRow | undefined
+  // The coverage note is about the preview's current mapping, so it's
+  // hidden where a row is shown on its own (a skipped row's saved copy, or
+  // an original looked up through its _origin note).
+  showScannerCoverage?: boolean
 }) {
   const turns = getConversationTurns(record)
   // <tools>...</tools> only ever shows up in the system prompt in every
@@ -317,7 +322,7 @@ export default function RecordView({
 
   return (
     <div className="record-view">
-      <ScannerCoverage written={written} />
+      {showScannerCoverage && <ScannerCoverage written={written} />}
       <TopLevelChips record={record} />
       <ToolDefinitionsSection definitions={toolDefinitions} />
       {turns && <ConversationSection turns={turns} />}

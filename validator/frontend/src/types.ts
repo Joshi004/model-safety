@@ -108,6 +108,9 @@ export interface SourceInfo {
   expected_rows_from: string
   files_discovered: number | null
   sampled_from_file: string | null
+  // jsonl only: the file each sampled row came from, in sample order (a
+  // sample of a folder can cross files). Needed to find a Prepared row's run.
+  row_files?: string[]
   declared_schema: unknown | null
 }
 
@@ -138,9 +141,118 @@ export interface PreviewRequest {
   // navigator jump into the middle of a file instead of always seeing
   // the first `max_rows` rows. Defaults to 0 on the backend if omitted.
   start_row?: number
+  // jsonl only: start at the line that begins at this byte instead of at
+  // `start_row` (which counts non-blank rows, not lines).
+  start_byte?: number | null
   map?: Record<string, string>
   require?: string[]
   exclude_metadata?: string[]
   metadata_column?: string
   output_dir?: string
+}
+
+// ---- Prepared runs (backend/runs.py) ----
+
+// An `_origin` note (modelsafety/contract/origin.py): where a Prepared row
+// came from. A JSONL note has `line` and `byte`; every other format has
+// `row`; an Arrow folder also has `split`. A note read with load_dataset
+// has `config` (only if one was given).
+export interface Origin {
+  path: string
+  line?: number
+  byte?: number
+  row?: number
+  split?: string | null
+  config?: string
+  fingerprint: string
+  v: number
+}
+
+// One entry of summary.json's `source.files` -- only the fields used here.
+export interface RunSourceFile {
+  path: string
+  size_bytes: number
+  modified: string
+  fingerprint: string
+  blank_lines?: number
+}
+
+// The parts of a prepare_rows.py summary.json the run view shows.
+export interface RunSummary {
+  created_at: string
+  input: { path: string; type: string; map: Record<string, string>; require: string[] }
+  source: { rows_read: number; files: RunSourceFile[] }
+  rows: {
+    written: number
+    skipped: number
+    skipped_file: {
+      file: string
+      entries: number
+      by_reason: Record<string, number>
+      by_file: Record<string, number>
+    }
+  }
+  checks: { passed: boolean; failures: string[]; warnings: string[] }
+}
+
+export interface RunResponse {
+  run_dir: string
+  summary: RunSummary
+  run_identity: Record<string, unknown> | null
+}
+
+// One line of skipped_rows.ndjson. `row` is the original row as the reader
+// saw it (made JSON-safe).
+export interface SkippedEntry {
+  _origin: Origin
+  reason: string
+  column: string
+  used_as: string
+  row: Record<string, unknown>
+}
+
+export interface SkippedItem {
+  // The entry's line in skipped_rows.ndjson, from 1.
+  number: number
+  entry: SkippedEntry
+  preview: string
+}
+
+export interface SkippedPageRequest {
+  run_dir: string
+  page?: number
+  page_size?: number
+  reason?: string | null
+  file?: string | null
+}
+
+export interface SkippedPageResponse {
+  page: number
+  page_size: number
+  // null when both filters are set (summary.json only counts each alone).
+  total: number | null
+  has_next: boolean
+  entries: SkippedItem[]
+}
+
+export type LookupStatus = 'unchanged' | 'changed' | 'not_found'
+
+export interface LookupRequest {
+  origin: Origin
+  run_dir?: string | null
+  prepared_path?: string | null
+}
+
+export interface LookupResponse {
+  status: LookupStatus
+  run_dir: string
+  input_type: string
+  path: string
+  // What changed on disk since the run read the file (size, modified time).
+  file_differences: string[]
+  row: Record<string, unknown> | null
+  // JSONL only: the line, when it isn't a JSON object.
+  raw_line: string | null
+  // Why there is no row, when there isn't one.
+  note: string | null
 }

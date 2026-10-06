@@ -14,6 +14,10 @@
 # Flags (each overrides the matching setting below, for this run only):
 #   --input-root PATH   --run-root PATH   --partition NAME
 #
+# --run-root defaults to output/tool_team_ner_pilot for pilot and
+# output/tool_team_ner_run for full, so a pilot never shares a folder with the
+# full scan that follows it.
+#
 # Examples:
 #   ./scripts/tool_team_ner_scan.sh pilot
 #   ./scripts/tool_team_ner_scan.sh full --partition toolCall
@@ -38,7 +42,9 @@ source "${SCRIPT_DIR}/lib/tool_team_common.sh"
 # choice, not a resource-compatibility one.
 # ---------------------------------------------------------------------------
 PRIVACY_FILTER_INPUT_ROOT="${PRIVACY_FILTER_INPUT_ROOT:-${REPO}/output/tool_team_converted}"
-PRIVACY_FILTER_RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT:-${REPO}/output/tool_team_ner_run}"
+# Empty on purpose -- the real default depends on the action, and is filled in
+# by apply_action_defaults() once that's known.
+PRIVACY_FILTER_RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT:-}"
 PARTITION="${PARTITION:-health}"
 
 REVIEW_PAIRS=(
@@ -64,6 +70,10 @@ Actions:
 Flags (each overrides the matching setting for this run only):
   --input-root PATH   --run-root PATH   --partition NAME
 
+--run-root defaults to output/tool_team_ner_pilot for pilot and
+output/tool_team_ner_run for full. A run folder remembers which mode and
+settings it was started with, and refuses a different one.
+
 Precedence, lowest to highest: hardcoded default in this file < environment
 variable < CLI flag < interactive edit. Interactive editing is only offered
 when no action word is given at all -- passing pilot or full runs fully
@@ -78,9 +88,19 @@ Examples:
 
 Current settings:
   PRIVACY_FILTER_INPUT_ROOT ${PRIVACY_FILTER_INPUT_ROOT}
-  PRIVACY_FILTER_RUN_ROOT   ${PRIVACY_FILTER_RUN_ROOT}
+  PRIVACY_FILTER_RUN_ROOT   ${PRIVACY_FILTER_RUN_ROOT:-(set per action, see above)}
   PARTITION                 ${PARTITION}
 EOF
+}
+
+# apply_action_defaults -- fills in PRIVACY_FILTER_RUN_ROOT where a hardcoded
+# default, environment variable, or CLI flag hasn't already set it (":="
+# only assigns when the variable is unset or empty).
+apply_action_defaults() {
+  case "${ACTION}" in
+    pilot) : "${PRIVACY_FILTER_RUN_ROOT:=${REPO}/output/tool_team_ner_pilot}" ;;
+    full) : "${PRIVACY_FILTER_RUN_ROOT:=${REPO}/output/tool_team_ner_run}" ;;
+  esac
 }
 
 # parse_args <arg> ... -- one pass over every argument: -h/--help exits
@@ -211,6 +231,7 @@ main() {
   if [[ "${STAGE_GIVEN}" -eq 0 ]]; then
     if [[ -t 0 ]]; then
       show_menu
+      apply_action_defaults
       pick_partition
       PRIVACY_FILTER_INPUT_ROOT="$(prompt_value "Input root" "${PRIVACY_FILTER_INPUT_ROOT}")"
       PRIVACY_FILTER_RUN_ROOT="$(prompt_value "Run root" "${PRIVACY_FILTER_RUN_ROOT}")"
@@ -219,6 +240,8 @@ main() {
       usage
       exit 1
     fi
+  else
+    apply_action_defaults
   fi
 
   if [[ -z "${ACTION}" ]]; then

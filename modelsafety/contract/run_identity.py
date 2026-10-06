@@ -195,7 +195,7 @@ def _input_files_from_list(root: Path, list_path: Path) -> list[Path]:
     files = []
     for line in list_path.read_text(encoding="utf-8").splitlines():
         relative = line.strip()
-        if not relative:
+        if not relative or relative.startswith("#"):
             continue
         pure = PurePosixPath(relative)
         if pure.is_absolute() or ".." in pure.parts:
@@ -248,7 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--input-list",
         type=Path,
         default=None,
-        help="File of relative paths, one per line. Default: every *.jsonl under --input-root.",
+        help="File of relative paths, one per line; blank lines and lines starting with # are "
+        "skipped. Default: every *.jsonl under --input-root.",
     )
     return parser
 

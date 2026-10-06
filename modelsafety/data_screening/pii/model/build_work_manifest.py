@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -48,7 +49,10 @@ def resolve_sources(input_root: Path, source_manifest: Path | None) -> list[Path
     return sources
 
 
-def units_for_source(root: Path, source: Path, target_bytes: int) -> Iterable[WorkUnit]:
+def units_for_source(
+    root: Path, source: Path, target_bytes: int, digest: hashlib._Hash
+) -> Iterable[WorkUnit]:
+    """Yield the work units of one source. ``digest`` is fed every byte of the file."""
     relative = source.relative_to(root).as_posix()
     stat = source.stat()
     start_byte = 0
@@ -56,6 +60,7 @@ def units_for_source(root: Path, source: Path, target_bytes: int) -> Iterable[Wo
     end_line = 0
     with source.open("rb") as handle:
         while raw_line := handle.readline():
+            digest.update(raw_line)
             end_line += 1
             end_byte = handle.tell()
             if end_byte - start_byte < target_bytes:
@@ -116,7 +121,8 @@ def build_manifest(
             stat = source.stat()
             relative = source.relative_to(root).as_posix()
             source_unit_count = 0
-            for unit in units_for_source(root, source, target_bytes):
+            digest = hashlib.sha256()
+            for unit in units_for_source(root, source, target_bytes, digest):
                 handle.write(json.dumps(unit.to_dict(), sort_keys=True) + "\n")
                 unit_count += 1
                 source_unit_count += 1
@@ -127,6 +133,7 @@ def build_manifest(
                     "size_bytes": stat.st_size,
                     "mtime_ns": stat.st_mtime_ns,
                     "unit_count": source_unit_count,
+                    "sha256": digest.hexdigest(),
                 }
             )
         handle.flush()

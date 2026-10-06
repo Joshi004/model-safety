@@ -5,6 +5,9 @@ Every sample reader here mirrors the matching branch of
 libraries, same calls -- just bounded to a handful of rows instead of the
 whole file, so this stays cheap to run from a web backend against real,
 large production data. Nothing here writes anything.
+
+`read_original_row()` at the bottom reads back one original row from an
+`_origin` note, the way the preparing step read it, and fingerprints it.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from typing import Any
 
 import pandas as pd
 
-from reader_imports import arrow_ipc_row_count, clean_value
+from reader_imports import arrow_ipc_row_count, clean_value, line_fingerprint, row_fingerprint
 
 # -------------------------------------------------------------------------
 # Path validation -- any absolute path the running user can read is allowed
@@ -314,11 +317,45 @@ def _arrow_schema_to_tree(schema: Any) -> dict[str, Any]:
 # -------------------------------------------------------------------------
 
 
-def _sample_jsonl(
-    target: Path, max_rows: int, start_row: int = 0
+def _sample_jsonl_from_byte(
+    target: Path, max_rows: int, start_byte: int
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read from the line that starts at `start_byte` (an `_origin` note's
+    `byte`). Unlike `start_row`, this lands on the exact line even when the
+    file has blank lines before it."""
+    if not target.is_file():
+        raise ValueError("Starting at a byte position needs one .jsonl file, not a folder.")
+    rows: list[dict[str, Any]] = []
+    with target.open("rb") as handle:
+        if start_byte > 0:
+            handle.seek(start_byte - 1)
+            if handle.read(1) != b"\n":
+                raise ValueError(f"Byte {start_byte} isn't the start of a line in {target.name}.")
+        for raw in handle:
+            if not raw.strip():
+                continue
+            rows.append(json.loads(raw.decode("utf-8")))
+            if len(rows) >= max_rows:
+                break
+    info = {
+        "expected_rows": None,
+        "expected_rows_from": "unavailable: jsonl has no free row count",
+        "files_discovered": 1,
+        "sampled_from_file": str(target),
+        "row_files": [str(target)] * len(rows),
+        "declared_schema": None,
+    }
+    return rows, info
+
+
+def _sample_jsonl(
+    target: Path, max_rows: int, start_row: int = 0, start_byte: int | None = None
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if start_byte is not None:
+        return _sample_jsonl_from_byte(target, max_rows, start_byte)
     files = sorted(target.rglob("*.jsonl")) if target.is_dir() else [target]
     rows: list[dict[str, Any]] = []
+    row_files: list[str] = []
     sampled_from: str | None = None
     # No index into a jsonl file -- reaching row `start_row` means counting
     # (not parsing) every non-blank line before it first. Cheap relative to
@@ -337,6 +374,7 @@ def _sample_jsonl(
                     skipped += 1
                     continue
                 rows.append(json.loads(line))
+                row_files.append(str(file_path))
                 sampled_from = sampled_from or str(file_path)
                 if len(rows) >= max_rows:
                     break
@@ -347,6 +385,9 @@ def _sample_jsonl(
         "expected_rows_from": "unavailable: jsonl has no free row count",
         "files_discovered": len(files),
         "sampled_from_file": sampled_from,
+        # Which file each sampled row came from -- a sample can cross files
+        # when the path is a folder.
+        "row_files": row_files,
         "declared_schema": None,
     }
     return rows, info
@@ -523,6 +564,7 @@ def sample_rows(
     max_rows: int,
     split: str = "train",
     start_row: int = 0,
+    start_byte: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Read up to `max_rows` rows starting at `start_row`, the same way
     prepare_rows.py's `_read_rows()` would for this `input_type` (just
@@ -542,7 +584,14 @@ def sample_rows(
     reader would already pay to reach that point. parquet can skip whole
     row groups via metadata, and a huggingface dataset is O(1) random
     access -- see each `_sample_*` function's own comment.
+
+    `start_byte` (jsonl only) starts at the line that begins at that byte
+    instead of at row `start_row`, and then `start_row` is ignored. A row
+    number can't land on an exact line when the file has blank lines,
+    because it counts non-blank rows, not lines.
     """
+    if start_byte is not None and input_type != "jsonl":
+        raise ValueError("Starting at a byte position only works for jsonl.")
     if path.is_file():
         target = path
     elif file:
@@ -555,7 +604,7 @@ def sample_rows(
         target = path
 
     if input_type == "jsonl":
-        rows, info = _sample_jsonl(target, max_rows, start_row)
+        rows, info = _sample_jsonl(target, max_rows, start_row, start_byte)
     elif input_type == "json":
         rows, info = _sample_json(target, max_rows, start_row)
     elif input_type == "csv":
@@ -569,3 +618,117 @@ def sample_rows(
 
     rows = [clean_value(row) for row in rows]
     return rows, info
+
+
+# -------------------------------------------------------------------------
+# Reading one original row back from an `_origin` note
+# -------------------------------------------------------------------------
+
+MAX_RAW_LINE_CHARS = 2_000
+
+
+def _original_jsonl(path: Path, byte: int) -> dict[str, Any]:
+    """The line that starts at `byte`, fingerprinted from its raw bytes,
+    the same way `prepare_rows.py` fingerprints a JSONL line."""
+    with path.open("rb") as handle:
+        handle.seek(byte)
+        raw = handle.readline()
+    if not raw:
+        return {
+            "row": None,
+            "fingerprint": None,
+            "raw_line": None,
+            "note": f"The file has no line starting at byte {byte}.",
+        }
+    row = None
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+        if isinstance(parsed, dict):
+            row = clean_value(parsed)
+    except ValueError:  # not UTF-8, or not JSON
+        pass
+    raw_line = None
+    if row is None:
+        raw_line = raw.decode("utf-8", errors="replace").rstrip("\r\n")[:MAX_RAW_LINE_CHARS]
+    return {"row": row, "fingerprint": line_fingerprint(raw), "raw_line": raw_line, "note": None}
+
+
+def _original_parquet_row(path: Path, row_number: int) -> dict[str, Any] | None:
+    """One row of a parquet file, reading only the row group that holds it
+    -- the same `read_row_group(...).to_pandas().to_dict("records")` call
+    `prepare_rows.py` reads each group with."""
+    import pyarrow.parquet as pq
+
+    parquet_file = pq.ParquetFile(path)
+    group_start = 0
+    for group in range(parquet_file.num_row_groups):
+        group_rows = parquet_file.metadata.row_group(group).num_rows
+        if row_number < group_start + group_rows:
+            records = parquet_file.read_row_group(group).to_pandas().to_dict("records")
+            return records[row_number - group_start]
+        group_start += group_rows
+    return None
+
+
+def _original_arrow_row(path: Path, split: str | None, row_number: int) -> dict[str, Any] | None:
+    from datasets import load_from_disk
+
+    dataset = load_from_disk(str(path))
+    try:
+        if split is not None:
+            dataset = dataset[split]
+        return dataset[row_number]
+    except (IndexError, KeyError, OverflowError):
+        return None
+
+
+def _original_csv_row(path: Path, row_number: int) -> dict[str, Any] | None:
+    size = path.stat().st_size
+    if size > MAX_JSON_BYTES:
+        raise ValueError(
+            f"{path.name} is {size / 1e6:.0f} MB. Refusing to load a .csv file this large "
+            "to look up one row -- there's no way to read just one row of it."
+        )
+    records = pd.read_csv(path).to_dict("records")
+    return records[row_number] if row_number < len(records) else None
+
+
+def _original_json_row(path: Path, row_number: int) -> dict[str, Any] | None:
+    rows, _info = _sample_json(path, 1, row_number)
+    return rows[0] if rows else None
+
+
+def read_original_row(input_type: str, origin: dict[str, Any]) -> dict[str, Any]:
+    """Read the one original row an `_origin` note points at, and fingerprint
+    it the way the preparing step did.
+
+    `origin` must already be shape-checked (see runs.lookup). Returns `row`
+    (what's there now, or None), `fingerprint` (None when the row isn't
+    there any more), `raw_line` (JSONL only, when the line isn't a JSON
+    object) and a `note` saying why a row is missing.
+    """
+    path = Path(origin["path"])
+    if input_type == "jsonl":
+        return _original_jsonl(path, origin["byte"])
+
+    row_number = origin["row"]
+    if input_type == "parquet":
+        row = _original_parquet_row(path, row_number)
+    elif input_type == "huggingface":
+        row = _original_arrow_row(path, origin.get("split"), row_number)
+    elif input_type == "csv":
+        row = _original_csv_row(path, row_number)
+    elif input_type == "json":
+        row = _original_json_row(path, row_number)
+    else:
+        raise ValueError(f"Unsupported input type: {input_type}")
+
+    if row is None:
+        return {
+            "row": None,
+            "fingerprint": None,
+            "raw_line": None,
+            "note": f"The file has no row {row_number}.",
+        }
+    row = clean_value(row)
+    return {"row": row, "fingerprint": row_fingerprint(row), "raw_line": None, "note": None}

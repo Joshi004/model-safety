@@ -17,8 +17,11 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Iterator
 
-from backends import DEFAULT_MODEL, Backend, create_backend
-from common import (
+# Run as a script from this folder, so the repo root isn't on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+
+from backends import DEFAULT_MODEL, Backend, create_backend  # noqa: E402
+from common import (  # noqa: E402
     WorkUnit,
     iter_record_texts,
     iter_unit_rows,
@@ -26,7 +29,8 @@ from common import (
     load_work_units,
     write_json_atomic,
 )
-from policy import CandidatePolicy
+from modelsafety.contract.fingerprints import input_block  # noqa: E402
+from policy import CandidatePolicy  # noqa: E402
 
 # The default 128 KiB csv field limit is too small for some scanned message
 # text (observed up to ~650 KiB); raise it well above anything seen so far
@@ -332,9 +336,32 @@ def run_worker(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_input_block(work_manifest: Path) -> dict[str, Any]:
+    """The files this scan reads, from the manifest.json beside the work manifest."""
+    manifest_path = work_manifest.with_name("manifest.json")
+    if not manifest_path.is_file():
+        raise RuntimeError(
+            f"{manifest_path} is missing, so the scanned files can't be recorded. "
+            "Build the work manifest again with build_work_manifest.py, in a new run folder."
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if any("sha256" not in source for source in manifest["sources"]):
+        raise RuntimeError(
+            f"{manifest_path} has no file SHA-256s (it was built before they were recorded). "
+            "Build the work manifest again with build_work_manifest.py, in a new run folder."
+        )
+    files = [
+        {"path": source["source_file"], "sha256": source["sha256"]}
+        for source in manifest["sources"]
+    ]
+    return input_block(manifest["input_root"], files)
+
+
 def aggregate(args: argparse.Namespace) -> int:
     output_root = args.output_root.expanduser().resolve()
-    units = load_work_units(args.work_manifest.expanduser().resolve())
+    work_manifest = args.work_manifest.expanduser().resolve()
+    input_files = load_input_block(work_manifest)
+    units = load_work_units(work_manifest)
     if args.max_units:
         units = units[: args.max_units]
     missing = [
@@ -481,6 +508,7 @@ def aggregate(args: argparse.Namespace) -> int:
         "completed_units": len(units) - len(missing),
         "expected_units": len(units),
         "missing_units": missing,
+        "input": input_files,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     write_json_atomic(output_root / "summary.json", summary)

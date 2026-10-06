@@ -14,18 +14,26 @@ export default function RowNavigator({
   sourceInfo,
   startRow,
   sampleSize,
+  startLabel,
   onJump,
 }: {
   sourceInfo: SourceInfo
   startRow: number
   sampleSize: number
+  // Set when the sample starts at an exact line instead of at a row
+  // number, for example "line 3 (byte 39)". Then there's no row number to
+  // show, so the range text says where the sample starts.
+  startLabel?: string
   onJump: (startRow: number) => void
 }) {
   const [input, setInput] = useState('')
   const totalRows = sourceInfo.expected_rows
 
-  const rangeText =
-    sampleSize === 0
+  const rangeText = startLabel
+    ? sampleSize === 0
+      ? `No rows starting at ${startLabel}`
+      : `Showing ${sampleSize} row${sampleSize === 1 ? '' : 's'} starting at ${startLabel}`
+    : sampleSize === 0
       ? totalRows !== null
         ? `No rows at position ${startRow + 1} (dataset has ${totalRows.toLocaleString()} rows)`
         : `No rows at position ${startRow + 1}`

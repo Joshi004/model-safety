@@ -51,7 +51,6 @@ export PII_RUN_DIR="${RUN_ROOT}/scans/pii/shards/${SHARD_NAME}"
 export PII_NUM_WORKERS="${PII_NUM_WORKERS:-${SLURM_CPUS_PER_TASK:-64}}"
 export PII_CHUNK_SIZE="${PII_CHUNK_SIZE:-10000}"
 
-mkdir -p "${PII_RUN_DIR}/stage3_extract"
 rm -f "${PII_RUN_DIR}/_CPU_SUCCESS"
 cd "${PII_DIR}"
 source "${VENV}/bin/activate"

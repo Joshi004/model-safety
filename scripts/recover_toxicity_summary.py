@@ -8,8 +8,10 @@ manifest file list (to independently recompute rows read, the same way the
 NER manifest check does), flagged.jsonl (for messages flagged), and
 guard_results/summary.json (for the guard error/total counts, if pass 2 also
 ran) -- and writes one detoxify_summary.json per shard, in the same shape
-run.py's own --summary-file writes natively, so downstream checks (e.g.
-modelsafety/results/coverage.py) can read either without caring which.
+run.py's own --summary-file writes natively, apart from the `input` block
+(which files the shard read), because that can't be recovered from logs.
+modelsafety/results/coverage.py therefore reports a recovered summary as a
+FAIL on its file check.
 
 This is a one-time recovery tool, not something a normal run needs: any run
 started after run.py's native --summary-file support exists writes its own

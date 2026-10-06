@@ -34,10 +34,16 @@
 # offered when no stage word is given at all, so scripted/automated calls
 # never prompt).
 #
-# --shards and --pilot-files only matter the FIRST time a given --run-dir is
-# used -- they decide how the input gets split into shards. Every later call
-# against the same --run-dir resumes that existing layout and only submits
-# whatever isn't finished yet; those two flags are ignored and a note says so.
+# --run-dir defaults to output/tool_team_toxicity_pilot when --pilot-files is
+# above 0, and to output/tool_team_toxicity_run otherwise, so a pilot never
+# shares a folder with the full scan that follows it.
+#
+# --shards only matters the FIRST time a given --run-dir is used -- it decides
+# how the input gets split into shards. Every later call against the same
+# --run-dir resumes that existing layout and only submits whatever isn't
+# finished yet; --shards is ignored and a note says so. A run folder also
+# remembers its mode and the settings that change the results (--pilot-files,
+# --threshold, the models, --max-model-len) and refuses a call that differs.
 
 set -euo pipefail
 
@@ -55,7 +61,9 @@ source "${SCRIPT_DIR}/lib/tool_team_common.sh"
 
 # --- Paths -------------------------------------------------------------
 TOX_INPUT_ROOT="${TOX_INPUT_ROOT:-${REPO}/output/tool_team_converted}"
-TOX_RUN_DIR="${TOX_RUN_DIR:-${REPO}/output/tool_team_toxicity_run}"
+# Empty on purpose -- the real default depends on --pilot-files, and is filled
+# in by apply_run_dir_default() once that's known.
+TOX_RUN_DIR="${TOX_RUN_DIR:-}"
 
 # --- SLURM resources, per shard (one shard = one H100) -------------------
 PARTITION="${PARTITION:-health}"    # main | health | toolCall | VLM -- pick_partition lists the real, live set
@@ -70,6 +78,8 @@ TOX_PILOT_FILES="${TOX_PILOT_FILES:-0}" # 0 = every file; N = a deterministic sp
 
 # --- Scan tuning, passed straight through to the launcher's own variables ---
 TOX_THRESHOLD="${TOX_THRESHOLD:-0.5}"
+TOX_STAGE1_MODEL="${TOX_STAGE1_MODEL:-multilingual}"
+GUARD_MODEL="${GUARD_MODEL:-Qwen/Qwen3Guard-Gen-8B}"
 TOX_BATCH_SIZE="${TOX_BATCH_SIZE:-32}"
 GUARD_CONCURRENCY="${GUARD_CONCURRENCY:-8}"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-8192}"
@@ -99,7 +109,7 @@ REVIEW_PAIRS=(
   TOX_TIME "Time limit"
   TOX_SHARDS "Shards (first run only)"
   TOX_CONCURRENCY "Concurrency"
-  TOX_PILOT_FILES "Pilot files, 0=all (first run only)"
+  TOX_PILOT_FILES "Pilot files, 0=all"
   TOX_THRESHOLD "Detoxify threshold"
   TOX_BATCH_SIZE "Detoxify batch size"
   GUARD_CONCURRENCY "Guard concurrency"
@@ -147,10 +157,19 @@ variable < CLI flag < interactive edit. Interactive editing is only offered
 when no stage word is given at all -- passing any stage word runs fully
 non-interactively.
 
---shards and --pilot-files only matter the FIRST time a given --run-dir is
-used. Every later call against the same --run-dir resumes that existing
-layout, ignores those two flags (with a note), and only submits shards that
-still need work. If nothing is left to do, it says so and exits.
+--run-dir defaults to output/tool_team_toxicity_pilot when --pilot-files is
+above 0, and to output/tool_team_toxicity_run otherwise. To verify or report
+on a pilot, pass the same --pilot-files again (or --run-dir).
+
+--shards only matters the FIRST time a given --run-dir is used. Every later
+call against the same --run-dir resumes that existing layout, ignores
+--shards (with a note), and only submits shards that still need work. If
+nothing is left to do, it says so and exits.
+
+A run folder remembers its mode and the settings that change the results
+(--pilot-files, --threshold, the Detoxify and guard models, --max-model-len)
+and the input files it was started with. A call that differs is refused, and
+the message says what differs.
 
 'screen', 'verify', and 'all' each submit one SLURM array job (one H100 per
 shard) and return immediately -- they do not wait for the job to finish.
@@ -166,7 +185,7 @@ Examples:
 
 Current settings:
   TOX_INPUT_ROOT      ${TOX_INPUT_ROOT}
-  TOX_RUN_DIR         ${TOX_RUN_DIR}
+  TOX_RUN_DIR         ${TOX_RUN_DIR:-(set from --pilot-files, see above)}
   PARTITION           ${PARTITION}
   TOX_CPUS            ${TOX_CPUS}
   TOX_MEM             ${TOX_MEM}
@@ -175,6 +194,8 @@ Current settings:
   TOX_CONCURRENCY     ${TOX_CONCURRENCY}
   TOX_PILOT_FILES     ${TOX_PILOT_FILES}
   TOX_THRESHOLD       ${TOX_THRESHOLD}
+  TOX_STAGE1_MODEL    ${TOX_STAGE1_MODEL}
+  GUARD_MODEL         ${GUARD_MODEL}
   TOX_BATCH_SIZE      ${TOX_BATCH_SIZE}
   GUARD_CONCURRENCY   ${GUARD_CONCURRENCY}
   VLLM_MAX_MODEL_LEN  ${VLLM_MAX_MODEL_LEN}
@@ -284,6 +305,18 @@ show_menu() {
   done
 }
 
+# apply_run_dir_default -- fills in TOX_RUN_DIR where a hardcoded default,
+# environment variable, or CLI flag hasn't already set it (":=" only assigns
+# when the variable is unset or empty). A pilot gets its own folder, so the
+# full scan that follows it never lands on top of it.
+apply_run_dir_default() {
+  if (( TOX_PILOT_FILES > 0 )); then
+    : "${TOX_RUN_DIR:=${REPO}/output/tool_team_toxicity_pilot}"
+  else
+    : "${TOX_RUN_DIR:=${REPO}/output/tool_team_toxicity_run}"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Shard-state helpers -- one shard's on-disk layout is fixed by
 # run_toxicity_scan_array.sbatch itself: ${TOX_RUN_DIR}/scans/toxicity/shards/shard_NNNNN/
@@ -323,6 +356,27 @@ preflight_checks() {
   if [[ "${resolved_run}" == "${resolved_input}" || "${resolved_run}" == "${resolved_input}/"* ]]; then
     die "run dir (${TOX_RUN_DIR}) is inside the input root (${TOX_INPUT_ROOT}) -- scan output would be picked up as input on the next run. Choose a --run-dir outside --input-root."
   fi
+}
+
+# check_identity -- stops this script if TOX_RUN_DIR already holds a different
+# run (another mode, other results-changing settings, or changed input files),
+# or output from before run identities existed. Nothing is submitted then.
+check_identity() {
+  local mode="full" state
+  if (( TOX_PILOT_FILES > 0 )); then
+    mode="pilot"
+  fi
+  state="$(python3 "${REPO}/modelsafety/contract/run_identity.py" check \
+    --run-dir "${TOX_RUN_DIR}" \
+    --tool toxicity \
+    --mode "${mode}" \
+    --input-root "${TOX_INPUT_ROOT}" \
+    --setting "pilot_files=${TOX_PILOT_FILES}" \
+    --setting "threshold=${TOX_THRESHOLD}" \
+    --setting "stage1_model=${TOX_STAGE1_MODEL}" \
+    --setting "guard_model=${GUARD_MODEL}" \
+    --setting "vllm_max_model_len=${VLLM_MAX_MODEL_LEN}")"
+  echo "Run identity: ${state}"
 }
 
 # Only needed before actually submitting screen/verify/all.
@@ -392,7 +446,7 @@ submit_array() {
     --error="${REPO}/logs/slurm/tool_team_toxicity_${stage_label}_%A_%a.err" \
     --array="${array_spec}" \
     "${dep_args[@]}" \
-    --export=ALL,REPO="${REPO}",QUALITY_INPUT_ROOT="${TOX_INPUT_ROOT}",QUALITY_MANIFEST_DIR="${TOX_RUN_DIR}/manifests",QUALITY_RUN_ROOT="${TOX_RUN_DIR}",TOX_STAGE1_ONLY="${tox_stage1_only}",TOX_REUSE_STAGE1="${tox_reuse_stage1}",TOX_THRESHOLD="${TOX_THRESHOLD}",TOX_BATCH_SIZE="${TOX_BATCH_SIZE}",GUARD_CONCURRENCY="${GUARD_CONCURRENCY}",VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN}",VLLM_SQUASHFS_PATH="${VLLM_IMAGE}",HF_TOKEN="${HF_TOKEN:-}" \
+    --export=ALL,REPO="${REPO}",QUALITY_INPUT_ROOT="${TOX_INPUT_ROOT}",QUALITY_MANIFEST_DIR="${TOX_RUN_DIR}/manifests",QUALITY_RUN_ROOT="${TOX_RUN_DIR}",TOX_STAGE1_ONLY="${tox_stage1_only}",TOX_REUSE_STAGE1="${tox_reuse_stage1}",TOX_THRESHOLD="${TOX_THRESHOLD}",TOX_STAGE1_MODEL="${TOX_STAGE1_MODEL}",GUARD_MODEL="${GUARD_MODEL}",TOX_BATCH_SIZE="${TOX_BATCH_SIZE}",GUARD_CONCURRENCY="${GUARD_CONCURRENCY}",VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN}",VLLM_SQUASHFS_PATH="${VLLM_IMAGE}",HF_TOKEN="${HF_TOKEN:-}" \
     "${REPO}/launchers/slurm/run_toxicity_scan_array.sbatch"
 }
 
@@ -446,6 +500,7 @@ fresh_run() {
 }
 
 run_screen() {
+  check_identity
   local manifest
   manifest="$(manifest_path)"
   if [[ ! -f "${manifest}" ]]; then
@@ -466,7 +521,7 @@ run_screen() {
     return 0
   fi
 
-  echo "Note: existing run found at ${TOX_RUN_DIR} (${shard_count} shards) -- --shards/--pilot-files ignored, resuming."
+  echo "Note: existing run found at ${TOX_RUN_DIR} (${shard_count} shards) -- --shards ignored, resuming."
   echo "Screening: ${#remaining[@]} of ${shard_count} shard(s) (pass 1 only)"
   local job_id
   job_id="$(submit_array screen 1 0 "" "${remaining[@]}")"
@@ -480,6 +535,7 @@ run_verify() {
   if [[ ! -f "${manifest}" ]]; then
     die "no run found at ${TOX_RUN_DIR} -- run 'screen' or 'all' first"
   fi
+  check_identity
 
   local shard_count
   shard_count="$(read_shard_count "${manifest}")"
@@ -505,7 +561,7 @@ run_verify() {
     return 0
   fi
 
-  echo "Note: existing run found at ${TOX_RUN_DIR} (${shard_count} shards) -- --shards/--pilot-files ignored, resuming."
+  echo "Note: existing run found at ${TOX_RUN_DIR} (${shard_count} shards) -- --shards ignored, resuming."
   echo "Verifying: ${#ready[@]} of ${shard_count} shard(s) (pass 2 only, reusing pass 1)"
   local job_id
   job_id="$(submit_array verify 0 1 "" "${ready[@]}")"
@@ -514,6 +570,7 @@ run_verify() {
 }
 
 run_all() {
+  check_identity
   local manifest
   manifest="$(manifest_path)"
   if [[ ! -f "${manifest}" ]]; then
@@ -534,7 +591,7 @@ run_all() {
     return 0
   fi
 
-  echo "Note: existing run found at ${TOX_RUN_DIR} (${shard_count} shards) -- --shards/--pilot-files ignored, resuming."
+  echo "Note: existing run found at ${TOX_RUN_DIR} (${shard_count} shards) -- --shards ignored, resuming."
   echo "Running both passes: ${#remaining[@]} of ${shard_count} shard(s) (pass 1 is rerun for these, not reused)"
   local job_id
   job_id="$(submit_array all 0 0 "" "${remaining[@]}")"
@@ -620,6 +677,7 @@ main() {
   if [[ "${STAGE_GIVEN}" -eq 0 ]]; then
     if [[ -t 0 ]]; then
       show_menu
+      apply_run_dir_default
       pick_partition
       TOX_INPUT_ROOT="$(prompt_value "Input root" "${TOX_INPUT_ROOT}")"
       TOX_RUN_DIR="$(prompt_value "Run dir" "${TOX_RUN_DIR}")"
@@ -628,6 +686,8 @@ main() {
       usage
       exit 1
     fi
+  else
+    apply_run_dir_default
   fi
 
   if [[ "${DO_SCREEN}" -eq 0 && "${DO_VERIFY}" -eq 0 && "${DO_REPORT}" -eq 0 ]]; then

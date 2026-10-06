@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from modelsafety.contract.fingerprints import compare_files
 from modelsafety.contract.origin import check_line
 from modelsafety.contract.textract import load_source_snapshot, verify_source_snapshot
 
@@ -22,6 +23,50 @@ from modelsafety.contract.textract import load_source_snapshot, verify_source_sn
 Location = tuple[str, int]
 PiiCandidateKey = tuple[str, int, str, str, str]
 EXCLUDED_PII_CATEGORIES = {"zip_codes", "postcodes"}
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def check_scan_input(
+    label: str,
+    path: Path,
+    expected: dict[str, str],
+    key: str | None = None,
+) -> None:
+    """Stop unless the scan result at ``path`` lists exactly the ``expected`` files.
+
+    ``expected`` maps each path to its SHA-256. The scan's file list is the
+    whole JSON file, or its ``key`` entry when ``key`` is given.
+    """
+    if not path.is_file():
+        raise RuntimeError(f"{label}: {path} is missing, so the files it read can't be checked")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{label}: {path} is not valid JSON") from exc
+    block = data if key is None else (data.get(key) if isinstance(data, dict) else None)
+    if not isinstance(block, dict) or not isinstance(block.get("files"), list):
+        raise RuntimeError(
+            f"{label}: {path} has no input block listing the files it read "
+            "(it was made before scans recorded them)"
+        )
+    try:
+        actual = {item["path"]: item["sha256"] for item in block["files"]}
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError(f"{label}: {path} has a malformed list of input files") from exc
+
+    differences = compare_files(expected, actual)
+    if any(differences.values()):
+        examples = "; ".join(
+            f"{kind} e.g. {paths[:5]}" for kind, paths in differences.items() if paths
+        )
+        raise RuntimeError(
+            f"{label} did not read exactly this shard's files ({path}): "
+            f"{len(differences['missing'])} missing, {len(differences['extra'])} extra, "
+            f"{len(differences['different'])} with a different SHA-256. {examples}"
+        )
 
 
 def iter_jsonl(path: Path) -> Iterable[dict[str, Any]]:
@@ -72,9 +117,7 @@ def load_pii_decisions(
                 f"Excluded PII category {category!r} found in Stage-4 results"
             )
         source_sha256 = str(record.get("source_sha256") or "")
-        if len(source_sha256) != 64 or any(
-            character not in "0123456789abcdef" for character in source_sha256
-        ):
+        if not _is_sha256(source_sha256):
             raise ValueError(f"PII decision lacks a valid source_sha256: {record}")
         try:
             location = (str(record["file"]), int(record["line"]))
@@ -146,8 +189,11 @@ def compact_toxicity(record: dict[str, Any], outcome: str) -> dict[str, Any]:
     }
 
 
-def load_toxicity_decisions(path: Path) -> tuple[dict[Location, list[dict[str, Any]]], Counter]:
+def load_toxicity_decisions(
+    path: Path,
+) -> tuple[dict[Location, list[dict[str, Any]]], dict[Location, set[str]], Counter]:
     rejected: dict[Location, list[dict[str, Any]]] = defaultdict(list)
+    source_hashes: dict[Location, set[str]] = defaultdict(set)
     counts: Counter = Counter()
     for record in iter_jsonl(path):
         counts["candidates"] += 1
@@ -155,6 +201,12 @@ def load_toxicity_decisions(path: Path) -> tuple[dict[Location, list[dict[str, A
             location = (str(record["source_file"]), int(record["source_line"]))
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Toxicity decision lacks a valid source location: {record}") from exc
+        source_sha256 = str(record.get("source_sha256") or "")
+        if not _is_sha256(source_sha256):
+            raise ValueError(
+                f"Toxicity decision at {location[0]}:{location[1]} lacks a valid source_sha256"
+            )
+        source_hashes[location].add(source_sha256)
         guard = record.get("guard") or {}
         safety = str(guard.get("safety") or "").lower()
         if guard.get("error"):
@@ -166,7 +218,7 @@ def load_toxicity_decisions(path: Path) -> tuple[dict[Location, list[dict[str, A
         counts[outcome] += 1
         if outcome in {"unsafe", "controversial", "error"}:
             rejected[location].append(compact_toxicity(record, outcome))
-    return rejected, counts
+    return rejected, source_hashes, counts
 
 
 def reason_labels(
@@ -197,7 +249,7 @@ def process_source_file(
     output_root: Path,
     relative: str,
     pii: dict[Location, list[dict[str, Any]]],
-    pii_source_hashes: dict[Location, set[str]],
+    source_hashes: dict[Location, set[str]],
     toxicity: dict[Location, list[dict[str, Any]]],
     review_handle: Any,
     expected_snapshot: dict[str, Any],
@@ -220,15 +272,16 @@ def process_source_file(
                 file_digest.update(raw_line)
                 location = (relative, source_line)
                 pii_items = pii.get(location, [])
-                expected_pii_hashes = pii_source_hashes.get(location, set())
+                expected_hashes = source_hashes.get(location, set())
                 toxicity_items = toxicity.get(location, [])
-                if expected_pii_hashes:
+                if expected_hashes:
                     source_sha256 = hashlib.sha256(
                         raw_line.rstrip(b"\r\n")
                     ).hexdigest()
-                    if expected_pii_hashes != {source_sha256}:
+                    if expected_hashes != {source_sha256}:
                         raise RuntimeError(
-                            f"PII source hash mismatch at {relative}:{source_line}"
+                            f"Source hash mismatch at {relative}:{source_line}: PII or "
+                            "toxicity results were made from a different version of this line"
                         )
                 labels = reason_labels(pii_items, toxicity_items)
                 counts["input_rows"] += 1
@@ -267,7 +320,7 @@ def process_source_file(
                     counts["clean_rows"] += 1
                     counts["clean_bytes"] += len(raw_line)
         rows_by_file = counts["input_rows"]
-        for source_file, source_line in set(pii_source_hashes) | set(toxicity):
+        for source_file, source_line in set(source_hashes):
             if source_file == relative and not 1 <= source_line <= rows_by_file:
                 raise RuntimeError(
                     f"Decision points outside shard input: {source_file}:{source_line}"
@@ -308,6 +361,31 @@ def run_shard(args: argparse.Namespace) -> int:
     if set(manifest_files) - set(snapshots):
         missing = sorted(set(manifest_files) - set(snapshots))
         raise RuntimeError(f"Manifest paths missing from snapshot metadata: {missing[:5]}")
+
+    expected_files = {relative: snapshots[relative]["sha256"] for relative in manifest_files}
+    check_scan_input(
+        "Regex PII scan",
+        args.run_root
+        / "scans"
+        / "pii"
+        / "shards"
+        / shard_name
+        / "stage1_scan"
+        / "input_files.json",
+        expected_files,
+    )
+    check_scan_input(
+        "Toxicity scan",
+        args.run_root
+        / "scans"
+        / "toxicity"
+        / "shards"
+        / shard_name
+        / "detoxify_summary.json",
+        expected_files,
+        key="input",
+    )
+
     pii_path = (
         args.run_root
         / "scans"
@@ -344,10 +422,12 @@ def run_shard(args: argparse.Namespace) -> int:
             f"Stage-3/4 PII reconciliation failed: "
             f"{missing} missing and {unexpected} unexpected decisions"
         )
-    toxicity, toxicity_counts = load_toxicity_decisions(toxicity_path)
-    decision_files = {
-        source_file for source_file, _ in set(pii_source_hashes) | set(toxicity)
-    }
+    toxicity, toxicity_source_hashes, toxicity_counts = load_toxicity_decisions(toxicity_path)
+    source_hashes: dict[Location, set[str]] = defaultdict(set)
+    for decision_hashes in (pii_source_hashes, toxicity_source_hashes):
+        for location, hashes in decision_hashes.items():
+            source_hashes[location] |= hashes
+    decision_files = {source_file for source_file, _ in source_hashes}
     unexpected_files = decision_files - set(manifest_files)
     if unexpected_files:
         raise RuntimeError(
@@ -393,7 +473,7 @@ def run_shard(args: argparse.Namespace) -> int:
                     output_root=staging_root,
                     relative=relative,
                     pii=pii,
-                    pii_source_hashes=pii_source_hashes,
+                    source_hashes=source_hashes,
                     toxicity=toxicity,
                     review_handle=review_handle,
                     expected_snapshot=snapshots[relative],
@@ -401,7 +481,7 @@ def run_shard(args: argparse.Namespace) -> int:
             )
 
     rows_by_file = {report["source_file"]: report["input_rows"] for report in file_reports}
-    for source_file, source_line in set(pii_source_hashes) | set(toxicity):
+    for source_file, source_line in source_hashes:
         if source_file not in rows_by_file or not 1 <= source_line <= rows_by_file[source_file]:
             raise RuntimeError(
                 f"Decision points outside shard input: {source_file}:{source_line}"

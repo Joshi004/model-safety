@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import multiprocessing
@@ -18,7 +19,7 @@ import shutil
 import string
 import sys
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -27,7 +28,13 @@ from datasketch import MinHash, MinHashLSH
 # Run as a script from this folder, so the repo root isn't on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from modelsafety.contract.fingerprints import input_block  # noqa: E402
 from modelsafety.contract.origin import check_first_line, check_line  # noqa: E402
+from modelsafety.contract.run_identity import (  # noqa: E402
+    check_run_identity,
+    describe_input_files,
+    make_identity,
+)
 
 
 @dataclass(frozen=True)
@@ -44,6 +51,7 @@ class ScanStats:
     rows_hashed: int = 0
     rows_without_text: int = 0
     candidate_pairs: int = 0
+    input_files: list[dict[str, str]] = field(default_factory=list)
 
 
 def content_text(content: Any) -> str:
@@ -218,8 +226,11 @@ def iter_candidates(
     order = 0
     for path in files:
         relative = path.relative_to(input_root).as_posix()
-        with path.open("r", encoding="utf-8") as handle:
-            for source_line, line in enumerate(handle, 1):
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for source_line, raw_line in enumerate(handle, 1):
+                digest.update(raw_line)
+                line = raw_line.decode("utf-8")
                 if not line.strip():
                     continue
                 stats.rows_total += 1
@@ -240,6 +251,7 @@ def iter_candidates(
                     source_line=source_line,
                     text=text,
                 )
+        stats.input_files.append({"path": relative, "sha256": digest.hexdigest()})
 
 
 class UnionFind:
@@ -784,6 +796,28 @@ def run(
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Checked before the identity file makes the folder non-empty, so a bad
+    # setting can be fixed and rerun without --overwrite.
+    validate_lsh_parameters(width, num_perm, bands, rows)
+    check_run_identity(
+        output_dir,
+        make_identity(
+            tool="dedup",
+            mode="global",
+            settings={
+                "text_scope": text_scope,
+                "exclude_system": exclude_system,
+                "ngram_size": width,
+                "num_perm": num_perm,
+                "bands": bands,
+                "rows_per_band": rows,
+                "write_filtered": write_filtered,
+            },
+            input_root=str(input_root),
+            input_files=describe_input_files(input_root, files),
+        ),
+    )
+
     stats = ScanStats()
     decisions = detect_duplicates(
         input_root,
@@ -828,6 +862,7 @@ def run(
         "duplicate_rows": len(decisions),
         "kept_rows": kept_rows,
         "filtered_duplicate_rows": filtered_duplicate_rows,
+        "input": input_block(str(input_root), stats.input_files),
         "configuration": {
             "text_scope": text_scope,
             "exclude_system": exclude_system,
@@ -889,6 +924,27 @@ def run_cross(
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    validate_lsh_parameters(width, num_perm, bands, rows)
+    check_run_identity(
+        output_dir,
+        make_identity(
+            tool="dedup",
+            mode="cross",
+            settings={
+                "text_scope": text_scope,
+                "exclude_system": exclude_system,
+                "ngram_size": width,
+                "num_perm": num_perm,
+                "bands": bands,
+                "rows_per_band": rows,
+                "write_filtered": write_filtered,
+                "reference_input": str(reference_root),
+            },
+            input_root=str(candidate_root),
+            input_files=describe_input_files(candidate_root, candidate_files),
+        ),
+    )
+
     reference_stats = ScanStats()
     candidate_stats = ScanStats()
     decisions, direct_matches, reference_rows_by_file = detect_cross_duplicates(
@@ -944,6 +1000,7 @@ def run_cross(
             "rows_total": reference_stats.rows_total,
             "rows_hashed": reference_stats.rows_hashed,
             "rows_without_text": reference_stats.rows_without_text,
+            "input": input_block(str(reference_root), reference_stats.input_files),
             **contamination_summary,
         },
         "candidate": {
@@ -957,6 +1014,7 @@ def run_cross(
             "filtered_duplicate_rows": filtered_duplicate_rows,
         },
         "candidate_pairs": candidate_stats.candidate_pairs,
+        "input": input_block(str(candidate_root), candidate_stats.input_files),
         "output_dir": str(output_dir),
         "configuration": {
             "text_scope": text_scope,

@@ -13,7 +13,10 @@ This process never writes to the data it inspects: /api/inspect and
 they never run prepare_rows.py's actual write step. /api/sources (the
 training-data catalog in sources.py, for the UI's sidebar dataset picker)
 is the same: it only reads directory listings and stat()/exists() to
-mark each entry available or not, never a row.
+mark each entry available or not, never a row. The Prepared-run routes
+(/api/run, /api/run/skipped, /api/origin) are read-only too: they read a
+run's summary.json and skipped_rows.ndjson, and look up one original row,
+and only open a file the run's own summary.json says it read.
 """
 
 from __future__ import annotations
@@ -28,11 +31,14 @@ from pydantic import BaseModel, Field
 
 import detect
 import preview
+import runs
 import sources
 from reader_imports import json_safe
 
 DEFAULT_SAMPLE_ROWS = 2
 MAX_SAMPLE_ROWS = 200
+DEFAULT_SKIPPED_PAGE_SIZE = 50
+MAX_SKIPPED_PAGE_SIZE = 200
 
 app = FastAPI(title="Input validator UI")
 
@@ -78,6 +84,10 @@ class PreviewRequest(BaseModel):
     # always the first `max_rows` rows. See detect.sample_rows() for how
     # each format reaches it.
     start_row: int = 0
+    # jsonl only: start at the line that begins at this byte instead of at
+    # `start_row` (which counts non-blank rows, not lines). Lets "Open this
+    # row in the preview" land on the exact line an _origin note names.
+    start_byte: int | None = None
     map: dict[str, str] = Field(default_factory=dict)
     require: list[str] = Field(default_factory=list)
     exclude_metadata: list[str] = Field(default_factory=list)
@@ -94,10 +104,11 @@ def run_preview(body: PreviewRequest) -> dict[str, Any]:
 
     max_rows = min(max(1, body.max_rows), MAX_SAMPLE_ROWS)
     start_row = max(0, body.start_row)
+    start_byte = None if body.start_byte is None else max(0, body.start_byte)
 
     try:
         rows, source_info = detect.sample_rows(
-            resolved, body.input_type, body.file, max_rows, body.split, start_row
+            resolved, body.input_type, body.file, max_rows, body.split, start_row, start_byte
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -131,6 +142,65 @@ def run_preview(body: PreviewRequest) -> dict[str, Any]:
         "preview": result,
         "command": command,
     }
+
+
+class RunRequest(BaseModel):
+    run_dir: str
+
+
+@app.post("/api/run")
+def open_run(body: RunRequest) -> dict[str, Any]:
+    """A Prepared run's summary.json and run_identity.json."""
+    try:
+        return runs.open_run(detect.resolve_input_path(body.run_dir))
+    except (detect.InvalidPath, runs.RunError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class SkippedRequest(BaseModel):
+    run_dir: str
+    page: int = 1
+    page_size: int = DEFAULT_SKIPPED_PAGE_SIZE
+    reason: str | None = None
+    file: str | None = None
+
+
+@app.post("/api/run/skipped")
+def skipped_rows(body: SkippedRequest) -> dict[str, Any]:
+    """One page of a run's skipped_rows.ndjson, optionally filtered by
+    reason and by original file."""
+    page = max(1, body.page)
+    page_size = min(max(1, body.page_size), MAX_SKIPPED_PAGE_SIZE)
+    try:
+        run = runs.open_run(detect.resolve_input_path(body.run_dir))
+        return runs.skipped_page(run, page, page_size, body.reason, body.file)
+    except (detect.InvalidPath, runs.RunError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class OriginRequest(BaseModel):
+    origin: dict[str, Any]
+    # The run the row belongs to -- or, for a Prepared row viewed outside a
+    # run, the Prepared file it was shown from (its run is found by walking
+    # up from there).
+    run_dir: str | None = None
+    prepared_path: str | None = None
+
+
+@app.post("/api/origin")
+def lookup_origin(body: OriginRequest) -> dict[str, Any]:
+    """The original row an _origin note points at, as it is now, with one
+    status: unchanged, changed or not_found."""
+    try:
+        run_dir = detect.resolve_input_path(body.run_dir) if body.run_dir else None
+        prepared_path = detect.resolve_input_path(body.prepared_path) if body.prepared_path else None
+        return runs.lookup(body.origin, run_dir, prepared_path)
+    except (detect.InvalidPath, runs.RunError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # a real reader failure -- surface it to the UI, don't 500 blindly
+        raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}") from exc
 
 
 # Serves the built frontend (validator/frontend/dist, built by run.sh) at

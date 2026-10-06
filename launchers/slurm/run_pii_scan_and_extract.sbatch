@@ -54,8 +54,7 @@ mkdir -p \
   "${PII_LOG_ROOT}/stage1" \
   "${PII_LOG_ROOT}/stage2" \
   "${PII_LOG_ROOT}/stage3" \
-  "${PII_LOG_ROOT}/reports" \
-  "${PII_RUN_DIR}/stage3_extract"
+  "${PII_LOG_ROOT}/reports"
 
 exec >>"${PII_MAIN_LOG}" 2>>"${PII_ERR_LOG}"
 

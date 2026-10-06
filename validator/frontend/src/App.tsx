@@ -6,14 +6,17 @@ import CommandBox from './components/CommandBox'
 import DatasetHeader from './components/DatasetHeader'
 import FormatPicker from './components/FormatPicker'
 import InputFields from './components/InputFields'
+import { ShowOriginal } from './components/OriginalLookup'
 import OutputPreview, { describeRowStatus } from './components/OutputPreview'
 import RecordView from './components/RecordView'
 import RowNavigator from './components/RowNavigator'
+import RunView from './components/RunView'
 import Sidebar from './components/Sidebar'
 import { applySuggestion, emptyMapping, toRequestFlags } from './mapping'
 import type { MappingState } from './mapping'
+import { getOrigin } from './origin'
 import { loadJSON, saveJSON } from './storage'
-import type { InspectGroup, InspectResult, PreviewResponse, TeamCatalog } from './types'
+import type { InspectGroup, InspectResult, Origin, PreviewResponse, TeamCatalog } from './types'
 
 // Fixed, not user-configurable: the plan is to show 1-2 real rows clearly
 // rather than a large sample, since the data in a given file is assumed
@@ -25,8 +28,19 @@ const SAMPLE_ROWS = 2
 // before this file moved the state up to here stays ticked.
 const VERIFIED_KEY = 'sourcePicker.reviewedPaths'
 
+// Where a preview opened from a Prepared run starts, instead of at row 0.
+// A JSONL note starts at its exact `byte` (`line` is only for the label);
+// every other format starts at its `row`; an Arrow folder also has a `split`.
+interface InspectStart {
+  row: number
+  byte: number | null
+  line: number | null
+  split: string | null
+}
+
 export default function App() {
   const [backendOk, setBackendOk] = useState<boolean | null>(null)
+  const [view, setView] = useState<'inspect' | 'run'>('inspect')
   const [sourceTeams, setSourceTeams] = useState<TeamCatalog[]>([])
 
   // Client-only, never sent to the backend (see storage.ts) -- one
@@ -54,6 +68,12 @@ export default function App() {
   // row navigator's jump form has moved it. Reset alongside
   // selectedRowIndex/mapping whenever the dataset or format changes.
   const [startRow, setStartRow] = useState(0)
+  // When set (jsonl only), the sample starts at the line beginning at this
+  // byte, and startRow is ignored. Set only by "Open this row in the
+  // preview"; the row navigator's jump form clears it.
+  const [startByte, setStartByte] = useState<number | null>(null)
+  const [split, setSplit] = useState('train')
+  const [inspectStart, setInspectStart] = useState<InspectStart | null>(null)
   // "Readable" by default (see the plan this feature came from); not
   // reset on a new inspect -- it's a viewing preference, not something
   // tied to a particular dataset's shape.
@@ -93,8 +113,9 @@ export default function App() {
     setVerifiedState(latest)
   }
 
-  async function handleInspect(path: string) {
+  async function handleInspect(path: string, start: InspectStart | null = null) {
     setActivePath(path)
+    setInspectStart(start)
     setInspectLoading(true)
     setInspectError(null)
     setInspectResult(null)
@@ -103,6 +124,7 @@ export default function App() {
     setMapping(emptyMapping())
     setSelectedRowIndex(0)
     setStartRow(0)
+    setStartByte(null)
     setPreviewResult(null)
     setPreviewError(null)
     try {
@@ -123,13 +145,32 @@ export default function App() {
     // old columns) no longer necessarily make sense -- start clean.
     setMapping(emptyMapping())
     setSelectedRowIndex(0)
-    setStartRow(0)
+    // Where the sample starts: row 0, unless this inspect was opened from a
+    // Prepared run's _origin note (see handleOpenInPreview). Setting these
+    // from inspectStart every time is safe to repeat.
+    setStartRow(inspectStart?.row ?? 0)
+    setStartByte(inspectStart?.byte ?? null)
+    setSplit(inspectStart?.split ?? 'train')
+  }
+
+  // "Open this row in the preview", from the Prepared run view: inspect the
+  // original file the note names, starting at the exact row.
+  function handleOpenInPreview(origin: Origin) {
+    const isJsonl = typeof origin.byte === 'number'
+    setView('inspect')
+    void handleInspect(origin.path, {
+      row: isJsonl ? 0 : (origin.row ?? 0),
+      byte: isJsonl ? (origin.byte ?? null) : null,
+      line: origin.line ?? null,
+      split: origin.split ?? null,
+    })
   }
 
   // From RowNavigator's jump form: move the sample window to start at
   // newStartRow, and show whatever lands at position 0 within it.
   function handleJump(newStartRow: number) {
     setStartRow(newStartRow)
+    setStartByte(null)
     setSelectedRowIndex(0)
   }
 
@@ -148,6 +189,8 @@ export default function App() {
       file: selectedFile,
       max_rows: SAMPLE_ROWS,
       start_row: startRow,
+      start_byte: startByte,
+      split,
       map,
       require,
       exclude_metadata,
@@ -167,10 +210,10 @@ export default function App() {
         setPreviewLoading(false)
       })
     // Deliberately not depending on anything else -- selectedGroup/
-    // selectedFile/currentPath/mapping/startRow are exactly the request's
-    // inputs.
+    // selectedFile/currentPath/mapping/startRow/startByte/split are
+    // exactly the request's inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGroup, selectedFile, currentPath, mapping, startRow])
+  }, [selectedGroup, selectedFile, currentPath, mapping, startRow, startByte, split])
 
   function handleApplySuggestion() {
     if (!previewResult) return
@@ -182,6 +225,19 @@ export default function App() {
   const rowIndexes = Array.from({ length: sampleSize }, (_, index) => index)
   const foundEntry = activePath ? findEntry(sourceTeams, activePath) : null
 
+  // "Show original": for a sampled row that carries an _origin note. The
+  // backend finds the row's run from the Prepared file it was read from.
+  const selectedRow = previewResult?.input_rows[selectedRowIndex]
+  const selectedOrigin = selectedRow ? getOrigin(selectedRow) : null
+  const selectedPreparedPath =
+    previewResult?.source_info.row_files?.[selectedRowIndex] ?? previewResult?.source_info.sampled_from_file ?? null
+  const startLabel =
+    startByte === null
+      ? undefined
+      : inspectStart?.line
+        ? `line ${inspectStart.line} (byte ${startByte})`
+        : `byte ${startByte}`
+
   return (
     <div className="app">
       <header>
@@ -190,6 +246,22 @@ export default function App() {
           Read-only. Shows what modelsafety/readers/prepare_rows.py would do to a path's data, without
           converting anything.
         </p>
+        <div className="row-tabs view-switch">
+          <button
+            type="button"
+            className={view === 'inspect' ? 'row-tab selected' : 'row-tab'}
+            onClick={() => setView('inspect')}
+          >
+            Inspect a dataset
+          </button>
+          <button
+            type="button"
+            className={view === 'run' ? 'row-tab selected' : 'row-tab'}
+            onClick={() => setView('run')}
+          >
+            Prepared run
+          </button>
+        </div>
         {backendOk === false && (
           <div className="banner banner-error">
             Couldn't reach the backend. Make sure <code>./validator/run.sh</code> is still running, and open
@@ -198,131 +270,148 @@ export default function App() {
         )}
       </header>
 
-      <div className="app-shell">
-        <Sidebar
-          teams={sourceTeams}
-          loading={inspectLoading}
-          verified={verified}
-          onToggleVerified={setVerified}
-          activePath={activePath}
-          onPick={handleInspect}
-          onInspect={handleInspect}
-        />
+      <div hidden={view !== 'inspect'}>
+        <div className="app-shell">
+          <Sidebar
+            teams={sourceTeams}
+            loading={inspectLoading}
+            verified={verified}
+            onToggleVerified={setVerified}
+            activePath={activePath}
+            onPick={handleInspect}
+            onInspect={handleInspect}
+          />
 
-        <main className="app-main">
-          {activePath && (
-            <DatasetHeader
-              path={activePath}
-              found={foundEntry}
-              verified={!!verified[activePath]}
-              onToggleVerified={setVerified}
-            />
-          )}
+          <main className="app-main">
+            {activePath && (
+              <DatasetHeader
+                path={activePath}
+                found={foundEntry}
+                verified={!!verified[activePath]}
+                onToggleVerified={setVerified}
+              />
+            )}
 
-          {!activePath && (
-            <p className="muted">
-              Pick a dataset from the sidebar, or enter a path under "Custom path", to get started.
-            </p>
-          )}
+            {!activePath && (
+              <p className="muted">
+                Pick a dataset from the sidebar, or enter a path under "Custom path", to get started.
+              </p>
+            )}
 
-          {inspectLoading && <p className="muted small">Inspecting…</p>}
-          {inspectError && <p className="error">{inspectError}</p>}
+            {inspectLoading && <p className="muted small">Inspecting…</p>}
+            {inspectError && <p className="error">{inspectError}</p>}
 
-          {inspectResult && (
-            <FormatPicker
-              groups={inspectResult.groups}
-              isSingleFile={inspectResult.kind === 'file'}
-              onSelect={handleFormatSelect}
-            />
-          )}
+            {inspectResult && (
+              <FormatPicker
+                groups={inspectResult.groups}
+                isSingleFile={inspectResult.kind === 'file'}
+                onSelect={handleFormatSelect}
+              />
+            )}
 
-          {previewError && <p className="error">{previewError}</p>}
+            {previewError && <p className="error">{previewError}</p>}
 
-          {previewResult && (
-            <div className={previewLoading ? 'preview-area loading' : 'preview-area'}>
-              <div className="preview-toolbar">
-                <div className="toolbar-left">
-                  <RowNavigator
-                    sourceInfo={previewResult.source_info}
-                    startRow={startRow}
-                    sampleSize={sampleSize}
-                    onJump={handleJump}
-                  />
-                  <div className="row-tabs">
-                    {rowIndexes.map((index) => (
+            {previewResult && (
+              <div className={previewLoading ? 'preview-area loading' : 'preview-area'}>
+                <div className="preview-toolbar">
+                  <div className="toolbar-left">
+                    <RowNavigator
+                      sourceInfo={previewResult.source_info}
+                      startRow={startRow}
+                      sampleSize={sampleSize}
+                      startLabel={startLabel}
+                      onJump={handleJump}
+                    />
+                    <div className="row-tabs">
+                      {rowIndexes.map((index) => (
+                        <button
+                          key={index}
+                          type="button"
+                          className={index === selectedRowIndex ? 'row-tab selected' : 'row-tab'}
+                          onClick={() => setSelectedRowIndex(index)}
+                        >
+                          {/* startRow + index + 1 is the absolute row number shown to the user;
+                              index itself stays the local, 0-based value row_index lookups use
+                              elsewhere (RecordView, OutputPreview, InputFields) -- display-only.
+                              When the sample starts at a byte, there's no row number to show. */}
+                          {startByte !== null ? `Sample row ${index + 1}` : `Row ${startRow + index + 1}`}:{' '}
+                          {describeRowStatus(previewResult.preview, index)}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="row-tabs">
                       <button
-                        key={index}
                         type="button"
-                        className={index === selectedRowIndex ? 'row-tab selected' : 'row-tab'}
-                        onClick={() => setSelectedRowIndex(index)}
+                        className={viewMode === 'readable' ? 'row-tab selected' : 'row-tab'}
+                        onClick={() => setViewMode('readable')}
                       >
-                        {/* startRow + index + 1 is the absolute row number shown to the user;
-                            index itself stays the local, 0-based value row_index lookups use
-                            elsewhere (RecordView, OutputPreview, InputFields) -- display-only. */}
-                        Row {startRow + index + 1}: {describeRowStatus(previewResult.preview, index)}
+                        Readable
                       </button>
-                    ))}
+                      <button
+                        type="button"
+                        className={viewMode === 'fields' ? 'row-tab selected' : 'row-tab'}
+                        onClick={() => setViewMode('fields')}
+                      >
+                        Fields &amp; output
+                      </button>
+                    </div>
                   </div>
-                  <div className="row-tabs">
-                    <button
-                      type="button"
-                      className={viewMode === 'readable' ? 'row-tab selected' : 'row-tab'}
-                      onClick={() => setViewMode('readable')}
-                    >
-                      Readable
-                    </button>
-                    <button
-                      type="button"
-                      className={viewMode === 'fields' ? 'row-tab selected' : 'row-tab'}
-                      onClick={() => setViewMode('fields')}
-                    >
-                      Fields &amp; output
-                    </button>
-                  </div>
+                  {suggestedEntries.length > 0 && (
+                    <div className="suggestion-bar small">
+                      <span className="muted">Suggested:</span>{' '}
+                      {suggestedEntries.map(([target, source]) => `${target} ← ${source}`).join(', ')}
+                      <button type="button" className="secondary" onClick={handleApplySuggestion}>
+                        Apply
+                      </button>
+                    </div>
+                  )}
                 </div>
-                {suggestedEntries.length > 0 && (
-                  <div className="suggestion-bar small">
-                    <span className="muted">Suggested:</span>{' '}
-                    {suggestedEntries.map(([target, source]) => `${target} ← ${source}`).join(', ')}
-                    <button type="button" className="secondary" onClick={handleApplySuggestion}>
-                      Apply
-                    </button>
+
+                {selectedOrigin && selectedPreparedPath && (
+                  <ShowOriginal
+                    key={`${selectedPreparedPath}|${startRow}|${startByte}|${selectedRowIndex}|${selectedOrigin.byte ?? selectedOrigin.row}`}
+                    origin={selectedOrigin}
+                    preparedPath={selectedPreparedPath}
+                  />
+                )}
+
+                {sampleSize === 0 ? (
+                  <p className="muted">No rows in this sample.</p>
+                ) : viewMode === 'readable' ? (
+                  <>
+                    <RecordView
+                      record={previewResult.input_rows[selectedRowIndex] ?? {}}
+                      written={previewResult.preview.rows.find((row) => row.row_index === selectedRowIndex)}
+                    />
+                    <CommandBox command={previewResult.command} />
+                  </>
+                ) : (
+                  <div className="columns">
+                    <div className="column">
+                      <h2>Your input (row {selectedRowIndex + 1})</h2>
+                      <InputFields
+                        inputRows={previewResult.input_rows}
+                        selectedRowIndex={selectedRowIndex}
+                        mapping={mapping}
+                        hints={previewResult.suggested_mapping.hints}
+                        onMappingChange={setMapping}
+                      />
+                    </div>
+                    <div className="column wide sticky-column">
+                      <h2>Output (row {selectedRowIndex + 1})</h2>
+                      <OutputPreview result={previewResult} mapping={mapping} selectedRowIndex={selectedRowIndex} />
+                      <CommandBox command={previewResult.command} />
+                    </div>
                   </div>
                 )}
               </div>
+            )}
+          </main>
+        </div>
+      </div>
 
-              {sampleSize === 0 ? (
-                <p className="muted">No rows in this sample.</p>
-              ) : viewMode === 'readable' ? (
-                <>
-                  <RecordView
-                    record={previewResult.input_rows[selectedRowIndex] ?? {}}
-                    written={previewResult.preview.rows.find((row) => row.row_index === selectedRowIndex)}
-                  />
-                  <CommandBox command={previewResult.command} />
-                </>
-              ) : (
-                <div className="columns">
-                  <div className="column">
-                    <h2>Your input (row {selectedRowIndex + 1})</h2>
-                    <InputFields
-                      inputRows={previewResult.input_rows}
-                      selectedRowIndex={selectedRowIndex}
-                      mapping={mapping}
-                      hints={previewResult.suggested_mapping.hints}
-                      onMappingChange={setMapping}
-                    />
-                  </div>
-                  <div className="column wide sticky-column">
-                    <h2>Output (row {selectedRowIndex + 1})</h2>
-                    <OutputPreview result={previewResult} mapping={mapping} selectedRowIndex={selectedRowIndex} />
-                    <CommandBox command={previewResult.command} />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </main>
+      <div hidden={view !== 'run'}>
+        <RunView onOpenInPreview={handleOpenInPreview} />
       </div>
     </div>
   )

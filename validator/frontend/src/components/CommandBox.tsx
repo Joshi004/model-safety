@@ -1,11 +1,19 @@
 import { useState } from 'react'
 
-export default function CommandBox({ command }: { command: string }) {
+export default function CommandBox({
+  command,
+  title = 'Matching command',
+  note = "This never runs automatically -- copy it and run it yourself when you're ready to actually convert.",
+}: {
+  command: string
+  title?: string
+  note?: string
+}) {
   const [copied, setCopied] = useState(false)
 
   return (
     <div className="command-box">
-      <h3>Matching command</h3>
+      <h3>{title}</h3>
       <pre className="command-text">{command}</pre>
       <button
         type="button"
@@ -24,9 +32,7 @@ export default function CommandBox({ command }: { command: string }) {
       >
         {copied ? 'Copied!' : 'Copy'}
       </button>
-      <p className="muted small">
-        This never runs automatically -- copy it and run it yourself when you're ready to actually convert.
-      </p>
+      <p className="muted small">{note}</p>
     </div>
   )
 }

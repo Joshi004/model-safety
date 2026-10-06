@@ -23,6 +23,7 @@ STAGE2_NAME = "stage2_validated"
 HITS_DIRNAME = "hits"
 WORKERS_DIRNAME = "workers"
 METRICS_FILENAME = "metrics.txt"
+INPUT_FILES_FILENAME = "input_files.json"
 
 
 def script_dir() -> Path:
@@ -63,6 +64,7 @@ def stage1_paths(run_dir: Path | None = None) -> dict[str, Path]:
         "hits_dir": hits,
         "workers_dir": stage / WORKERS_DIRNAME,
         "metrics_file": stage / METRICS_FILENAME,
+        "input_files": stage / INPUT_FILES_FILENAME,
     }
 
 

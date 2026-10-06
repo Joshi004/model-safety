@@ -1,0 +1,88 @@
+:root {
+  --text: #3a3842;
+  --text-h: #08060d;
+  --bg: #ffffff;
+  --bg-alt: #f7f7f9;
+  --border: #dcdbe0;
+  --code-bg: #f4f3ec;
+  --accent: #7a3bdc;
+  --accent-bg: rgba(122, 59, 220, 0.08);
+  --error: #b3261e;
+  --error-bg: rgba(179, 38, 30, 0.08);
+  --ok: #1b7a3d;
+  --ok-bg: rgba(27, 122, 61, 0.1);
+
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+
+  font: 15px/1.5 var(--sans);
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #c7c5cc;
+    --text-h: #f3f4f6;
+    --bg: #15161b;
+    --bg-alt: #1c1d23;
+    --border: #33343c;
+    --code-bg: #1f2028;
+    --accent: #b793f0;
+    --accent-bg: rgba(183, 147, 240, 0.12);
+    --error: #ff8a80;
+    --error-bg: rgba(255, 138, 128, 0.12);
+    --ok: #7cd99a;
+    --ok-bg: rgba(124, 217, 154, 0.12);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: var(--text-h);
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+p {
+  margin: 0 0 8px;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--code-bg);
+  color: var(--text-h);
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+}

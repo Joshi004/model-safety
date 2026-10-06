@@ -1,0 +1,963 @@
+.app {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 32px 64px;
+  text-align: left;
+}
+
+header {
+  margin-bottom: 24px;
+}
+
+.muted {
+  color: var(--text);
+  opacity: 0.7;
+}
+
+.small {
+  font-size: 0.85em;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.error {
+  color: var(--error);
+}
+
+/* ---- Path form ---- */
+
+.path-form {
+  margin-bottom: 20px;
+}
+
+.path-form label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.path-form-row {
+  display: flex;
+  gap: 8px;
+}
+
+.path-form-row input {
+  flex: 1;
+  font-family: var(--mono);
+}
+
+.example-paths {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.example-path {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 3px 10px;
+  font-size: 0.85em;
+  color: var(--text);
+}
+
+.example-path:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ---- Layout: sidebar + main shell ---- */
+
+.app-shell {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.columns {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 24px;
+  align-items: flex-start;
+}
+
+.column {
+  flex: 1;
+  min-width: 0;
+}
+
+.column.wide {
+  flex: 2;
+}
+
+/* The output column tracks the viewport while the input column (usually
+   taller, one card per field) scrolls past it. Offset below
+   .dataset-header-bar's own sticky position (12px, same as this) plus
+   its height (~40px -- one line of text, its padding, and its border)
+   and a small gap, so the two don't overlap once both are stuck. */
+.sticky-column {
+  position: sticky;
+  top: 68px;
+}
+
+/* ---- Sidebar ---- */
+
+.sidebar {
+  flex: 0 0 300px;
+  width: 300px;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  padding: 14px;
+}
+
+.sidebar-collapsed {
+  flex: 0 0 40px;
+  width: 40px;
+  padding: 10px 4px;
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.sidebar-header h3 {
+  margin-bottom: 0;
+}
+
+.sidebar-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.sidebar-collapsed-count {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+.sidebar-custom-path {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 8px 10px;
+  margin-top: 12px;
+}
+
+.sidebar-custom-path summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.sidebar-custom-path .path-form {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.sidebar-footnote {
+  margin: 10px 0 0;
+}
+
+/* ---- Cards shared by panels ---- */
+
+.format-picker,
+.input-fields,
+.output-preview,
+.command-box,
+.target-format {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--bg-alt);
+  margin-bottom: 16px;
+}
+
+/* Unlike the cards above, .source-picker now lives inside .sidebar
+   (which already has its own border/background/padding) -- no card
+   styling of its own, just spacing before "Custom path" below it. */
+.source-picker {
+  margin-bottom: 0;
+}
+
+/* ---- Format picker ---- */
+
+.group-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.group-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--bg);
+}
+
+.group-item.readable {
+  cursor: pointer;
+}
+
+.group-item.unreadable {
+  opacity: 0.6;
+}
+
+.group-item.selected {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.group-item-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.group-note {
+  margin: 4px 0 0;
+}
+
+.format-picker label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-weight: 600;
+  margin-top: 12px;
+}
+
+/* ---- Source picker: team tabs + collapsible groups of entries ---- */
+
+/* Lets a team-tab button show its name next to a compact ProgressBar
+   without touching the shared .row-tab rule itself -- row-index tabs and
+   the Readable/Fields toggle use that same class with a plain text
+   child, so .row-tab stays untouched and this wrapper is additive only. */
+.row-tab-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.source-group {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 6px 8px;
+  margin-top: 8px;
+}
+
+.source-group summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+/* Inside <summary> rather than on it directly -- <summary>'s own
+   disclosure-triangle marker interacts inconsistently with
+   display:flex across browsers, so the flex layout lives one level in. */
+.source-group-summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.source-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 6px;
+}
+
+.source-entry-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.source-entry-row:hover {
+  background: var(--bg-alt);
+}
+
+.source-entry-row.active {
+  background: var(--accent-bg);
+}
+
+.source-entry-row.unavailable {
+  opacity: 0.55;
+}
+
+.source-entry-checkbox {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.source-entry-pick {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.source-entry-pick:disabled {
+  cursor: default;
+}
+
+.source-entry-row.verified .source-entry-pick {
+  color: var(--ok);
+}
+
+/* ---- Progress bar: sidebar overall count ('full') and team-tab/
+   group-summary counts ('compact') -- see ProgressBar.tsx ---- */
+
+.progress-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.progress-bar-full {
+  margin: 8px 0 12px;
+}
+
+.progress-bar-label {
+  font-weight: 600;
+}
+
+.progress-bar-track {
+  height: 6px;
+  min-width: 32px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar-full .progress-bar-track {
+  flex: 1;
+}
+
+.progress-bar-compact .progress-bar-track {
+  flex: 0 0 32px;
+  height: 4px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--ok);
+  border-radius: 4px;
+}
+
+.progress-bar-count {
+  white-space: nowrap;
+}
+
+/* ---- Dataset header: the picked dataset's name/path/description,
+   above "What's here" in the main panel ---- */
+
+.dataset-header {
+  margin-bottom: 16px;
+}
+
+/* Sticky so the dataset's name and its Verified checkbox stay visible
+   while a long row's content scrolls underneath -- same top offset as
+   .sidebar, and see .sticky-column's own comment for the gap this
+   leaves below it to clear. */
+.dataset-header-bar {
+  position: sticky;
+  top: 12px;
+  z-index: 2;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.dataset-header-breadcrumb {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataset-header-verified {
+  flex: 0 0 auto;
+}
+
+.dataset-header-path {
+  margin: 8px 0 4px;
+  word-break: break-all;
+}
+
+.dataset-header-screening {
+  background: var(--accent-bg);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.dataset-header-group-note {
+  margin-top: 6px;
+}
+
+.dataset-header-group-note summary {
+  cursor: pointer;
+}
+
+/* ---- Preview toolbar: row tabs + suggestion ---- */
+
+.preview-area.loading {
+  opacity: 0.5;
+}
+
+.preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.toolbar-left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+/* ---- Row navigator: total-row display + jump-to-row form ---- */
+
+/* flex-basis: 100% makes this always take the whole .toolbar-left row by
+   itself, pushing the row-index tabs and the Readable/Fields toggle onto
+   their own line below it (.toolbar-left already has flex-wrap: wrap) --
+   so it reads as "above the row tabs" without changing .toolbar-left's
+   own layout. */
+.row-navigator {
+  flex-basis: 100%;
+  margin-bottom: 2px;
+}
+
+.row-navigator-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.row-jump-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row-jump-form input {
+  width: 90px;
+  font-family: var(--mono);
+}
+
+.row-jump-form button.secondary {
+  margin-bottom: 0;
+}
+
+.row-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.row-tab {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 4px 12px;
+  font-size: 0.85em;
+}
+
+.row-tab.selected {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.suggestion-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.suggestion-bar button.secondary {
+  padding: 3px 10px;
+  margin-bottom: 0;
+}
+
+/* ---- Input fields: one card per top-level key ---- */
+
+.field-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+/* Destination colors: scanned (text/messages) is the accent color,
+   metadata is neutral (the default border), dropped is muted. */
+.field-card-text,
+.field-card-messages {
+  border-left-color: var(--accent);
+}
+
+.field-card-metadata {
+  border-left-color: var(--border);
+}
+
+.field-card-drop {
+  border-left-color: var(--border);
+  opacity: 0.6;
+}
+
+.field-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.field-name {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+.field-card-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+label.inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+label.inline.small {
+  font-weight: normal;
+}
+
+label.inline select {
+  font-weight: normal;
+}
+
+.field-hint {
+  background: var(--error-bg);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 0 0 6px;
+}
+
+.field-note {
+  background: var(--accent-bg);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 0 0 6px;
+}
+
+.field-value {
+  overflow-x: auto;
+}
+
+/* ---- Target format card ---- */
+
+.target-format-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.target-format-body {
+  margin-top: 10px;
+}
+
+.target-shape {
+  margin-bottom: 10px;
+}
+
+.target-shape-name {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.target-shape-example {
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: var(--code-bg);
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin: 0 0 4px;
+}
+
+/* ---- Output preview ---- */
+
+.mapping-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: baseline;
+  margin-bottom: 12px;
+}
+
+.mapping-summary-item code {
+  color: var(--accent);
+}
+
+.banner {
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.banner-error {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.banner-warning {
+  background: var(--accent-bg);
+  color: var(--text);
+}
+
+.write-errors,
+.skipped-rows {
+  margin-bottom: 14px;
+}
+
+.write-error {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--error);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--bg);
+}
+
+.hint-text {
+  margin-top: 4px;
+}
+
+.output-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.output-col {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.output-col-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.scanned-text,
+.raw-json {
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  margin: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+/* ---- Value renderer (ValueView) -- used for both input and output ---- */
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  font-size: 0.85em;
+}
+
+.value-node {
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+.value-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+.value-children {
+  margin-left: 16px;
+  border-left: 1px solid var(--border);
+  padding-left: 10px;
+}
+
+.value-entry {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  padding: 1px 0;
+}
+
+.value-key {
+  color: var(--accent);
+}
+
+.value-string {
+  color: var(--ok);
+}
+
+.value-bool,
+.value-number {
+  color: #b36b00;
+}
+
+.value-empty {
+  color: var(--text);
+  opacity: 0.75;
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+.value-nonjson {
+  color: var(--error);
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+/* ---- Chat turn list -- a {role, content} conversation, rendered as an
+   actual transcript instead of a generic list of objects ---- */
+
+.turn-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  padding: 8px 10px;
+  margin-bottom: 6px;
+}
+
+.turn-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.turn-role-pill {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 0.78em;
+  font-weight: 600;
+  font-family: var(--mono);
+}
+
+.turn-extra {
+  margin-top: 4px;
+}
+
+/* ---- Record view (the "Readable" toggle) ---- */
+
+.record-view {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--bg-alt);
+}
+
+.scanner-coverage {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--accent-bg);
+  padding: 8px 12px;
+  margin-bottom: 14px;
+}
+
+.scanner-coverage-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2px 9px;
+  font-size: 0.85em;
+}
+
+.chip-key {
+  color: var(--accent);
+  font-family: var(--mono);
+}
+
+.record-section {
+  margin-bottom: 18px;
+}
+
+.record-section:last-child {
+  margin-bottom: 0;
+}
+
+.tool-def-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 6px 10px;
+  margin-bottom: 6px;
+}
+
+.tool-def-card summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.tool-call-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg);
+  padding: 6px 10px;
+  margin: 6px 0;
+}
+
+.tool-call-args {
+  margin-top: 4px;
+}
+
+.system-prompt-collapse,
+.reasoning-collapse {
+  margin: 4px 0;
+}
+
+.system-prompt-collapse summary,
+.reasoning-collapse summary {
+  cursor: pointer;
+}
+
+.reasoning-text {
+  white-space: pre-wrap;
+  background: var(--code-bg);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 4px 0 0;
+  font-size: 0.9em;
+}
+
+.reference-options {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reference-option {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+
+.reference-option.correct {
+  border-color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.reference-option-mark {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+/* ---- Command box ---- */
+
+button.secondary {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  margin-bottom: 8px;
+}
+
+.command-text {
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: var(--code-bg);
+  padding: 10px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+}

@@ -5,8 +5,15 @@ process to 127.0.0.1 only. There is no per-request auth and no path
 allowlist: any absolute path the running user can read can be inspected,
 and anyone who can already reach this machine's localhost (e.g. another
 user logged into the same login node) can reach this too. That's a
-deliberate choice for a trusted-network deployment -- the remaining
-guardrail is being read-only (see below), not a secret.
+deliberate choice for a trusted-network deployment.
+
+Only the /api/jobs/* routes (jobs.py) act on anything: /api/jobs/submit
+starts SLURM conversion jobs (one `prepare_rows.py` run each, CPU only),
+/api/jobs/cancel cancels them, /api/jobs/delete deletes run folders (only
+inside the runs root, after the checks in jobs.py), and submit also writes
+batch records under <runs root>/_jobs. /api/jobs/settings, /api/jobs/check,
+/api/jobs/batches and /api/jobs/status only read. Every other route is
+read-only, and none of them ever writes to or deletes original data.
 
 This process never writes to the data it inspects: /api/inspect and
 /api/preview only read a bounded sample and report what would happen,
@@ -14,9 +21,14 @@ they never run prepare_rows.py's actual write step. /api/sources (the
 training-data catalog in sources.py, for the UI's sidebar dataset picker)
 is the same: it only reads directory listings and stat()/exists() to
 mark each entry available or not, never a row. The Prepared-run routes
-(/api/run, /api/run/skipped, /api/origin) are read-only too: they read a
-run's summary.json and skipped_rows.ndjson, and look up one original row,
-and only open a file the run's own summary.json says it read.
+(/api/runs, /api/run, /api/run/progress, /api/run/skipped, /api/origin)
+are read-only too: /api/runs lists the run folders under the runs root,
+reading only each one's run_identity.json, summary.json and progress.json;
+/api/run/progress reads one run's progress.json and checks whether its
+summary.json and _SUCCESS exist; the others read a run's summary.json and
+skipped_rows.ndjson, and look up one original row, and only open a file
+the run's own summary.json says it read. (The Prepared rows tab reuses
+/api/preview on a run's own written files.)
 """
 
 from __future__ import annotations
@@ -30,6 +42,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import detect
+import jobs
 import preview
 import runs
 import sources
@@ -51,9 +64,10 @@ def health() -> dict[str, Any]:
 @app.get("/api/sources")
 def sources_catalog() -> dict[str, Any]:
     """The curated Tools-team / medpsy training-data catalog (sources.py),
-    for the sidebar's dataset picker. Read-only, same as every other
-    route here -- this only reads directory listings and stat()/exists()
-    to mark each entry available or not, it never opens a row."""
+    for the sidebar's dataset picker. Read-only, like every route here
+    except the /api/jobs/* ones that act -- this only reads directory
+    listings and stat()/exists() to mark each entry available or not, it
+    never opens a row."""
     return {"teams": sources.list_sources()}
 
 
@@ -78,6 +92,9 @@ class PreviewRequest(BaseModel):
     input_type: str
     file: str | None = None
     split: str = "train"
+    # Only used for huggingface input: prepare_rows.py's --hf-config, shown
+    # in the command (and submitted by the Start panel).
+    hf_config: str = ""
     max_rows: int = DEFAULT_SAMPLE_ROWS
     # Which row to start the sample at (0-indexed) -- lets the UI's row
     # navigator look at an arbitrary position in the file instead of
@@ -131,6 +148,8 @@ def run_preview(body: PreviewRequest) -> dict[str, Any]:
         required=body.require,
         exclude_metadata=body.exclude_metadata,
         output_dir=body.output_dir,
+        split=body.split,
+        hf_config=body.hf_config,
     )
 
     return {
@@ -144,6 +163,13 @@ def run_preview(body: PreviewRequest) -> dict[str, Any]:
     }
 
 
+@app.get("/api/runs")
+def list_runs() -> dict[str, Any]:
+    """The runs root, whether it exists, and every prepare_rows.py run folder
+    under it (see runs.list_runs)."""
+    return runs.list_runs(runs.runs_root())
+
+
 class RunRequest(BaseModel):
     run_dir: str
 
@@ -154,6 +180,16 @@ def open_run(body: RunRequest) -> dict[str, Any]:
     try:
         return runs.open_run(detect.resolve_input_path(body.run_dir))
     except (detect.InvalidPath, runs.RunError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/run/progress")
+def run_progress(body: RunRequest) -> dict[str, Any]:
+    """How far a run has got: its progress.json (or null), whether its
+    summary.json and _SUCCESS exist, and whether it may have stopped."""
+    try:
+        return runs.run_progress(detect.resolve_input_path(body.run_dir))
+    except detect.InvalidPath as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -201,6 +237,119 @@ def lookup_origin(body: OriginRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # a real reader failure -- surface it to the UI, don't 500 blindly
         raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+# -------------------------------------------------------------------------
+# Starting, watching, cancelling and deleting conversions (jobs.py) -- the
+# only routes that act on anything.
+# -------------------------------------------------------------------------
+
+
+class PlannedRun(BaseModel):
+    # Catalog entries send team, group and label (they decide the suggested
+    # folder name); a custom path sends none of them.
+    label: str | None = None
+    team: str | None = None
+    group: str | None = None
+    input_path: str
+    input_type: str
+    file: str | None = None
+    split: str = "train"
+    hf_config: str = ""
+    map: dict[str, str] = Field(default_factory=dict)
+    require: list[str] = Field(default_factory=list)
+    exclude_metadata: list[str] = Field(default_factory=list)
+    # Relative to the runs root; null means the suggested folder name.
+    run_folder: str | None = None
+    # Only read by /api/jobs/submit: run it again even if it's already done.
+    run_again: bool = False
+
+
+class JobResources(BaseModel):
+    # Any: jobs.validate_resources() explains what's wrong in words, instead
+    # of the request failing with a generic validation error.
+    partition: Any = None
+    cpus: Any = None
+    mem: Any = None
+    time: Any = None
+
+
+class CheckRequest(BaseModel):
+    runs: list[PlannedRun]
+    resources: JobResources | None = None
+
+
+class SubmitRequest(BaseModel):
+    runs: list[PlannedRun]
+    resources: JobResources
+
+
+class DeleteRequest(BaseModel):
+    run_dirs: list[str]
+
+
+class BatchRequest(BaseModel):
+    batch_id: str
+
+
+class CancelRequest(BaseModel):
+    batch_id: str
+    job_ids: list[str] | None = None
+
+
+def _jobs_call(function: Any, *args: Any) -> Any:
+    try:
+        return function(*args)
+    except jobs.JobsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except jobs.SlurmUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/jobs/settings")
+def jobs_settings() -> dict[str, Any]:
+    """The runs root, the partitions `sinfo` lists, and the default resources."""
+    return _jobs_call(jobs.settings)
+
+
+@app.post("/api/jobs/check")
+def jobs_check(body: CheckRequest) -> dict[str, Any]:
+    """For each planned run: its folder, what's already in it, and the exact
+    commands. Read-only."""
+    planned = [run.model_dump() for run in body.runs]
+    resources = body.resources.model_dump() if body.resources is not None else None
+    return _jobs_call(jobs.check, planned, resources)
+
+
+@app.post("/api/jobs/delete")
+def jobs_delete(body: DeleteRequest) -> dict[str, Any]:
+    """Delete run folders inside the runs root (jobs.delete_folders)."""
+    return _jobs_call(jobs.delete_folders, body.run_dirs)
+
+
+@app.post("/api/jobs/submit")
+def jobs_submit(body: SubmitRequest) -> dict[str, Any]:
+    """Start one SLURM job per planned run, as one batch (jobs.submit)."""
+    planned = [run.model_dump() for run in body.runs]
+    return _jobs_call(jobs.submit, planned, body.resources.model_dump())
+
+
+@app.get("/api/jobs/batches")
+def jobs_batches() -> dict[str, Any]:
+    """Every batch, newest first, with its count of jobs per outcome."""
+    return _jobs_call(jobs.list_batches)
+
+
+@app.post("/api/jobs/status")
+def jobs_status(body: BatchRequest) -> dict[str, Any]:
+    """Each job of one batch: its outcome, progress, summary and log tails."""
+    return _jobs_call(jobs.batch_status, body.batch_id)
+
+
+@app.post("/api/jobs/cancel")
+def jobs_cancel(body: CancelRequest) -> dict[str, Any]:
+    """`scancel` a batch's queued or running jobs (all, or the IDs given)."""
+    return _jobs_call(jobs.cancel, body.batch_id, body.job_ids)
 
 
 # Serves the built frontend (validator/frontend/dist, built by run.sh) at

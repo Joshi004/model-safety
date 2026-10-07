@@ -1,5 +1,5 @@
 import type { Destination, MappingState, Target } from '../mapping'
-import { destinationOf, setDestination, setSkipIfEmpty } from '../mapping'
+import { collectKeysInOrder, destinationOf, setDestination, setSkipIfEmpty } from '../mapping'
 import { describeValue, isChatTurnList } from '../describe'
 import type { MappingHint } from '../types'
 import ValueView from './ValueView'
@@ -17,20 +17,6 @@ const DESTINATION_LABELS: Record<Destination, string> = {
   text: 'Scanned as text',
   messages: 'Scanned as messages',
   drop: 'Dropped',
-}
-
-function collectKeysInOrder(rows: Record<string, unknown>[]): string[] {
-  const seen = new Set<string>()
-  const ordered: string[] = []
-  for (const row of rows) {
-    for (const key of Object.keys(row)) {
-      if (!seen.has(key)) {
-        seen.add(key)
-        ordered.push(key)
-      }
-    }
-  }
-  return ordered
 }
 
 // A hint's `field` is either a bare top-level key ("conversations") or a

@@ -140,6 +140,35 @@ def _load_stored_identity(identity_path: Path) -> dict[str, Any]:
     return stored
 
 
+def compare_run_identity(run_dir: str | Path, identity: dict[str, Any]) -> tuple[str, list[str]]:
+    """How ``run_dir`` stands against ``identity``, without writing anything.
+
+    Returns ``("empty", [])`` for a missing or empty folder, ``("same", [])``
+    when its identity file matches, ``("different", differences)`` when it
+    doesn't, and ``("no_identity", [])`` for a folder that has files but no
+    identity file. Raises ``RunIdentityError`` for something that isn't a
+    folder, or an identity file that can't be read or isn't well formed.
+    """
+    run_dir = Path(run_dir)
+
+    if run_dir.exists() and not run_dir.is_dir():
+        raise RunIdentityError(f"{run_dir} exists and is not a folder.")
+
+    if not run_dir.exists() or not any(run_dir.iterdir()):
+        return "empty", []
+
+    identity_path = run_dir / IDENTITY_FILENAME
+    if not identity_path.exists():
+        return "no_identity", []
+
+    stored = _load_stored_identity(identity_path)
+    stored.pop("created_at", None)
+    requested = json.loads(json.dumps(identity))
+    if stored == requested:
+        return "same", []
+    return "different", _describe_differences(stored, requested)
+
+
 def check_run_identity(run_dir: str | Path, identity: dict[str, Any]) -> str:
     """Return ``"new"`` or ``"resume"``, or raise ``RunIdentityError``.
 
@@ -147,33 +176,26 @@ def check_run_identity(run_dir: str | Path, identity: dict[str, Any]) -> str:
     in the folder is ever changed.
     """
     run_dir = Path(run_dir)
-    identity_path = run_dir / IDENTITY_FILENAME
+    state, differences = compare_run_identity(run_dir, identity)
 
-    if run_dir.exists() and not run_dir.is_dir():
-        raise RunIdentityError(f"{run_dir} exists and is not a folder.")
-
-    if not run_dir.exists() or not any(run_dir.iterdir()):
+    if state == "empty":
         run_dir.mkdir(parents=True, exist_ok=True)
         stamped = {
             **identity,
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
-        identity_path.write_text(json.dumps(stamped, indent=2) + "\n", encoding="utf-8")
+        (run_dir / IDENTITY_FILENAME).write_text(json.dumps(stamped, indent=2) + "\n", encoding="utf-8")
         return "new"
 
-    if not identity_path.exists():
+    if state == "no_identity":
         raise RunIdentityError(
             f"{run_dir} is not empty but has no {IDENTITY_FILENAME}, so it holds output "
             f"from before run identities existed (or something else). {_CLOSING_SENTENCE}"
         )
 
-    stored = _load_stored_identity(identity_path)
-    stored.pop("created_at", None)
-    requested = json.loads(json.dumps(identity))
-    if stored == requested:
+    if state == "same":
         return "resume"
 
-    differences = _describe_differences(stored, requested)
     raise RunIdentityError(
         f"{run_dir} already holds a different run (previous -> requested):\n"
         + "\n".join(f"  {line}" for line in differences)

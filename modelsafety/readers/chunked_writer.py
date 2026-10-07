@@ -13,7 +13,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ def write_chunked_output(
     rows_per_file: int,
     dir_prefix: str = "chunk-",
     file_prefix: str = "data",
+    on_file_written: Optional[Callable[[int], None]] = None,
 ) -> Dict[str, Any]:
     """Write records into JSONL files distributed round-robin across chunks.
 
@@ -42,6 +43,9 @@ def write_chunked_output(
         Prefix for chunk directory names (default: ``chunk-``).
     file_prefix
         Prefix for JSONL filenames (default: ``data``).
+    on_file_written
+        Optional callback, called after each file with the number of rows
+        written so far. It doesn't change what is written or returned.
 
     Returns
     -------
@@ -78,6 +82,7 @@ def write_chunked_output(
     chunk_file_counts = [0] * num_chunks
     chunk_row_counts = [0] * num_chunks
     bytes_on_disk = 0
+    rows_written = 0
     written_files: List[Dict[str, Any]] = []
 
     for file_idx, batch in enumerate(file_batches):
@@ -102,6 +107,9 @@ def write_chunked_output(
                 "sha256": digest.hexdigest(),
             }
         )
+        rows_written += len(batch)
+        if on_file_written is not None:
+            on_file_written(rows_written)
 
     # Summary
     for i, d in enumerate(chunk_dirs):

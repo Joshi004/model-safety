@@ -18,6 +18,14 @@ export function basename(path: string): string {
   return path.split('/').filter(Boolean).pop() ?? path
 }
 
+// Each original file listed by its name; if two files share a name, the
+// full path is used for every file so they can be told apart.
+export function fileLabels(paths: string[]): Record<string, string> {
+  const names = paths.map(basename)
+  const hasDuplicates = new Set(names).size !== names.length
+  return Object.fromEntries(paths.map((path, index) => [path, hasDuplicates ? path : names[index]]))
+}
+
 // "Line 3" for a JSONL note, "row 12" (counting from 0) for the rest.
 export function describePosition(origin: Origin): string {
   if (origin.line !== undefined) return `line ${origin.line}`

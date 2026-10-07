@@ -1,22 +1,35 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
-import { ApiError, getHealth, getSources, inspectPath, runPreview } from './api'
+import { ApiError, getHealth, getJobsSettings, getSources, inspectPath, runPreview } from './api'
 import { findEntry } from './catalog'
 import CommandBox from './components/CommandBox'
 import DatasetHeader from './components/DatasetHeader'
 import FormatPicker from './components/FormatPicker'
 import InputFields from './components/InputFields'
+import JobsView from './components/JobsView'
 import { ShowOriginal } from './components/OriginalLookup'
 import OutputPreview, { describeRowStatus } from './components/OutputPreview'
 import RecordView from './components/RecordView'
+import ReviewView from './components/ReviewView'
 import RowNavigator from './components/RowNavigator'
 import RunView from './components/RunView'
 import Sidebar from './components/Sidebar'
+import StartPanel from './components/StartPanel'
 import { applySuggestion, emptyMapping, toRequestFlags } from './mapping'
 import type { MappingState } from './mapping'
 import { getOrigin } from './origin'
+import { EMPTY_RESOURCES, hasTypedAnything, initialResources } from './resources'
+import type { ResourceInputs } from './resources'
 import { loadJSON, saveJSON } from './storage'
-import type { InspectGroup, InspectResult, Origin, PreviewResponse, TeamCatalog } from './types'
+import type {
+  InspectGroup,
+  InspectResult,
+  JobsSettings,
+  Origin,
+  PlannedRun,
+  PreviewResponse,
+  TeamCatalog,
+} from './types'
 
 // Fixed, not user-configurable: the plan is to show 1-2 real rows clearly
 // rather than a large sample, since the data in a given file is assumed
@@ -40,8 +53,29 @@ interface InspectStart {
 
 export default function App() {
   const [backendOk, setBackendOk] = useState<boolean | null>(null)
-  const [view, setView] = useState<'inspect' | 'run'>('inspect')
+  const [view, setView] = useState<'inspect' | 'review' | 'run' | 'jobs'>('inspect')
   const [sourceTeams, setSourceTeams] = useState<TeamCatalog[]>([])
+
+  // Datasets chosen in the sidebar for a batch, as paths in the order added.
+  // Client-only and not saved between browser sessions. `selecting` is the
+  // sidebar's switch (it only shows the checkboxes); `reviewOpened` makes the
+  // review view mount the first time it's wanted, and it then stays mounted
+  // so the rows being edited survive a trip to another view.
+  const [selecting, setSelecting] = useState(false)
+  const [selection, setSelection] = useState<string[]>([])
+  const [reviewOpened, setReviewOpened] = useState(false)
+
+  // The Jobs view's open batch, and a run folder the Prepared run view has
+  // been asked to open (from "Open results"). A new object each time, so
+  // asking for the same folder again opens it again.
+  const [openBatchId, setOpenBatchId] = useState<string | null>(null)
+  const [requestedRun, setRequestedRun] = useState<{ runDir: string } | null>(null)
+
+  // What the Start panel needs from SLURM, and the resources typed there.
+  // Kept here so they survive picking another dataset.
+  const [jobsSettings, setJobsSettings] = useState<JobsSettings | null>(null)
+  const [jobsSettingsError, setJobsSettingsError] = useState<string | null>(null)
+  const [resources, setResources] = useState<ResourceInputs>(EMPTY_RESOURCES)
 
   // Client-only, never sent to the backend (see storage.ts) -- one
   // checkbox per dataset path, lifted up here from SourcePicker so the
@@ -100,7 +134,49 @@ export default function App() {
     getSources()
       .then((response) => setSourceTeams(response.teams))
       .catch(() => setSourceTeams([]))
+
+    // Also independent: without the partitions the Start panel just says so.
+    loadJobsSettings()
+    // Runs once; loadJobsSettings only uses setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  function loadJobsSettings() {
+    setJobsSettingsError(null)
+    getJobsSettings()
+      .then((settings) => {
+        setJobsSettings(settings)
+        // Anything already typed stays; otherwise start from the defaults.
+        setResources((current) => (hasTypedAnything(current) ? current : initialResources(settings)))
+      })
+      .catch((error: unknown) => setJobsSettingsError(error instanceof ApiError ? error.message : String(error)))
+  }
+
+  // "Open results" from the Start panel or a job: show that run folder in the
+  // Prepared run view.
+  function handleOpenResults(runDir: string) {
+    setRequestedRun({ runDir })
+    setView('run')
+  }
+
+  // After Start (or a link to a running folder's batch): that batch's page.
+  function handleOpenBatch(batchId: string) {
+    setOpenBatchId(batchId)
+    setView('jobs')
+  }
+
+  function selectPaths(paths: string[], selected: boolean) {
+    setSelection((current) =>
+      selected
+        ? [...current, ...paths.filter((path, index) => !current.includes(path) && paths.indexOf(path) === index)]
+        : current.filter((path) => !paths.includes(path)),
+    )
+  }
+
+  function handleReview() {
+    setReviewOpened(true)
+    setView('review')
+  }
 
   // Re-reads storage first so a second browser tab open on the same
   // address can't silently undo this one's last toggle -- see
@@ -225,6 +301,27 @@ export default function App() {
   const rowIndexes = Array.from({ length: sampleSize }, (_, index) => index)
   const foundEntry = activePath ? findEntry(sourceTeams, activePath) : null
 
+  // What "Start conversion" would convert: this dataset, format and mapping.
+  // A catalog entry also sends its team, group and label, which decide the
+  // suggested folder name; the Start panel adds the folder itself.
+  const startEntry = currentPath ? findEntry(sourceTeams, currentPath) : null
+  const startRun: PlannedRun | null =
+    previewResult && selectedGroup?.input_type
+      ? {
+          label: startEntry?.entry.label ?? null,
+          team: startEntry?.team.team ?? null,
+          group: startEntry?.group.name ?? null,
+          input_path: currentPath,
+          input_type: selectedGroup.input_type,
+          file: selectedFile,
+          split,
+          hf_config: '',
+          ...toRequestFlags(mapping),
+        }
+      : null
+  // A new dataset or format gets a fresh panel (and a new suggested folder).
+  const startKey = JSON.stringify([currentPath, selectedGroup?.input_type, selectedFile, startEntry?.entry.label])
+
   // "Show original": for a sampled row that carries an _origin note. The
   // backend finds the row's run from the Prepared file it was read from.
   const selectedRow = previewResult?.input_rows[selectedRowIndex]
@@ -243,8 +340,10 @@ export default function App() {
       <header>
         <h1>Input validator</h1>
         <p className="muted">
-          Read-only. Shows what modelsafety/readers/prepare_rows.py would do to a path's data, without
-          converting anything.
+          Shows what modelsafety/readers/prepare_rows.py would do to a path's data. Looking and previewing are
+          read-only. Only "Start conversion" and the batch review's "Start" (each submits SLURM jobs), cancelling
+          a job in the Jobs view, and deleting run folders inside the runs root (from "Start conversion" or the
+          batch review) change anything; your original data is never written.
         </p>
         <div className="row-tabs view-switch">
           <button
@@ -254,12 +353,28 @@ export default function App() {
           >
             Inspect a dataset
           </button>
+          {(selection.length > 0 || view === 'review') && (
+            <button
+              type="button"
+              className={view === 'review' ? 'row-tab selected' : 'row-tab'}
+              onClick={handleReview}
+            >
+              Review selection ({selection.length})
+            </button>
+          )}
           <button
             type="button"
             className={view === 'run' ? 'row-tab selected' : 'row-tab'}
             onClick={() => setView('run')}
           >
             Prepared run
+          </button>
+          <button
+            type="button"
+            className={view === 'jobs' ? 'row-tab selected' : 'row-tab'}
+            onClick={() => setView('jobs')}
+          >
+            Jobs
           </button>
         </div>
         {backendOk === false && (
@@ -280,6 +395,12 @@ export default function App() {
             activePath={activePath}
             onPick={handleInspect}
             onInspect={handleInspect}
+            selecting={selecting}
+            onSelectingChange={setSelecting}
+            selection={selection}
+            onSelect={selectPaths}
+            onClearSelection={() => setSelection([])}
+            onReview={handleReview}
           />
 
           <main className="app-main">
@@ -406,13 +527,53 @@ export default function App() {
                 )}
               </div>
             )}
+
+            {previewResult && startRun && (
+              <StartPanel
+                key={startKey}
+                run={startRun}
+                settings={jobsSettings}
+                settingsError={jobsSettingsError}
+                onReloadSettings={loadJobsSettings}
+                resources={resources}
+                onResourcesChange={setResources}
+                previewWarning={previewResult.preview.fatal_if_run ? previewResult.preview.fatal_note : null}
+                onOpenResults={handleOpenResults}
+                onOpenBatch={handleOpenBatch}
+              />
+            )}
           </main>
         </div>
       </div>
 
+      {/* Mounted the first time it's opened, then only hidden, so its rows keep
+          loading and keep their edits while another view is shown. */}
+      {reviewOpened && (
+        <div hidden={view !== 'review'}>
+          <ReviewView
+            selection={selection}
+            teams={sourceTeams}
+            settings={jobsSettings}
+            settingsError={jobsSettingsError}
+            onReloadSettings={loadJobsSettings}
+            resources={resources}
+            onResourcesChange={setResources}
+            onRemove={(path) => selectPaths([path], false)}
+            onBack={() => setView('inspect')}
+            onOpenResults={handleOpenResults}
+            onOpenBatch={handleOpenBatch}
+          />
+        </div>
+      )}
+
       <div hidden={view !== 'run'}>
-        <RunView onOpenInPreview={handleOpenInPreview} />
+        <RunView onOpenInPreview={handleOpenInPreview} requestedRun={requestedRun} />
       </div>
+
+      {/* Only mounted while shown, so it isn't asking SLURM for news in the background. */}
+      {view === 'jobs' && (
+        <JobsView batchId={openBatchId} onSelectBatch={setOpenBatchId} onOpenResults={handleOpenResults} />
+      )}
     </div>
   )
 }

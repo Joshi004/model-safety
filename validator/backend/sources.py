@@ -475,8 +475,8 @@ def _group_to_dict(group: SourceGroup) -> dict[str, Any]:
 
 def list_sources() -> list[dict[str, Any]]:
     """The full catalog, with every entry's real availability checked
-    against the filesystem -- read-only, same as
-    every other route in this backend."""
+    against the filesystem -- read-only, like every route in this backend
+    except the /api/jobs/* ones that act."""
     return [
         {"team": catalog.team, "groups": [_group_to_dict(group) for group in catalog.groups]}
         for catalog in CATALOG

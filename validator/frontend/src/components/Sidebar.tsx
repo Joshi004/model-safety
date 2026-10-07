@@ -19,6 +19,11 @@ import SourcePicker from './SourcePicker'
 // -- see sources.py/App.tsx's getSources() call): once real teams show
 // up, it defaults closed instead and is left alone after that, so a
 // user's own manual toggle always sticks.
+//
+// "Select datasets to convert" is the way into converting several datasets
+// at once: while it's on, the picker's rows are selectable and the custom
+// path box can add to the selection. The selection itself lives in App.tsx;
+// turning the switch off only hides the checkboxes, it keeps the selection.
 export default function Sidebar({
   teams,
   loading,
@@ -27,6 +32,12 @@ export default function Sidebar({
   activePath,
   onPick,
   onInspect,
+  selecting,
+  onSelectingChange,
+  selection,
+  onSelect,
+  onClearSelection,
+  onReview,
 }: {
   teams: TeamCatalog[]
   loading: boolean
@@ -35,6 +46,12 @@ export default function Sidebar({
   activePath: string | null
   onPick: (path: string) => void
   onInspect: (path: string) => void
+  selecting: boolean
+  onSelectingChange: (selecting: boolean) => void
+  selection: string[]
+  onSelect: (paths: string[], selected: boolean) => void
+  onClearSelection: () => void
+  onReview: () => void
 }) {
   const [collapsed, setCollapsed] = useState(() => loadJSON('layout.sidebarCollapsed', false))
 
@@ -82,6 +99,26 @@ export default function Sidebar({
 
       {hasCatalog && <ProgressBar progress={overall} label="Verified" />}
 
+      <div className="sidebar-select">
+        <label className="inline small">
+          <input type="checkbox" checked={selecting} onChange={(event) => onSelectingChange(event.target.checked)} />
+          Select datasets to convert
+        </label>
+        {selection.length > 0 && (
+          <div className="sidebar-select-summary">
+            <span className="small">
+              {selection.length} selected
+            </span>
+            <button type="button" onClick={onReview}>
+              Review {selection.length} dataset{selection.length === 1 ? '' : 's'}
+            </button>
+            <button type="button" className="secondary" onClick={onClearSelection}>
+              Clear selection
+            </button>
+          </div>
+        )}
+      </div>
+
       {hasCatalog && (
         <SourcePicker
           teams={teams}
@@ -90,6 +127,9 @@ export default function Sidebar({
           onToggleVerified={onToggleVerified}
           activePath={activePath}
           onPick={onPick}
+          selecting={selecting}
+          selection={selection}
+          onSelect={onSelect}
         />
       )}
 
@@ -100,7 +140,11 @@ export default function Sidebar({
           sticks, since the expression's value doesn't change again. */}
       <details className="sidebar-custom-path" open={!hasCatalog}>
         <summary>Custom path</summary>
-        <PathForm onInspect={onInspect} loading={loading} />
+        <PathForm
+          onInspect={onInspect}
+          loading={loading}
+          onAddToSelection={selecting ? (path) => onSelect([path], true) : undefined}
+        />
       </details>
 
       {hasCatalog && (

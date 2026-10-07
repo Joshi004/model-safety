@@ -398,6 +398,63 @@ def preview_rows(
 # -------------------------------------------------------------------------
 
 
+READERS_PYTHON = "modelsafety/readers/.venv/bin/python"
+PREPARE_ROWS_SCRIPT = "modelsafety/readers/prepare_rows.py"
+
+
+def prepare_args(
+    *,
+    input_path: str,
+    input_type: str,
+    file: str | None,
+    output_dir: str,
+    mapping: dict[str, str],
+    required: list[str],
+    exclude_metadata: list[str],
+    split: str = "train",
+    hf_config: str = "",
+) -> list[str]:
+    """The prepare_rows.py arguments (without the interpreter) for the
+    mapping being previewed. The command shown to the user and the job the
+    UI submits are both built from this one list, so they can't differ.
+
+    For jsonl/parquet/huggingface, `input_path` is used as-is (a file or a
+    folder) regardless of `file` -- a real run processes every matching
+    file in a folder, so `file` only narrows what the *preview sample*
+    came from, never what the real conversion would be told to process.
+    For csv/json, the real reader only ever takes one file, so `file` (when
+    the inspected path is a folder) is appended to pick which one.
+
+    --map, --require and --exclude-metadata are sorted, because
+    run_identity.json stores them as lists: the same choices clicked in a
+    different order must still count as the same run.
+    """
+    if input_type in ("csv", "json") and file:
+        target_path = f"{input_path.rstrip('/')}/{file}"
+    else:
+        target_path = input_path
+
+    args = [
+        "--input-path",
+        target_path,
+        "--input-type",
+        input_type,
+        "--output-dir",
+        output_dir,
+    ]
+    for target in sorted(mapping):
+        args += ["--map", f"{target}={mapping[target]}"]
+    for column in sorted(required):
+        args += ["--require", column]
+    for column in sorted(exclude_metadata):
+        args += ["--exclude-metadata", column]
+    if input_type == "huggingface":
+        args += ["--split", split]
+        if hf_config:
+            args += ["--hf-config", hf_config]
+    return args
+
+
 def build_command(
     *,
     input_path: str,
@@ -407,39 +464,20 @@ def build_command(
     required: list[str],
     exclude_metadata: list[str],
     output_dir: str = "./converted",
-    max_rows: int | None = None,
+    split: str = "train",
+    hf_config: str = "",
 ) -> str:
-    """The prepare_rows.py command line that matches the mapping being
-    previewed.
-
-    For jsonl/parquet/huggingface, `input_path` is used as-is (a file or a
-    folder) regardless of `file` -- a real run processes every matching
-    file in a folder, so `file` only narrows what the *preview sample*
-    came from, never what the real conversion would be told to process.
-    For csv/json, the real reader only ever takes one file, so `file` (when
-    the inspected path is a folder) is appended to pick which one.
-    """
-    if input_type in ("csv", "json") and file:
-        target_path = f"{input_path.rstrip('/')}/{file}"
-    else:
-        target_path = input_path
-
-    parts = [
-        "python3",
-        "modelsafety/readers/prepare_rows.py",
-        "--input-path",
-        shlex.quote(target_path),
-        "--input-type",
-        input_type,
-        "--output-dir",
-        shlex.quote(output_dir),
-    ]
-    for target, source in mapping.items():
-        parts += ["--map", shlex.quote(f"{target}={source}")]
-    for column in required:
-        parts += ["--require", shlex.quote(column)]
-    for column in exclude_metadata:
-        parts += ["--exclude-metadata", shlex.quote(column)]
-    if max_rows:
-        parts += ["--max-rows", str(max_rows)]
-    return " ".join(parts)
+    """The prepare_rows.py command line (run from the repo root) that matches
+    the mapping being previewed -- `prepare_args()` shown as a command."""
+    args = prepare_args(
+        input_path=input_path,
+        input_type=input_type,
+        file=file,
+        output_dir=output_dir,
+        mapping=mapping,
+        required=required,
+        exclude_metadata=exclude_metadata,
+        split=split,
+        hf_config=hf_config,
+    )
+    return f"{READERS_PYTHON} {PREPARE_ROWS_SCRIPT} {shlex.join(args)}"

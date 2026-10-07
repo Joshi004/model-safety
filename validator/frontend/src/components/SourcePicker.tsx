@@ -25,6 +25,11 @@ import ProgressBar from './ProgressBar'
 // App.tsx now, since the same mark is also shown and toggled from
 // DatasetHeader -- see this component's `verified`/`onToggleVerified`
 // props.
+//
+// While `selecting` is on (the sidebar's "Select datasets to convert"
+// switch), each available row shows a selection checkbox in place of its
+// Verified one, and each group gets a "Select all in group" box. Clicking a
+// dataset's name still inspects it.
 export default function SourcePicker({
   teams,
   loading,
@@ -32,6 +37,9 @@ export default function SourcePicker({
   onToggleVerified,
   activePath,
   onPick,
+  selecting,
+  selection,
+  onSelect,
 }: {
   teams: TeamCatalog[]
   loading: boolean
@@ -39,6 +47,9 @@ export default function SourcePicker({
   onToggleVerified: (path: string, verified: boolean) => void
   activePath: string | null
   onPick: (path: string) => void
+  selecting: boolean
+  selection: string[]
+  onSelect: (paths: string[], selected: boolean) => void
 }) {
   const [selectedTeamName, setSelectedTeamName] = useState(() =>
     loadString('sourcePicker.selectedTeam', ''),
@@ -95,6 +106,9 @@ export default function SourcePicker({
           verified={verified}
           onToggleVerified={onToggleVerified}
           activePath={activePath}
+          selecting={selecting}
+          selection={selection}
+          onSelect={onSelect}
         />
       ))}
     </div>
@@ -110,6 +124,9 @@ function SourceGroupSection({
   verified,
   onToggleVerified,
   activePath,
+  selecting,
+  selection,
+  onSelect,
 }: {
   group: SourceGroupInfo
   loading: boolean
@@ -119,7 +136,13 @@ function SourceGroupSection({
   verified: Record<string, true>
   onToggleVerified: (path: string, verified: boolean) => void
   activePath: string | null
+  selecting: boolean
+  selection: string[]
+  onSelect: (paths: string[], selected: boolean) => void
 }) {
+  const availablePaths = group.entries.filter((entry) => entry.available).map((entry) => entry.path)
+  const allSelected = availablePaths.length > 0 && availablePaths.every((path) => selection.includes(path))
+
   return (
     <details className="source-group" open={open} onToggle={(event) => onToggleOpen(event.currentTarget.open)}>
       <summary>
@@ -130,6 +153,17 @@ function SourceGroupSection({
       </summary>
       {group.note && <div className="banner banner-warning small">{group.note}</div>}
       <div className="source-entries">
+        {selecting && (
+          <label className="inline small source-select-all">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              disabled={availablePaths.length === 0}
+              onChange={(event) => onSelect(availablePaths, event.target.checked)}
+            />
+            Select all in group ({availablePaths.length})
+          </label>
+        )}
         {group.entries.map((entry) => (
           <SourceEntryRow
             key={entry.path}
@@ -139,6 +173,9 @@ function SourceGroupSection({
             verified={!!verified[entry.path]}
             onPick={onPick}
             onToggleVerified={onToggleVerified}
+            selecting={selecting}
+            selected={selection.includes(entry.path)}
+            onSelect={onSelect}
           />
         ))}
       </div>
@@ -153,6 +190,9 @@ function SourceEntryRow({
   verified,
   onPick,
   onToggleVerified,
+  selecting,
+  selected,
+  onSelect,
 }: {
   entry: SourceEntry
   loading: boolean
@@ -160,6 +200,9 @@ function SourceEntryRow({
   verified: boolean
   onPick: (path: string) => void
   onToggleVerified: (path: string, verified: boolean) => void
+  selecting: boolean
+  selected: boolean
+  onSelect: (paths: string[], selected: boolean) => void
 }) {
   const classNames = ['source-entry-row']
   if (active) classNames.push('active')
@@ -168,14 +211,25 @@ function SourceEntryRow({
 
   return (
     <div className={classNames.join(' ')}>
-      <input
-        type="checkbox"
-        className="source-entry-checkbox"
-        checked={verified}
-        disabled={!entry.available}
-        title="Verified"
-        onChange={(event) => onToggleVerified(entry.path, event.target.checked)}
-      />
+      {selecting ? (
+        <input
+          type="checkbox"
+          className="source-entry-checkbox"
+          checked={selected}
+          disabled={!entry.available}
+          title="Select to convert"
+          onChange={(event) => onSelect([entry.path], event.target.checked)}
+        />
+      ) : (
+        <input
+          type="checkbox"
+          className="source-entry-checkbox"
+          checked={verified}
+          disabled={!entry.available}
+          title="Verified"
+          onChange={(event) => onToggleVerified(entry.path, event.target.checked)}
+        />
+      )}
       <button
         type="button"
         className="source-entry-pick"

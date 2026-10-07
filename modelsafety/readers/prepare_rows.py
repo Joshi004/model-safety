@@ -16,7 +16,7 @@ import random
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -28,6 +28,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from chunked_writer import write_chunked_output  # noqa: E402
+from progress_file import ROWS_PER_CLOCK_CHECK, ProgressFile  # noqa: E402
 from modelsafety.contract.fingerprints import (  # noqa: E402
     FINGERPRINT_RECIPE_VERSION,
     file_sha256,
@@ -110,6 +111,7 @@ def _start_counts(file_entry: Dict[str, Any]) -> None:
 
 def _read_jsonl_file(
     file_path: Path,
+    on_progress: Optional[Callable[[int], None]] = None,
 ) -> tuple[List[tuple[Dict[str, Any], Dict[str, Any]]], Dict[str, Any]]:
     """Read one JSONL file: ``(origin, row)`` pairs, plus its fingerprint and line counts.
 
@@ -117,6 +119,9 @@ def _read_jsonl_file(
     exactly as it sits on disk, and so each row's ``_origin`` can say where
     its line starts. Any line that can't be read stops the run with
     ``<path>:<line>:`` at the front of the message.
+
+    ``on_progress`` is called every ``ROWS_PER_CLOCK_CHECK`` lines with the
+    bytes read so far in this file.
     """
     resolved = file_path.resolve()
     digest = hashlib.sha256()
@@ -131,6 +136,8 @@ def _read_jsonl_file(
             lines += 1
             line_start = next_byte
             next_byte += len(raw)
+            if on_progress is not None and lines % ROWS_PER_CLOCK_CHECK == 0:
+                on_progress(next_byte)
             if not raw.strip():
                 blank_lines += 1
                 continue
@@ -327,12 +334,25 @@ def _numbered_items(
     return [({"path": path, "row": index}, row, file_entry) for index, row in enumerate(rows)]
 
 
+def _dataset_rows(dataset: Any, progress: ProgressFile) -> List[Dict[str, Any]]:
+    """``list(dataset)``, reporting progress while the rows are read."""
+    progress.phase("reading", unit="rows", total=dataset.num_rows)
+    rows: List[Dict[str, Any]] = []
+    for row in dataset:
+        rows.append(row)
+        if len(rows) % ROWS_PER_CLOCK_CHECK == 0:
+            progress.update(len(rows))
+    progress.update(len(rows))
+    return rows
+
+
 def _read_rows(
-    args: argparse.Namespace, input_files: List[Path]
+    args: argparse.Namespace, input_files: List[Path], progress: ProgressFile
 ) -> tuple[List[_SourceRow], Dict[str, Any]]:
     """Read source rows, plus whatever row count the source gives us for free.
 
-    ``input_files`` is what ``_discover_input_files`` found.
+    ``input_files`` is what ``_discover_input_files`` found. ``progress``
+    is told which phase this is in and how far it has got.
 
     Returns ``(items, source_info)``. ``items`` has one ``(origin, row,
     file_entry)`` per row, in the original order: files in the order found,
@@ -352,20 +372,35 @@ def _read_rows(
     files_discovered: Optional[int] = None
     source_files: List[Dict[str, Any]] = []
 
-    if args.input_type != "jsonl":
+    if args.input_type != "jsonl" and input_files:
         # JSONL files are fingerprinted while they are read, below.
-        source_files = [_source_file_entry(path, file_sha256(path)) for path in input_files]
+        progress.phase("fingerprinting_files", unit="files", total=len(input_files))
+        for number, path in enumerate(input_files, 1):
+            source_files.append(_source_file_entry(path, file_sha256(path)))
+            progress.update(number)
 
     items: List[_SourceRow] = []
 
     if args.input_type == "jsonl":
         files_discovered = len(input_files)
-        for file_path in input_files:
-            pairs, file_entry = _read_jsonl_file(file_path)
+        progress.phase(
+            "reading",
+            unit="bytes",
+            total=sum(path.stat().st_size for path in input_files),
+            files_total=len(input_files),
+        )
+        bytes_before = 0
+        for number, file_path in enumerate(input_files, 1):
+            pairs, file_entry = _read_jsonl_file(
+                file_path, on_progress=lambda read: progress.update(bytes_before + read)
+            )
             items.extend((origin, row, file_entry) for origin, row in pairs)
             source_files.append(file_entry)
+            bytes_before += file_entry["size_bytes"]
+            progress.update(bytes_before, files_done=number)
         expected_rows_from = "unavailable: jsonl has no free row count"
     elif args.input_type == "json":
+        progress.phase("reading")
         with input_path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
         rows = data if isinstance(data, list) else [data]
@@ -373,6 +408,7 @@ def _read_rows(
         items = _numbered_items(input_path, rows, source_files[0])
         expected_rows_from = "unavailable: json has no free row count"
     elif args.input_type == "csv":
+        progress.phase("reading")
         rows = pd.read_csv(input_path).to_dict("records")
         source_files[0]["rows_read"] = len(rows)
         items = _numbered_items(input_path, rows, source_files[0])
@@ -382,16 +418,27 @@ def _read_rows(
 
         files_discovered = len(input_files)
         expected_rows = 0
+        # The footers alone give the total, so progress can say "x of y rows".
+        progress.phase(
+            "reading",
+            unit="rows",
+            total=sum(pq.read_metadata(path).num_rows for path in input_files),
+            files_total=len(input_files),
+        )
+        rows_before = 0
         # One file at a time, one row group at a time, so every row knows its
         # file and a later lookup can read just the one row group.
-        for file_path, file_entry in zip(input_files, source_files):
+        for number, (file_path, file_entry) in enumerate(zip(input_files, source_files), 1):
             parquet_file = pq.ParquetFile(file_path)
             file_rows: List[Dict[str, Any]] = []
             for group in range(parquet_file.num_row_groups):
                 file_rows.extend(parquet_file.read_row_group(group).to_pandas().to_dict("records"))
+                progress.update(rows_before + len(file_rows))
             file_entry["rows_in_footer"] = parquet_file.metadata.num_rows
             expected_rows += parquet_file.metadata.num_rows
             items.extend(_numbered_items(file_path, file_rows, file_entry))
+            rows_before += len(file_rows)
+            progress.update(rows_before, files_done=number)
         expected_rows_from = "parquet file footers"
     elif args.input_type == "huggingface":
         if (input_path / "state.json").exists():
@@ -401,7 +448,7 @@ def _read_rows(
             from datasets import load_from_disk
 
             dataset = load_from_disk(str(input_path))
-            rows = list(dataset)
+            rows = _dataset_rows(dataset, progress)
             file_row_counts: Optional[List[int]] = None
             try:
                 file_row_counts = _arrow_file_row_counts(input_path)
@@ -424,7 +471,7 @@ def _read_rows(
                     f"Split '{args.split}' not found; available splits: {sorted(ds_dict.keys())}"
                 )
             dataset = ds_dict[args.split]
-            rows = list(dataset)
+            rows = _dataset_rows(dataset, progress)
             file_row_counts = None
             try:
                 # Each split of a saved DatasetDict is itself a save_to_disk
@@ -446,10 +493,13 @@ def _read_rows(
             kwargs: Dict[str, Any] = {"split": args.split}
             if args.hf_config:
                 kwargs["name"] = args.hf_config
+            # The download and build are one wait with no total; the row
+            # count is only known once load_dataset returns.
+            progress.phase("reading")
             dataset = load_dataset(args.input_path, **kwargs)
             expected_rows = dataset.num_rows
             expected_rows_from = "huggingface dataset num_rows"
-            rows = list(dataset)
+            rows = _dataset_rows(dataset, progress)
             # A Hub ID is recorded as given; a local folder by its full path.
             path = str(input_path.resolve()) if input_path.exists() else args.input_path
             origin_start: Dict[str, Any] = {"path": path}
@@ -471,12 +521,15 @@ def _read_rows(
     # A JSONL origin already carries the fingerprint of its raw line. Every
     # other format is fingerprinted on the row as cleaned here, which is
     # what a later lookup can reproduce.
+    progress.phase("fingerprinting_rows", unit="rows", total=len(items))
     for index, (origin, row, file_entry) in enumerate(items):
         row = _clean_value(row)
         if "fingerprint" not in origin:
             origin["fingerprint"] = row_fingerprint(row)
             origin["v"] = FINGERPRINT_RECIPE_VERSION
         items[index] = (origin, row, file_entry)
+        if (index + 1) % ROWS_PER_CLOCK_CHECK == 0:
+            progress.update(index + 1)
 
     source_info = {
         "rows_read": len(items),
@@ -602,10 +655,12 @@ def _skipped_entry(
 def prepare_rows(
     args: argparse.Namespace,
     input_files: List[Path],
+    progress: ProgressFile,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
     """Return ``(prepared_rows, skipped_entries, source_info, rows_info)``.
 
-    ``input_files`` is what ``_discover_input_files`` found.
+    ``input_files`` is what ``_discover_input_files`` found. ``progress``
+    reports the reading, fingerprinting and preparing phases.
 
     ``source_info`` comes from ``_read_rows`` (option 1's free metadata
     count, see ``DATA_VALIDATION_OPTIONS.md``). ``rows_info`` adds the
@@ -617,14 +672,20 @@ def prepare_rows(
     file by file, line by line. Only the kept rows are shuffled, afterwards.
     """
     mapping = _parse_mapping(args.map or [])
-    items, source_info = _read_rows(args, input_files)
+    items, source_info = _read_rows(args, input_files, progress)
 
     prepared_rows: List[Dict[str, Any]] = []
     skipped_entries: List[Dict[str, Any]] = []
     skipped_by_required_column: Dict[str, int] = {}
     exclude_metadata = set(args.exclude_metadata or [])
 
-    for origin, row, file_entry in items:
+    progress.phase("preparing", unit="rows", total=len(items))
+    # `judged` is how many rows came before this one.
+    for judged, (origin, row, file_entry) in enumerate(items):
+        if judged and judged % ROWS_PER_CLOCK_CHECK == 0:
+            progress.update(
+                judged, rows_written=len(prepared_rows), rows_skipped=len(skipped_entries)
+            )
         _refuse_existing_origin(row, origin, args.metadata_column)
         prepared, missing_column = _prepare_row(
             row=row,
@@ -644,6 +705,9 @@ def prepare_rows(
         prepared_rows.append(prepared)
         if file_entry is not None:
             file_entry["rows_written"] += 1
+    progress.update(
+        len(items), rows_written=len(prepared_rows), rows_skipped=len(skipped_entries)
+    )
 
     if args.shuffle:
         random.seed(args.seed)
@@ -660,13 +724,18 @@ def prepare_rows(
     return prepared_rows, skipped_entries, source_info, rows_info
 
 
-def _text_coverage(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _text_coverage(
+    rows: List[Dict[str, Any]], on_progress: Optional[Callable[[int], None]] = None
+) -> Dict[str, Any]:
     """Coverage of the scanner's own text extractor over the prepared rows.
 
     Calls ``extract_record_text()`` -- the exact function the PII scanner
     itself calls on every row (see ``modelsafety/contract/textract.py``) --
     so this cannot disagree with what a later scan will actually see. This
     is option 4 in ``DATA_VALIDATION_OPTIONS.md``.
+
+    ``on_progress`` is called every ``ROWS_PER_CLOCK_CHECK`` rows with how
+    many have been looked at.
     """
     if not rows:
         return {
@@ -676,7 +745,11 @@ def _text_coverage(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "mean_characters": 0.0,
         }
 
-    lengths = [len(extract_record_text(row)) for row in rows]
+    lengths: List[int] = []
+    for count, row in enumerate(rows, 1):
+        lengths.append(len(extract_record_text(row)))
+        if on_progress is not None and count % ROWS_PER_CLOCK_CHECK == 0:
+            on_progress(count)
     rows_with_text = sum(1 for length in lengths if length > 0)
     total_characters = sum(lengths)
     return {
@@ -876,59 +949,79 @@ def main() -> None:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2)
 
-    # Option 3: a stale marker from a previous, possibly-failed run must not
-    # be mistaken for this run having succeeded.
+    # The identity check passed, so this folder is this run's to write into.
+    progress = ProgressFile(output_dir)
     success_marker = output_dir / "_SUCCESS"
-    if success_marker.exists():
-        success_marker.unlink()
+    try:
+        progress.phase("finding_files")
 
-    prepared_rows, skipped_entries, source_info, rows_info = prepare_rows(args, input_files)
-    coverage_info = _text_coverage(prepared_rows)
-    output_info = write_chunked_output(
-        prepared_rows,
-        output_dir=args.output_dir,
-        num_chunks=args.num_chunks,
-        rows_per_file=args.rows_per_file,
-        dir_prefix=args.dir_prefix,
-        file_prefix=args.file_prefix,
-    )
-    rows_info["skipped_file"] = _write_skipped_rows(output_dir, skipped_entries)
+        # Option 3: a stale marker from a previous, possibly-failed run must not
+        # be mistaken for this run having succeeded.
+        if success_marker.exists():
+            success_marker.unlink()
 
-    print(
-        f"Text coverage: {coverage_info['rows_with_text']}/{rows_info['written']} rows "
-        f"({coverage_info['coverage'] * 100:.1f}%) have scannable text."
-    )
+        prepared_rows, skipped_entries, source_info, rows_info = prepare_rows(
+            args, input_files, progress
+        )
+        progress.phase("checking_text", unit="rows", total=len(prepared_rows))
+        coverage_info = _text_coverage(prepared_rows, on_progress=progress.update)
+        progress.phase("writing", unit="rows", total=len(prepared_rows))
+        output_info = write_chunked_output(
+            prepared_rows,
+            output_dir=args.output_dir,
+            num_chunks=args.num_chunks,
+            rows_per_file=args.rows_per_file,
+            dir_prefix=args.dir_prefix,
+            file_prefix=args.file_prefix,
+            on_file_written=progress.update,
+        )
+        rows_info["skipped_file"] = _write_skipped_rows(output_dir, skipped_entries)
 
-    checks = _run_checks(
-        source_info=source_info,
-        rows_info=rows_info,
-        output_info=output_info,
-        coverage_info=coverage_info,
-        max_rows=args.max_rows,
-    )
+        print(
+            f"Text coverage: {coverage_info['rows_with_text']}/{rows_info['written']} rows "
+            f"({coverage_info['coverage'] * 100:.1f}%) have scannable text."
+        )
 
-    # The report is written whether or not the run passes, so a failure is
-    # diagnosable from a file sitting next to the data, not just scrollback.
-    summary = {
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "tool": "prepare_rows.py",
-        "input": {
-            "path": str(args.input_path),
-            "type": args.input_type,
-            "map": _parse_mapping(args.map or []),
-            "require": args.require or [],
-            "max_rows": args.max_rows,
-        },
-        "source": source_info,
-        "rows": rows_info,
-        "output": output_info,
-        "text_coverage": coverage_info,
-        "checks": checks,
-    }
-    output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2) + "\n", encoding="utf-8"
-    )
+        progress.phase("finishing")
+        checks = _run_checks(
+            source_info=source_info,
+            rows_info=rows_info,
+            output_info=output_info,
+            coverage_info=coverage_info,
+            max_rows=args.max_rows,
+        )
+
+        # The report is written whether or not the run passes, so a failure is
+        # diagnosable from a file sitting next to the data, not just scrollback.
+        summary = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "tool": "prepare_rows.py",
+            "input": {
+                "path": str(args.input_path),
+                "type": args.input_type,
+                "map": _parse_mapping(args.map or []),
+                "require": args.require or [],
+                "max_rows": args.max_rows,
+            },
+            "source": source_info,
+            "rows": rows_info,
+            "output": output_info,
+            "text_coverage": coverage_info,
+            "checks": checks,
+        }
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "summary.json").write_text(
+            json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+        )
+        # "done" means the run finished, whether or not its checks passed;
+        # summary.json says which.
+        progress.phase("done")
+    except BaseException as exc:
+        try:
+            progress.fail(str(exc) or type(exc).__name__)
+        except OSError:
+            pass  # Reporting the failure must never replace the run's own error.
+        raise
 
     for warning in checks["warnings"]:
         print(f"WARNING: {warning}")

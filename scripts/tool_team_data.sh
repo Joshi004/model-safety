@@ -8,9 +8,14 @@
 #   ./scripts/tool_team_data.sh                 # no stages -- interactive menu
 #
 # Stages (pass one or more, in any order -- duplicates are harmless):
-#   convert   Convert the SFT mix, MOPD mix, and RL mix to JSONL.
-#   scan      Submit the regex PII scan (stage 1 + stage 2).
+#   convert   Submit the conversion of the SFT mix, MOPD mix, and RL mix to
+#             JSONL: one CPU-only SLURM job per dataset, through
+#             launchers/slurm/prepare_rows.sbatch (the same job script the
+#             validator UI uses). Returns without waiting.
+#   scan      Submit the regex PII scan (stage 1 + stage 2). In the same
+#             command as 'convert', it waits for every conversion job.
 #   extract   Submit the source-row extractor (stage 3).
+#   summary   Row totals and any FAILED jobs, read from the conversion logs.
 #   all       Shorthand for: convert scan extract
 #
 # Flags (each overrides the matching setting below, for this run only):
@@ -18,11 +23,16 @@
 #   --output-root PATH     --pii-run-dir PATH      --partition NAME
 #   --cpus N               --mem SIZE              --time HH:MM:SS
 #   --workers N            --chunk-size N
+#   --convert-cpus N       --convert-mem SIZE      --convert-time HH:MM:SS
+#
+# (--cpus/--mem/--time size the scan/extract job; --convert-* size each
+# conversion job.)
 #
 # Examples:
 #   ./scripts/tool_team_data.sh convert
 #   ./scripts/tool_team_data.sh scan extract --partition toolCall
 #   ./scripts/tool_team_data.sh all
+#   ./scripts/tool_team_data.sh summary      # once the conversion jobs finished
 #
 # Precedence for every setting, lowest to highest: hardcoded default in this
 # file < environment variable < CLI flag above < interactive edit (only
@@ -55,19 +65,29 @@ RL_MIX_PATH="${RL_MIX_PATH:-/home/shared/agentic_slm/data/rl/processed/qwen35-xm
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO}/output/tool_team_converted}"   # `convert` writes here, `scan` reads here
 PII_RUN_DIR="${PII_RUN_DIR:-${REPO}/output/tool_team_pii_run}"     # `scan` and `extract` write here
 
-# --- SLURM resources for the scan/extract job -------------------------------
+# --- SLURM resources ---------------------------------------------------------
+# The partition is shared by the convert jobs and the scan/extract job.
 PARTITION="${PARTITION:-health}"        # main | health | toolCall | VLM -- pick_partition lists the real, live set
+
+# The scan/extract job.
 SCAN_CPUS="${SCAN_CPUS:-32}"
 SCAN_MEM="${SCAN_MEM:-64G}"
 SCAN_TIME="${SCAN_TIME:-06:00:00}"
+
+# Each `convert` job (one per dataset; same defaults as the validator UI).
+# Memory and time are always passed to sbatch: on this cluster a job without
+# --mem is given the whole node's memory and a job without --time never ends.
+CONVERT_CPUS="${CONVERT_CPUS:-2}"
+CONVERT_MEM="${CONVERT_MEM:-32G}"
+CONVERT_TIME="${CONVERT_TIME:-04:00:00}"
 
 # --- Scanner tuning ----------------------------------------------------------
 PII_NUM_WORKERS="${PII_NUM_WORKERS:-32}"    # keep roughly equal to SCAN_CPUS
 PII_CHUNK_SIZE="${PII_CHUNK_SIZE:-10000}"   # lines per work chunk
 
 # --- Tooling (rarely changed) ------------------------------------------------
-READERS_PY="${REPO}/modelsafety/readers/.venv/bin/python"
-PREPARE_ROWS="${REPO}/modelsafety/readers/prepare_rows.py"
+READERS_PY="${REPO}/modelsafety/readers/.venv/bin/python"   # only checked here; the job script runs it
+JOB_SCRIPT="${REPO}/launchers/slurm/prepare_rows.sbatch"
 
 # Name/label pairs for the interactive review screen -- see review_settings
 # in scripts/lib/tool_team_common.sh.
@@ -81,6 +101,9 @@ REVIEW_PAIRS=(
   SCAN_CPUS "Scan CPUs"
   SCAN_MEM "Scan memory"
   SCAN_TIME "Scan time limit"
+  CONVERT_CPUS "Convert CPUs"
+  CONVERT_MEM "Convert memory"
+  CONVERT_TIME "Convert time"
   PII_NUM_WORKERS "PII workers"
   PII_CHUNK_SIZE "PII chunk size"
 )
@@ -90,7 +113,13 @@ REVIEW_PAIRS=(
 DO_CONVERT=0
 DO_SCAN=0
 DO_EXTRACT=0
+DO_SUMMARY=0
 STAGE_GIVEN=0
+
+# Filled in by convert_one: the SLURM job ID of every submitted conversion,
+# and the log file it writes to (same order).
+CONVERT_JOB_IDS=()
+CONVERT_LOGS=()
 
 usage() {
   cat <<EOF
@@ -99,13 +128,19 @@ Usage: $(basename "$0") [stage ...] [--flag value ...]
 
 Stages (pass one or more, in any order; duplicates are harmless):
   convert   Convert the SFT mix, MOPD mix, and RL mix to JSONL under
-            \$OUTPUT_ROOT (all three run in parallel, locally, ~40s).
+            \$OUTPUT_ROOT: one CPU-only SLURM job per dataset (one per SFT
+            sub-dataset, plus the MOPD and RL train/test files), submitted
+            through launchers/slurm/prepare_rows.sbatch.
   scan      Submit the regex PII scan (stage 1 + stage 2) against
             \$OUTPUT_ROOT. Requires 'convert' to have already run (or be
-            requested in this same command).
+            requested in this same command, in which case the scan job
+            waits for every conversion job and is cancelled if any fails).
   extract   Submit the source-row extractor (stage 3) against
             \$PII_RUN_DIR. Requires 'scan' to have already run (or be
             requested in this same command).
+  summary   Print the row totals, and any job that reported FAILED, from
+            the conversion logs in \$OUTPUT_ROOT/_logs/. Run it once the
+            conversion jobs have finished.
   all       Shorthand for: convert scan extract
 
 Flags (each overrides the matching setting for this run only):
@@ -113,20 +148,26 @@ Flags (each overrides the matching setting for this run only):
   --output-root PATH     --pii-run-dir PATH      --partition NAME
   --cpus N               --mem SIZE              --time HH:MM:SS
   --workers N            --chunk-size N
+  --convert-cpus N       --convert-mem SIZE      --convert-time HH:MM:SS
+
+--cpus/--mem/--time size the scan/extract job; --convert-* size each
+conversion job (1-32 CPUs, memory in M or G above zero, a time limit above
+zero -- anything else is refused before a job is submitted).
 
 Precedence, lowest to highest: hardcoded default in this file < environment
 variable < CLI flag < interactive edit. Interactive editing is only offered
 when no stage word is given at all -- passing any stage word runs fully
 non-interactively.
 
-'scan' and 'extract' always submit one sbatch job and return immediately --
-they do not wait for the job to finish. 'convert' runs locally and blocks
-until done.
+'convert', 'scan' and 'extract' only submit sbatch jobs and return
+immediately -- they do not wait for any job to finish. \$OUTPUT_ROOT must be
+on a filesystem the compute nodes can see, because the jobs write there.
 
 Examples:
   $(basename "$0") convert
   $(basename "$0") scan extract --partition toolCall
   $(basename "$0") all
+  $(basename "$0") summary
 
 For the GPU-based NER-model scan, see scripts/tool_team_ner_scan.sh instead
 -- it is a separate script on purpose (different resources, different risk
@@ -142,14 +183,17 @@ Current settings:
   SCAN_CPUS       ${SCAN_CPUS}
   SCAN_MEM        ${SCAN_MEM}
   SCAN_TIME       ${SCAN_TIME}
+  CONVERT_CPUS    ${CONVERT_CPUS}
+  CONVERT_MEM     ${CONVERT_MEM}
+  CONVERT_TIME    ${CONVERT_TIME}
   PII_NUM_WORKERS ${PII_NUM_WORKERS}
   PII_CHUNK_SIZE  ${PII_CHUNK_SIZE}
 EOF
 }
 
 # parse_args <arg> ... -- one pass over every argument: -h/--help exits
-# immediately; convert/scan/extract/all set the matching DO_* flag and mark
-# STAGE_GIVEN; anything starting with -- is a value flag (see usage above);
+# immediately; convert/scan/extract/summary/all set the matching DO_* flag and
+# mark STAGE_GIVEN; anything starting with -- is a value flag (see usage above);
 # anything else is an error.
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -172,6 +216,12 @@ parse_args() {
         ;;
       extract)
         DO_EXTRACT=1
+        STAGE_GIVEN=1
+        shift
+        continue
+        ;;
+      summary)
+        DO_SUMMARY=1
         STAGE_GIVEN=1
         shift
         continue
@@ -201,6 +251,9 @@ parse_args() {
         --cpus) SCAN_CPUS="$2" ;;
         --mem) SCAN_MEM="$2" ;;
         --time) SCAN_TIME="$2" ;;
+        --convert-cpus) CONVERT_CPUS="$2" ;;
+        --convert-mem) CONVERT_MEM="$2" ;;
+        --convert-time) CONVERT_TIME="$2" ;;
         --workers) PII_NUM_WORKERS="$2" ;;
         --chunk-size) PII_CHUNK_SIZE="$2" ;;
         *)
@@ -267,19 +320,105 @@ preflight_checks() {
   done
 }
 
+# is_valid_memory <value> -- a whole number of M or G above zero. Never 0
+# (or 0G): SLURM reads that as "the whole node's memory".
+is_valid_memory() {
+  [[ "$1" =~ ^([0-9]+)[MmGg]$ ]] && [[ "${BASH_REMATCH[1]}" =~ [1-9] ]]
+}
+
+# time_limit_seconds <value> -- the seconds in HH:MM:SS or D-HH:MM:SS; prints
+# nothing when the value is neither. (10# keeps leading zeros from being read
+# as octal.)
+time_limit_seconds() {
+  local plain_re='^([0-9]{1,3}):([0-5][0-9]):([0-5][0-9])$'
+  local days_re='^([0-9]{1,3})-([01]?[0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9])$'
+  if [[ "$1" =~ ${plain_re} ]]; then
+    echo $((10#${BASH_REMATCH[1]} * 3600 + 10#${BASH_REMATCH[2]} * 60 + 10#${BASH_REMATCH[3]}))
+  elif [[ "$1" =~ ${days_re} ]]; then
+    echo $((10#${BASH_REMATCH[1]} * 86400 + 10#${BASH_REMATCH[2]} * 3600 + 10#${BASH_REMATCH[3]} * 60 + 10#${BASH_REMATCH[4]}))
+  fi
+}
+
+# check_convert_resources -- refuses to go on unless the convert jobs' CPUs,
+# memory and time limit are all set to something sbatch will really enforce.
+# Same rules as the validator UI's submit check (validate_resources in
+# validator/backend/jobs.py). Prints every problem, then exits 2. Run before
+# anything is submitted, so a bad value never leaves half the jobs queued.
+check_convert_resources() {
+  local problems=()
+
+  if ! [[ "${CONVERT_CPUS}" =~ ^[0-9]{1,3}$ ]] || ((10#${CONVERT_CPUS} < 1 || 10#${CONVERT_CPUS} > 32)); then
+    problems+=("CONVERT_CPUS (--convert-cpus) must be a whole number from 1 to 32; got '${CONVERT_CPUS}'.")
+  fi
+
+  if ! is_valid_memory "${CONVERT_MEM}"; then
+    problems+=("CONVERT_MEM (--convert-mem) must be a whole number of M or G above zero, such as 32G (never 0: SLURM reads that as the whole node); got '${CONVERT_MEM}'.")
+  fi
+
+  local seconds
+  seconds="$(time_limit_seconds "${CONVERT_TIME}")"
+  if [[ -z "${seconds}" || "${seconds}" -eq 0 ]]; then
+    problems+=("CONVERT_TIME (--convert-time) must be HH:MM:SS or D-HH:MM:SS, and above zero; got '${CONVERT_TIME}'.")
+  fi
+
+  if [[ ${#problems[@]} -gt 0 ]]; then
+    echo "error: the convert job resources are not valid -- nothing was submitted:" >&2
+    local problem
+    for problem in "${problems[@]}"; do
+      echo "  - ${problem}" >&2
+    done
+    exit 2
+  fi
+}
+
+# abort_convert_submit <message> -- stop submitting; say which conversions are
+# already queued, and how to cancel them.
+abort_convert_submit() {
+  echo "error: $1" >&2
+  if [[ ${#CONVERT_JOB_IDS[@]} -gt 0 ]]; then
+    echo "These ${#CONVERT_JOB_IDS[@]} conversions were already submitted: ${CONVERT_JOB_IDS[*]}" >&2
+    echo "Cancel them with: scancel ${CONVERT_JOB_IDS[*]}" >&2
+  fi
+  exit 2
+}
+
 # convert_one <input-path> <input-type> <output-dir> <log-file> [extra prepare_rows.py args...]
-# Launches one backgrounded prepare_rows.py call. Every row shape here needs
+# Submits one conversion as a SLURM job through the shared job script (the
+# same one the validator UI uses), CPU only, and records its job ID in
+# CONVERT_JOB_IDS and its log file in CONVERT_LOGS. Every row shape here needs
 # a "messages" column to be present and non-empty, so --require messages is
 # always passed; callers add --map messages=<source column> on top when the
 # source doesn't already call it "messages" (parquet's "prompt" column).
+#
+# The log folder is created here because SLURM won't: a job whose log folder
+# is missing fails without writing anything. Output and errors share the one
+# log file, as they did when this ran locally.
 convert_one() {
   local input_path="$1" input_type="$2" output_dir="$3" log_file="$4"
   shift 4
+  local job_name
+  job_name="prepare_$(basename "${log_file}" .log)"
   mkdir -p "$(dirname "${log_file}")"
-  PYTHONPATH="${REPO}" "${READERS_PY}" "${PREPARE_ROWS}" \
-    --input-path "${input_path}" --input-type "${input_type}" \
-    --require messages "$@" \
-    --output-dir "${output_dir}" > "${log_file}" 2>&1 &
+
+  local submitted
+  submitted="$(
+    sbatch --parsable --partition="${PARTITION}" \
+      --cpus-per-task="${CONVERT_CPUS}" --mem="${CONVERT_MEM}" --time="${CONVERT_TIME}" \
+      --job-name="${job_name}" --output="${log_file}" --error="${log_file}" \
+      --export=ALL,PREPARE_REPO="${REPO}" \
+      "${JOB_SCRIPT}" \
+      --input-path "${input_path}" --input-type "${input_type}" \
+      --require messages "$@" \
+      --output-dir "${output_dir}"
+  )" || abort_convert_submit "sbatch failed for ${job_name}"
+
+  # --parsable prints "<job id>" or, with several clusters, "<job id>;<cluster>".
+  local job_id="${submitted%%;*}"
+  [[ "${job_id}" =~ ^[0-9]+$ ]] ||
+    abort_convert_submit "sbatch printed something unexpected for ${job_name}: '${submitted}'"
+
+  CONVERT_JOB_IDS+=("${job_id}")
+  CONVERT_LOGS+=("${log_file}")
 }
 
 # sum_rows <log-file> <log-file> ... -- total the "Prepared N rows" line
@@ -294,8 +433,10 @@ sum_rows() {
   echo "${total}"
 }
 
+# print_summary <log-dir> -- the row totals, read from the conversion jobs'
+# logs, plus any job that reported FAILED.
 print_summary() {
-  local log_dir="$1" elapsed="$2"
+  local log_dir="$1"
 
   local sft_rows mopd_rows rl_rows total_rows
   sft_rows="$(sum_rows "${log_dir}"/sft_mix_*.log)"
@@ -304,11 +445,12 @@ print_summary() {
   total_rows=$((sft_rows + mopd_rows + rl_rows))
 
   echo
-  echo "=== Conversion complete (${elapsed}s) ==="
+  echo "=== Conversion summary ==="
   printf "%-10s %10s rows -> %s\n" "SFT mix:" "${sft_rows}" "${OUTPUT_ROOT}/sft_mix/"
   printf "%-10s %10s rows -> %s\n" "MOPD mix:" "${mopd_rows}" "${OUTPUT_ROOT}/mopd_mix/"
   printf "%-10s %10s rows -> %s\n" "RL mix:" "${rl_rows}" "${OUTPUT_ROOT}/rl_mix/"
   printf "%-10s %10s rows\n" "Total:" "${total_rows}"
+  echo "(Counted from the job logs, so jobs still queued or running aren't fully counted: squeue -u \$USER)"
 
   echo
   echo "Logs: ${log_dir}/"
@@ -325,21 +467,23 @@ print_summary() {
   fi
 }
 
+# Submits one CPU-only SLURM job per dataset (61 SFT sub-datasets + 4
+# MOPD/RL files) and returns without waiting for any of them.
 run_convert() {
+  check_convert_resources
   preflight_checks
 
   local log_dir="${OUTPUT_ROOT}/_logs"
   mkdir -p "${log_dir}"
 
-  echo "Converting:"
+  echo "Submitting conversions as SLURM jobs (CPU only):"
   echo "  SFT mix:  ${SFT_MIX_PATH}"
   echo "  MOPD mix: ${MOPD_MIX_PATH}"
   echo "  RL mix:   ${RL_MIX_PATH}"
   echo "Output:     ${OUTPUT_ROOT}"
+  echo "Partition:  ${PARTITION}"
+  echo "Per job:    ${CONVERT_CPUS} CPUs, ${CONVERT_MEM} memory, ${CONVERT_TIME} time limit"
   echo
-
-  local start_time
-  start_time=$(date +%s)
 
   # --- SFT mix -----------------------------------------------------------
   # 61 independent sub-dataset folders under train_shards_keep/. Each one's
@@ -369,14 +513,22 @@ run_convert() {
       --map messages=prompt
   done
 
-  echo "Launched ${sft_count} SFT sub-dataset jobs + 4 MOPD/RL jobs, waiting for all to finish..."
-  wait
+  echo "Submitted ${#CONVERT_JOB_IDS[@]} conversion jobs (${sft_count} SFT sub-datasets + 4 MOPD/RL files)."
+  echo "Job IDs: ${CONVERT_JOB_IDS[*]}"
+  echo
+  echo "The commands below are for the first job; each job has its own log under ${log_dir}/."
+  print_job_commands "${CONVERT_JOB_IDS[0]}" "${CONVERT_LOGS[0]}" "${CONVERT_LOGS[0]}"
+  echo
+  echo "  All jobs:    squeue -u \$USER"
+  echo "  Row totals, once they have finished:  $(basename "$0") summary"
+}
 
-  local end_time elapsed
-  end_time=$(date +%s)
-  elapsed=$((end_time - start_time))
-
-  print_summary "${log_dir}" "${elapsed}"
+# run_summary -- the row totals and any FAILED jobs, from the logs a previous
+# 'convert' left under ${OUTPUT_ROOT}/_logs/. Reads logs only.
+run_summary() {
+  local log_dir="${OUTPUT_ROOT}/_logs"
+  [[ -d "${log_dir}" ]] || die "${log_dir} does not exist -- run '$(basename "$0") convert' first"
+  print_summary "${log_dir}"
 }
 
 # Submits one sbatch job covering whichever of scan (stage 1+2) and extract
@@ -403,19 +555,32 @@ run_scan_and_extract() {
     exit 2
   fi
 
+  local sbatch_args=(
+    --parsable --partition="${PARTITION}" --job-name="pii_${stages}"
+    --cpus-per-task="${SCAN_CPUS}" --mem="${SCAN_MEM}" --time="${SCAN_TIME}"
+    --export=ALL,PII_BASE_DIR="${OUTPUT_ROOT}",PII_RUN_DIR="${PII_RUN_DIR}",PII_STAGES="${stages}",PII_NUM_WORKERS="${PII_NUM_WORKERS}",PII_CHUNK_SIZE="${PII_CHUNK_SIZE}"
+  )
+
+  # Conversions submitted by this same command haven't finished yet, so this
+  # job waits for every one of them. kill-on-invalid-dep cancels it as soon as
+  # one conversion fails, instead of leaving it pending forever.
+  if [[ "${DO_CONVERT}" -eq 1 ]]; then
+    local conversion_ids
+    conversion_ids="$(IFS=:; echo "${CONVERT_JOB_IDS[*]}")"
+    sbatch_args+=(--dependency="afterok:${conversion_ids}" --kill-on-invalid-dep=yes)
+  fi
+
   echo "Scanning:  ${OUTPUT_ROOT}"
   echo "Run dir:   ${PII_RUN_DIR}"
   echo "Stages:    ${stages}"
   echo "Partition: ${PARTITION}"
+  if [[ "${DO_CONVERT}" -eq 1 ]]; then
+    echo "Waits for: ${#CONVERT_JOB_IDS[@]} conversion jobs (cancelled if any of them fails)"
+  fi
   echo
 
   local job_id
-  job_id="$(
-    sbatch --parsable --partition="${PARTITION}" --job-name="pii_${stages}" \
-      --cpus-per-task="${SCAN_CPUS}" --mem="${SCAN_MEM}" --time="${SCAN_TIME}" \
-      --export=ALL,PII_BASE_DIR="${OUTPUT_ROOT}",PII_RUN_DIR="${PII_RUN_DIR}",PII_STAGES="${stages}",PII_NUM_WORKERS="${PII_NUM_WORKERS}",PII_CHUNK_SIZE="${PII_CHUNK_SIZE}" \
-      "${REPO}/launchers/slurm/run_pii_scan_and_extract.sbatch"
-  )"
+  job_id="$(sbatch "${sbatch_args[@]}" "${REPO}/launchers/slurm/run_pii_scan_and_extract.sbatch")"
 
   echo "Submitted PII job (stages=${stages}): ${job_id}"
 
@@ -451,7 +616,7 @@ main() {
     fi
   fi
 
-  if [[ "${DO_CONVERT}" -eq 0 && "${DO_SCAN}" -eq 0 && "${DO_EXTRACT}" -eq 0 ]]; then
+  if [[ "${DO_CONVERT}" -eq 0 && "${DO_SCAN}" -eq 0 && "${DO_EXTRACT}" -eq 0 && "${DO_SUMMARY}" -eq 0 ]]; then
     usage
     exit 1
   fi
@@ -462,6 +627,10 @@ main() {
 
   if [[ "${DO_SCAN}" -eq 1 || "${DO_EXTRACT}" -eq 1 ]]; then
     run_scan_and_extract
+  fi
+
+  if [[ "${DO_SUMMARY}" -eq 1 ]]; then
+    run_summary
   fi
 }
 

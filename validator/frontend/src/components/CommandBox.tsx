@@ -3,7 +3,7 @@ import { useState } from 'react'
 export default function CommandBox({
   command,
   title = 'Matching command',
-  note = "This never runs automatically -- copy it and run it yourself when you're ready to actually convert.",
+  note = 'This box never runs anything: copy the command to run it yourself, or use "Start conversion" below to submit the same conversion as a SLURM job.',
 }: {
   command: string
   title?: string

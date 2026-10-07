@@ -59,8 +59,31 @@ export function setDestination(state: MappingState, key: string, destination: De
   return { ...state, destinations }
 }
 
+// Makes `key` the source of `target`, or, with null, leaves the target with
+// no source (whichever key fed it goes back to the implicit 'metadata').
+export function setSource(state: MappingState, target: Target, key: string | null): MappingState {
+  if (key !== null) return setDestination(state, key, target)
+  const current = sourceFor(state, target)
+  return current === null ? state : setDestination(state, current, 'metadata')
+}
+
 export function setSkipIfEmpty(state: MappingState, target: Target, value: boolean): MappingState {
   return { ...state, skipIfEmpty: { ...state.skipIfEmpty, [target]: value } }
+}
+
+// Every top-level key seen across the rows, in the order first seen.
+export function collectKeysInOrder(rows: Record<string, unknown>[]): string[] {
+  const seen = new Set<string>()
+  const ordered: string[] = []
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      if (!seen.has(key)) {
+        seen.add(key)
+        ordered.push(key)
+      }
+    }
+  }
+  return ordered
 }
 
 // Merges a backend suggestion into the current state -- applies every

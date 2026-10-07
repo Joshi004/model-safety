@@ -10,6 +10,15 @@
 # can't read one of the source picker's preset folders, it just shows up
 # disabled in the picker; nothing fails.
 #
+# Looking at data is read-only. Only the Start panel's "Start" and "Delete
+# and start fresh", the batch review's "Start" and "Delete N folders and
+# start fresh", and the Jobs view's Cancel, act on anything, and they act as
+# you: Start submits CPU-only SLURM jobs (one per dataset; sbatch, squeue,
+# sacct, sinfo and scancel must be on your PATH), Cancel runs scancel, and
+# Delete removes run folders -- only inside the runs root, which is
+# $VALIDATOR_RUNS_ROOT or <repo>/output/prepared. Job logs and batch records
+# go under <runs root>/_jobs.
+#
 #   ./validator/run.sh
 #
 # The first run creates validator/backend/.venv (installing FastAPI/uvicorn

@@ -182,6 +182,26 @@ header {
   margin: 10px 0 0;
 }
 
+.sidebar-select {
+  margin-top: 10px;
+}
+
+.sidebar-select-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.path-form-add {
+  margin-top: 8px;
+}
+
+.source-select-all {
+  padding: 2px 4px;
+}
+
 /* ---- Cards shared by panels ---- */
 
 .format-picker,
@@ -977,6 +997,16 @@ button.secondary {
   margin-bottom: 16px;
 }
 
+.run-progress {
+  margin-bottom: 16px;
+}
+
+.run-progress-error {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .location-text {
   word-break: break-all;
 }
@@ -1060,4 +1090,209 @@ button.secondary {
 
 .original-lookup {
   margin-top: 8px;
+}
+
+/* ---- Runs list, per-file counts, settings and Prepared rows ---- */
+
+.runs-list {
+  margin-bottom: 20px;
+}
+
+.runs-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.runs-list-header h3 {
+  margin: 0;
+}
+
+.runs-list-header button.secondary {
+  margin-bottom: 0;
+}
+
+.skipped-table th.number,
+.skipped-table td.number,
+.counts-table th.number,
+.counts-table td.number {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.run-status-passed {
+  color: var(--ok);
+}
+
+.run-status-failed {
+  color: var(--error);
+}
+
+.run-tabs {
+  margin: 16px 0 8px;
+}
+
+.run-files,
+.run-settings {
+  margin-top: 16px;
+}
+
+.counts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85em;
+}
+
+.counts-table th,
+.counts-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.counts-table tfoot td {
+  border-top: 2px solid var(--border);
+}
+
+.adds-up {
+  color: var(--ok);
+}
+
+.not-adding-up {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.prepared-rows {
+  margin-top: 8px;
+}
+
+/* ---- Start conversion panel, and the Jobs view ---- */
+
+.start-panel {
+  margin-top: 28px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.start-field {
+  margin-bottom: 10px;
+}
+
+.start-field label {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.start-field input[type='text'] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.start-resources {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.start-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.start-actions button {
+  margin-bottom: 0;
+}
+
+.start-result {
+  margin-top: 8px;
+}
+
+.job-table td {
+  vertical-align: top;
+}
+
+.job-actions {
+  white-space: nowrap;
+}
+
+.job-actions button {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.job-error {
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.job-log {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.job-logs h4 {
+  margin: 8px 0 4px;
+}
+
+/* ---- Batch review ---- */
+
+.review-view {
+  margin-bottom: 20px;
+}
+
+.review-table tbody tr {
+  cursor: default;
+}
+
+.review-table tbody tr.review-expanded-row:hover {
+  background: none;
+}
+
+.review-table td {
+  min-width: 120px;
+}
+
+.review-folder {
+  width: 100%;
+  min-width: 180px;
+  box-sizing: border-box;
+}
+
+.review-format select,
+.review-mapping select {
+  max-width: 100%;
+}
+
+.review-mapping-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-bottom: 4px;
+}
+
+.review-mapping button.secondary {
+  margin-top: 4px;
+  margin-bottom: 0;
+}
+
+.review-hints {
+  margin-top: 6px;
+}
+
+.review-expanded-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.review-expanded-columns h4 {
+  margin: 0 0 6px;
 }

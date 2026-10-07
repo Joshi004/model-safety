@@ -24,6 +24,7 @@ if str(READERS_DIR) not in sys.path:
     sys.path.insert(0, str(READERS_DIR))
 
 import prepare_rows  # noqa: E402  (needs the sys.path insert above first)
+import progress_file  # noqa: E402
 
 from modelsafety.contract.fingerprints import (  # noqa: E402
     FINGERPRINT_RECIPE_VERSION,
@@ -31,6 +32,11 @@ from modelsafety.contract.fingerprints import (  # noqa: E402
     row_fingerprint,
 )
 from modelsafety.contract.origin import ORIGIN_KEY, json_safe  # noqa: E402
+from modelsafety.contract.run_identity import (  # noqa: E402
+    IDENTITY_FILENAME,
+    RunIdentityError,
+    compare_run_identity,
+)
 from modelsafety.contract.textract import extract_record_text  # noqa: E402
 
 # Re-exported as plain names so callers don't need to know these are
@@ -41,13 +47,24 @@ parse_mapping = prepare_rows._parse_mapping
 is_present = prepare_rows._is_present
 arrow_ipc_row_count = prepare_rows._arrow_ipc_row_count
 source_file_entry = prepare_rows._source_file_entry
+build_parser = prepare_rows.build_parser
+discover_input_files = prepare_rows._discover_input_files
+run_identity = prepare_rows._run_identity
 SKIPPED_ROWS_FILENAME = prepare_rows.SKIPPED_ROWS_FILENAME
+PROGRESS_FILENAME = progress_file.PROGRESS_FILENAME
+PROGRESS_TOOL = progress_file.PROGRESS_TOOL
+PROGRESS_PHASES = progress_file.PHASES
+PROGRESS_END_PHASES = progress_file.END_PHASES
 
 __all__ = [
     "REPO_ROOT",
     "FINGERPRINT_RECIPE_VERSION",
     "ORIGIN_KEY",
     "SKIPPED_ROWS_FILENAME",
+    "PROGRESS_FILENAME",
+    "PROGRESS_TOOL",
+    "PROGRESS_PHASES",
+    "PROGRESS_END_PHASES",
     "extract_record_text",
     "json_safe",
     "line_fingerprint",
@@ -58,4 +75,10 @@ __all__ = [
     "is_present",
     "arrow_ipc_row_count",
     "source_file_entry",
+    "build_parser",
+    "discover_input_files",
+    "run_identity",
+    "compare_run_identity",
+    "RunIdentityError",
+    "IDENTITY_FILENAME",
 ]

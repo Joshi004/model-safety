@@ -1,5 +1,6 @@
-"""A Prepared run (the output folder of `prepare_rows.py`): open it, page
-through its skipped rows, and look an original row up from an `_origin`
+"""A Prepared run (the output folder of `prepare_rows.py`): list the runs
+under the runs root, say how far a running one has got, open a finished one,
+page through its skipped rows, and look an original row up from an `_origin`
 note.
 
 Everything here is read-only. A lookup only opens a file that the run's own
@@ -10,7 +11,9 @@ just data in a file and can't be trusted to name a safe path.
 from __future__ import annotations
 
 import json
+import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,14 +21,26 @@ import detect
 from reader_imports import (
     FINGERPRINT_RECIPE_VERSION,
     ORIGIN_KEY,
+    PROGRESS_END_PHASES,
+    PROGRESS_FILENAME,
+    PROGRESS_PHASES,
+    PROGRESS_TOOL,
+    REPO_ROOT,
     SKIPPED_ROWS_FILENAME,
     json_safe,
     source_file_entry,
 )
 
 PREPARE_ROWS_TOOL = "prepare_rows.py"
+# The tool name `run_identity.json` records for the same program.
+PREPARE_ROWS_IDENTITY_TOOL = "prepare_rows"
+RUNS_ROOT_ENV = "VALIDATOR_RUNS_ROOT"
+JOBS_FOLDER = "_jobs"
+MAX_RUN_FOLDERS = 10_000
 PREVIEW_CHARS = 160
 SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+# A run that hasn't updated its `progress.json` for this long "may have stopped".
+STALE_AFTER_SECONDS = 120
 
 
 class RunError(ValueError):
@@ -42,6 +57,176 @@ def _source_files(summary: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(files, list):
         raise RunError("This run's summary.json has no source.files list.")
     return files
+
+
+# -------------------------------------------------------------------------
+# Watching a run (progress.json)
+# -------------------------------------------------------------------------
+
+
+def _parse_time(value: Any) -> datetime | None:
+    """A UTC ISO time from a file, or None when it isn't one."""
+    if not isinstance(value, str):
+        return None
+    try:
+        time = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return time if time.tzinfo is not None else time.replace(tzinfo=timezone.utc)
+
+
+def _read_progress(folder: Path) -> dict[str, Any] | None:
+    """The folder's `progress.json`, or None when it's missing, unreadable,
+    from another tool, or doesn't have a known phase and an `updated_at`."""
+    progress = _read_json_or_none(folder / PROGRESS_FILENAME)
+    if not isinstance(progress, dict) or progress.get("tool") != PROGRESS_TOOL:
+        return None
+    if progress.get("phase") not in (*PROGRESS_PHASES, *PROGRESS_END_PHASES):
+        return None
+    if _parse_time(progress.get("updated_at")) is None:
+        return None
+    return progress
+
+
+def may_have_stopped(progress: dict[str, Any], now: datetime | None = None) -> bool:
+    """True for a run whose last phase isn't `done` or `failed` and whose
+    `updated_at` is more than `STALE_AFTER_SECONDS` old."""
+    if progress.get("phase") in PROGRESS_END_PHASES:
+        return False
+    updated_at = _parse_time(progress.get("updated_at"))
+    if updated_at is None:
+        return False
+    age = (now or datetime.now(timezone.utc)) - updated_at
+    return age.total_seconds() > STALE_AFTER_SECONDS
+
+
+def run_progress(run_dir: Path) -> dict[str, Any]:
+    """How far the run in `run_dir` has got. `progress` is None when there is
+    no usable `progress.json` (a missing folder isn't an error)."""
+    progress = _read_progress(run_dir)
+    return {
+        "run_dir": str(run_dir),
+        "progress": progress,
+        "has_summary": (run_dir / "summary.json").is_file(),
+        "has_success": (run_dir / "_SUCCESS").is_file(),
+        "may_have_stopped": progress is not None and may_have_stopped(progress),
+    }
+
+
+# -------------------------------------------------------------------------
+# The runs list
+# -------------------------------------------------------------------------
+
+
+def runs_root() -> Path:
+    """`VALIDATOR_RUNS_ROOT` if set, otherwise `<repo>/output/prepared`."""
+    configured = os.environ.get(RUNS_ROOT_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (REPO_ROOT / "output" / "prepared").resolve()
+
+
+def _read_json_or_none(path: Path) -> Any:
+    try:
+        return _read_json(path)
+    except (OSError, ValueError):
+        return None
+
+
+def _count(summary: dict[str, Any] | None, section: str, key: str) -> int | None:
+    if summary is None:
+        return None
+    block = summary.get(section)
+    value = block.get(key) if isinstance(block, dict) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _run_entry(root: Path, folder: Path, file_names: list[str]) -> dict[str, Any] | None:
+    """The runs-list entry for `folder`, or None when it isn't a `prepare_rows.py` run.
+
+    Reads `run_identity.json`, `summary.json` and `progress.json`, whichever the folder has.
+    """
+    identity = None
+    if "run_identity.json" in file_names:
+        identity = _read_json_or_none(folder / "run_identity.json")
+    summary = None
+    if "summary.json" in file_names:
+        summary = _read_json_or_none(folder / "summary.json")
+    progress = None
+    if PROGRESS_FILENAME in file_names:
+        progress = _read_progress(folder)
+
+    identity_is_run = isinstance(identity, dict) and identity.get("tool") == PREPARE_ROWS_IDENTITY_TOOL
+    summary_is_run = isinstance(summary, dict) and summary.get("tool") == PREPARE_ROWS_TOOL
+    if not identity_is_run and not summary_is_run:
+        return None
+
+    phase = progress["phase"] if progress is not None else None
+    if phase == "failed":
+        # A `progress.json` that isn't finished describes the run that is going
+        # (or went wrong) now, so a `summary.json` beside it is an earlier run's.
+        status = "failed"
+        summary = None
+    elif phase is not None and phase != "done":
+        status = "may_have_stopped" if may_have_stopped(progress) else "in_progress"
+        summary = None
+    else:
+        if not summary_is_run:
+            summary = None
+        if summary is None:
+            status = "no_summary"
+        else:
+            checks = summary.get("checks")
+            passed = isinstance(checks, dict) and checks.get("passed") is True
+            status = "checks_passed" if passed else "checks_failed"
+
+    source_of_time = summary if summary is not None else identity
+    created_at = source_of_time.get("created_at") if isinstance(source_of_time, dict) else None
+    return {
+        "path": folder.relative_to(root).as_posix(),
+        "run_dir": str(folder),
+        "created_at": created_at if isinstance(created_at, str) else None,
+        "status": status,
+        "rows_read": _count(summary, "source", "rows_read"),
+        "written": _count(summary, "rows", "written"),
+        "skipped": _count(summary, "rows", "skipped"),
+    }
+
+
+def list_runs(root: Path) -> dict[str, Any]:
+    """Every `prepare_rows.py` run folder under `root`.
+
+    Only lists folders and reads each candidate's `run_identity.json`,
+    `summary.json` and `progress.json`. It doesn't look inside a run folder,
+    skips `_jobs`, and stops after `MAX_RUN_FOLDERS` folders (then
+    `truncated` is true).
+    """
+    result: dict[str, Any] = {
+        "root": str(root),
+        "exists": root.is_dir(),
+        "truncated": False,
+        "runs": [],
+    }
+    if not result["exists"]:
+        return result
+
+    folders_seen = 0
+    for current, dir_names, file_names in os.walk(root):
+        folder = Path(current)
+        if folder == root:
+            dir_names[:] = sorted(name for name in dir_names if name != JOBS_FOLDER)
+        else:
+            folders_seen += 1
+            if folders_seen > MAX_RUN_FOLDERS:
+                result["truncated"] = True
+                break
+            entry = _run_entry(root, folder, file_names)
+            if entry is not None:
+                result["runs"].append(entry)
+                dir_names[:] = []
+                continue
+            dir_names[:] = sorted(dir_names)
+    return result
 
 
 # -------------------------------------------------------------------------

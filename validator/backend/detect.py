@@ -441,6 +441,85 @@ def _sample_csv(
     return frame.to_dict("records"), info
 
 
+PARQUET_BATCH_ROWS = 1024
+
+
+def _has_integer_without_nulls(array: Any) -> bool:
+    """Whether `array`, or anything nested inside it, is a non-empty integer
+    array with no nulls."""
+    import pyarrow as pa
+
+    dtype = array.type
+    if pa.types.is_integer(dtype):
+        return len(array) > 0 and array.null_count == 0
+    if pa.types.is_struct(dtype):
+        return any(_has_integer_without_nulls(array.field(i)) for i in range(dtype.num_fields))
+    if pa.types.is_list(dtype) or pa.types.is_large_list(dtype) or pa.types.is_fixed_size_list(dtype):
+        return _has_integer_without_nulls(array.flatten())
+    if pa.types.is_map(dtype):
+        return _has_integer_without_nulls(array.keys) or _has_integer_without_nulls(array.items)
+    return False
+
+
+def _may_convert_differently(group_meta: Any, batch: Any) -> bool:
+    """Whether converting `batch` on its own could give different Python
+    values than converting its whole row group, as `prepare_rows.py` does.
+
+    pandas turns an integer column that has nulls into floats (5 -> 5.0), and
+    one without nulls into ints. A batch with no nulls in an integer column
+    that has nulls elsewhere in the row group would come out as ints where
+    `prepare_rows.py` wrote floats, and the row's fingerprint would differ.
+    So: true when the batch has an integer column without nulls in a
+    top-level column whose integer footer columns have nulls (or no null count).
+    """
+    names = [
+        name
+        for name, column in zip(batch.schema.names, batch.columns)
+        if _has_integer_without_nulls(column)
+    ]
+    if not names:
+        return False
+    for index in range(group_meta.num_columns):
+        chunk = group_meta.column(index)
+        if chunk.physical_type not in ("INT32", "INT64"):
+            continue
+        path = chunk.path_in_schema
+        if not any(path == name or path.startswith(name + ".") for name in names):
+            continue
+        statistics = chunk.statistics
+        if statistics is None or not statistics.has_null_count or statistics.null_count > 0:
+            return True
+    return False
+
+
+def _row_group_records(parquet_file: Any, group: int, first: int, count: int) -> list[dict[str, Any]]:
+    """Up to `count` rows of one row group, starting at row `first` of that
+    group, as `.to_pandas().to_dict("records")` gives them.
+
+    Reads the group in batches of `PARQUET_BATCH_ROWS` instead of all at once,
+    counts past the batches before `first` without converting them, and
+    converts only the batch(es) that hold the wanted rows. If a batch could
+    convert differently from the whole group (see `_may_convert_differently`),
+    this request reads the whole group instead, so the rows always match what
+    `prepare_rows.py` read.
+    """
+    group_meta = parquet_file.metadata.row_group(group)
+    records: list[dict[str, Any]] = []
+    seen = 0
+    for batch in parquet_file.iter_batches(batch_size=PARQUET_BATCH_ROWS, row_groups=[group]):
+        if seen + batch.num_rows <= first:
+            seen += batch.num_rows
+            continue
+        if _may_convert_differently(group_meta, batch):
+            whole = parquet_file.read_row_group(group).to_pandas().to_dict("records")
+            return whole[first : first + count]
+        records.extend(batch.to_pandas().to_dict("records")[max(0, first - seen) :])
+        seen += batch.num_rows
+        if len(records) >= count:
+            break
+    return records[:count]
+
+
 def _sample_parquet(
     target: Path, max_rows: int, start_row: int = 0
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -467,10 +546,9 @@ def _sample_parquet(
     sampled_from: str | None = None
     # Unlike jsonl/csv, a parquet file's own metadata already says how many
     # rows are in each row group -- a group entirely before start_row can be
-    # skipped without reading any of its actual data. Only the one group
-    # start_row falls inside (and whichever follow, up to max_rows) is
-    # actually read, via read_row_group() rather than the sequential
-    # iter_batches() the old (always-from-the-start) version used.
+    # skipped without reading any of its actual data. Inside the one group
+    # start_row falls in (and whichever follow, up to max_rows), the rows
+    # are read in batches, so a huge row group is never loaded whole.
     remaining_to_skip = start_row
     for file_path in files:
         try:
@@ -482,11 +560,10 @@ def _sample_parquet(
             if remaining_to_skip >= group_rows:
                 remaining_to_skip -= group_rows
                 continue
-            batch_rows = parquet_file.read_row_group(group_index).to_pandas().to_dict("records")
-            if remaining_to_skip > 0:
-                batch_rows = batch_rows[remaining_to_skip:]
-                remaining_to_skip = 0
-            rows.extend(batch_rows)
+            rows.extend(
+                _row_group_records(parquet_file, group_index, remaining_to_skip, max_rows - len(rows))
+            )
+            remaining_to_skip = 0
             sampled_from = sampled_from or str(file_path)
             if len(rows) >= max_rows:
                 break
@@ -654,9 +731,10 @@ def _original_jsonl(path: Path, byte: int) -> dict[str, Any]:
 
 
 def _original_parquet_row(path: Path, row_number: int) -> dict[str, Any] | None:
-    """One row of a parquet file, reading only the row group that holds it
-    -- the same `read_row_group(...).to_pandas().to_dict("records")` call
-    `prepare_rows.py` reads each group with."""
+    """One row of a parquet file, reading only the batches of the row group
+    that hold it. The row is the same one `prepare_rows.py` got from
+    `read_row_group(...).to_pandas().to_dict("records")` (see
+    `_row_group_records`)."""
     import pyarrow.parquet as pq
 
     parquet_file = pq.ParquetFile(path)
@@ -664,8 +742,7 @@ def _original_parquet_row(path: Path, row_number: int) -> dict[str, Any] | None:
     for group in range(parquet_file.num_row_groups):
         group_rows = parquet_file.metadata.row_group(group).num_rows
         if row_number < group_start + group_rows:
-            records = parquet_file.read_row_group(group).to_pandas().to_dict("records")
-            return records[row_number - group_start]
+            return _row_group_records(parquet_file, group, row_number - group_start, 1)[0]
         group_start += group_rows
     return None
 

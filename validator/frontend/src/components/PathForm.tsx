@@ -50,15 +50,24 @@ const EXAMPLE_PATHS: { label: string; path: string }[] = [
 export default function PathForm({
   onInspect,
   loading,
+  onAddToSelection,
 }: {
   onInspect: (path: string) => void
   loading: boolean
+  // Only given while the sidebar is selecting datasets to convert.
+  onAddToSelection?: (path: string) => void
 }) {
   const [path, setPath] = useState('')
 
   function pickExample(examplePath: string) {
     setPath(examplePath)
     onInspect(examplePath)
+  }
+
+  function addToSelection() {
+    if (!onAddToSelection || !path.trim()) return
+    onAddToSelection(path.trim())
+    setPath('')
   }
 
   return (
@@ -84,6 +93,13 @@ export default function PathForm({
           {loading ? 'Inspecting…' : 'Inspect'}
         </button>
       </div>
+      {onAddToSelection && (
+        <div className="path-form-add">
+          <button type="button" className="secondary" disabled={!path.trim()} onClick={addToSelection}>
+            Add to selection
+          </button>
+        </div>
+      )}
       <p className="muted small">Any absolute path your account can read.</p>
 
       <div className="example-paths">

@@ -131,6 +131,10 @@ def verify_source(root: Path, unit: WorkUnit) -> Path:
 
 
 def iter_unit_rows(root: Path, unit: WorkUnit) -> Iterator[dict[str, Any]]:
+    # Imported here because compare_*.py and llm_validate.py import this module
+    # without the repo root on sys.path, and only scanner.py reads rows.
+    from modelsafety.contract.fingerprints import line_fingerprint
+
     source = verify_source(root, unit)
     with source.open("rb") as handle:
         handle.seek(unit.start_byte)
@@ -150,6 +154,7 @@ def iter_unit_rows(root: Path, unit: WorkUnit) -> Iterator[dict[str, Any]]:
                 "source_file": unit.source_file,
                 "source_line": source_line,
                 "whole_line": text_line.rstrip("\r\n"),
+                "source_sha256": line_fingerprint(raw_line),
                 "record": record,
             }
             source_line += 1

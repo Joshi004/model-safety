@@ -86,20 +86,35 @@ def resolve_inputs(
 
 
 def iter_candidates(
-    input_root: Path, files: list[Path], input_files: list[dict[str, str]]
+    input_root: Path,
+    files: list[Path],
+    input_files: list[dict[str, str]],
+    per_file: dict[str, dict[str, int]],
 ) -> Iterator[dict[str, Any]]:
     """Yield one Detoxify candidate per plain text or conversation message.
 
     Every candidate carries ``source_sha256``, the fingerprint of its line. Each
     file's path and SHA-256 is appended to ``input_files`` once the file has
-    been read to the end.
+    been read to the end. ``per_file`` gets one entry per file, made before the
+    file is read, with the row counts: every row is read, and has text when it
+    yields at least one candidate (a plain ``text`` string, even an empty one,
+    is a candidate).
     """
     for path in files:
         relative = path.relative_to(input_root).as_posix()
         digest = hashlib.sha256()
+        counts = per_file[relative] = {
+            "rows": 0,
+            "messages": 0,
+            "rows_read": 0,
+            "rows_with_text": 0,
+            "rows_without_text": 0,
+            "findings": 0,
+        }
         with path.open("rb") as handle:
             for source_line, raw_line in enumerate(handle, 1):
                 digest.update(raw_line)
+                counts["rows_read"] += 1
                 try:
                     source_record = json.loads(raw_line.decode("utf-8"))
                 except json.JSONDecodeError as exc:
@@ -108,6 +123,7 @@ def iter_candidates(
 
                 text = source_record.get("text")
                 if isinstance(text, str):
+                    counts["rows_with_text"] += 1
                     yield {
                         "source_file": relative,
                         "source_line": source_line,
@@ -119,25 +135,30 @@ def iter_candidates(
                     }
                     continue
 
+                row_has_candidate = False
                 messages = source_record.get("messages")
-                if not isinstance(messages, list):
-                    continue
-                for message_index, message in enumerate(messages):
-                    if not isinstance(message, dict):
-                        continue
-                    role = str(message.get("role") or "")
-                    content = content_text(message.get("content"))
-                    if not content:
-                        continue
-                    yield {
-                        "source_file": relative,
-                        "source_line": source_line,
-                        "source_sha256": source_sha256,
-                        "message_index": message_index,
-                        "role": role,
-                        "text": f"{role}: {content}",
-                        "source_record": source_record,
-                    }
+                if isinstance(messages, list):
+                    for message_index, message in enumerate(messages):
+                        if not isinstance(message, dict):
+                            continue
+                        role = str(message.get("role") or "")
+                        content = content_text(message.get("content"))
+                        if not content:
+                            continue
+                        if not row_has_candidate:
+                            row_has_candidate = True
+                            counts["rows_with_text"] += 1
+                        yield {
+                            "source_file": relative,
+                            "source_line": source_line,
+                            "source_sha256": source_sha256,
+                            "message_index": message_index,
+                            "role": role,
+                            "text": f"{role}: {content}",
+                            "source_record": source_record,
+                        }
+                if not row_has_candidate:
+                    counts["rows_without_text"] += 1
         input_files.append({"path": relative, "sha256": digest.hexdigest()})
 
 
@@ -237,13 +258,19 @@ def run(
     summary_file: Path | None = None,
     snapshot_manifest: Path | None = None,
 ) -> None:
+    # An old summary must not outlive a run that doesn't finish, so it goes first.
+    if summary_file is not None:
+        summary_file.unlink(missing_ok=True)
+
     if snapshot_manifest is not None:
         verify_snapshot(input_root, files, snapshot_manifest)
 
     accelerator = accelerate.Accelerator()
     stats: dict[str, Any] = {"rows_read": 0, "messages_scored": 0, "messages_flagged": 0, "per_file": {}}
     input_files: list[dict[str, str]] = []
-    candidates = count_candidates(iter_candidates(input_root, files, input_files), stats)
+    candidates = count_candidates(
+        iter_candidates(input_root, files, input_files, stats["per_file"]), stats
+    )
     model = Detoxify(model_name, device=accelerator.device)
 
     if accelerator.is_main_process:
@@ -252,6 +279,7 @@ def run(
         histogram = [0] * 20
         progress = tqdm(desc="Detoxify candidates", unit="message")
 
+    completed = False
     try:
         accelerator.wait_for_everyone()
         while True:
@@ -275,6 +303,7 @@ def run(
                     histogram[min(int(max_score / 0.05), 19)] += 1
                     if max_score > threshold:
                         stats["messages_flagged"] += 1
+                        stats["per_file"][candidate["source_file"]]["findings"] += 1
                         output = dict(candidate)
                         output["toxicity"] = max_score
                         output["trigger_category"] = max_category
@@ -282,12 +311,14 @@ def run(
                         output_handle.write(json.dumps(output, ensure_ascii=False) + "\n")
                 output_handle.flush()
                 progress.update(len(batch))
+        completed = True
     finally:
         if accelerator.is_main_process:
             output_handle.close()
             progress.close()
             print_histogram(histogram)
-            if summary_file is not None:
+            # Only a run that read every file to the end gets a summary.
+            if summary_file is not None and completed:
                 write_summary_atomic(
                     summary_file,
                     {

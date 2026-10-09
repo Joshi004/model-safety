@@ -20,7 +20,6 @@ import glob
 import json
 import os
 import re
-import sys
 from collections import Counter
 from typing import Any
 
@@ -202,7 +201,7 @@ def iter_jsonl(path: str):
             try:
                 yield json.loads(line)
             except json.JSONDecodeError as e:
-                print(f"[warn] {path}:{ln}: invalid JSON ({e}); skipping", file=sys.stderr)
+                raise ValueError(f"{path}:{ln}: invalid JSON: {e}") from e
 
 
 def resolve_inputs(input_arg: str) -> list[str]:

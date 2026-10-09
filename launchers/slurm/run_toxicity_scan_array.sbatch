@@ -80,9 +80,12 @@ mkdir -p "${REPO}/logs/slurm" "${SHARD_ROOT}" "${HF_HOME}" "${HF_HUB_CACHE}"
 
 cd "${TOX_DIR}"
 source "${VENV}/bin/activate"
-if [[ "${TOX_REUSE_STAGE1:-0}" == "1" && -f "${FLAGGED_FILE}" ]]; then
-  echo "Reusing existing Detoxify output: ${FLAGGED_FILE}"
+# A marker from an earlier attempt must not outlive a run that doesn't finish.
+rm -f "${SHARD_ROOT}/_SUCCESS"
+if [[ "${TOX_REUSE_STAGE1:-0}" == "1" && -f "${SHARD_ROOT}/_DETOXIFY_SUCCESS" && -f "${FLAGGED_FILE}" ]]; then
+  echo "Reusing finished Detoxify output: ${FLAGGED_FILE}"
 else
+  rm -f "${SHARD_ROOT}/_DETOXIFY_SUCCESS"
   python run.py \
     --input-root "${INPUT_ROOT}" \
     --input-manifest "${MANIFEST}" \
@@ -138,6 +141,11 @@ else
     --concurrency "${CONCURRENCY}" \
     --max_tokens "${GUARD_MAX_TOKENS:-128}"
 fi
+
+python check_guard_counts.py \
+  --stage1-summary "${SHARD_ROOT}/detoxify_summary.json" \
+  --flagged "${FLAGGED_FILE}" \
+  --guard-summary "${GUARD_DIR}/summary.json"
 
 python guard_report.py "${GUARD_DIR}" --format markdown --output "${SHARD_ROOT}/guard_report.md"
 touch "${SHARD_ROOT}/_SUCCESS"

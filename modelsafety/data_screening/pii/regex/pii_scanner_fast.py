@@ -22,7 +22,7 @@ from pii_output import (
     stage1_paths,
     write_stage1_metrics,
 )
-from modelsafety.contract.fingerprints import input_block
+from modelsafety.contract.fingerprints import input_block, line_fingerprint
 from modelsafety.contract.origin import check_first_line
 from modelsafety.contract.run_identity import (
     RunIdentityError,
@@ -137,7 +137,9 @@ def process_chunk(args):
         output_files[category] = open(output_file_path, "a", encoding="utf-8", buffering=1)
 
     lines_processed = 0
+    rows_without_text = 0
     pii_counts = {category: 0 for category in PII_CATEGORIES}
+    rel_path = os.path.relpath(file_path, base_dir)
 
     try:
         with open(file_path, "rb") as f:
@@ -155,14 +157,13 @@ def process_chunk(args):
                     line = raw_line.decode("utf-8")
                     data = json.loads(line)
                     text = extract_record_text(data)
-                    if text:
-                        source_sha256 = hashlib.sha256(
-                            raw_line.rstrip(b"\r\n")
-                        ).hexdigest()
+                    if not text:
+                        rows_without_text += 1
+                    else:
+                        source_sha256 = line_fingerprint(raw_line)
                         for category, pattern in PII_REGEXES.items():
                             pii_items = pattern.findall(text)
                             if pii_items:
-                                rel_path = os.path.relpath(file_path, base_dir)
                                 for item in set(pii_items):
                                     normalized_item = normalize_hit_item(item)
                                     output_files[category].write(
@@ -184,7 +185,7 @@ def process_chunk(args):
         for handle in output_files.values():
             handle.close()
 
-    return shard_name, lines_processed, pii_counts
+    return shard_name, lines_processed, pii_counts, file_path, rows_without_text
 
 
 def merge_worker_files(hits_dir, workers_dir, shard_names):
@@ -256,6 +257,7 @@ def main():
     print(f"Run identity: {run_state}")
 
     paths["stage_dir"].mkdir(parents=True, exist_ok=True)
+    paths["success"].unlink(missing_ok=True)
     if paths["hits_dir"].exists():
         shutil.rmtree(paths["hits_dir"])
     paths["hits_dir"].mkdir(parents=True, exist_ok=True)
@@ -338,10 +340,39 @@ def main():
         shard_names,
     )
 
+    # A file can be split into several chunks, so its counts are summed here.
+    per_file = {
+        file_path: {"rows_read": 0, "rows_without_text": 0, "findings": 0}
+        for file_path in jsonl_files
+    }
+    for _, lines_processed, pii_counts, file_path, rows_without_text in results:
+        counts = per_file[file_path]
+        counts["rows_read"] += lines_processed
+        counts["rows_without_text"] += rows_without_text
+        counts["findings"] += sum(pii_counts.values())
+    lines_planned = {file_path: 0 for file_path in jsonl_files}
+    for file_path, start_line, end_line, _, _ in chunks:
+        lines_planned[file_path] += end_line - start_line + 1
+    for file_path, counts in per_file.items():
+        if counts["rows_read"] != lines_planned[file_path]:
+            raise RuntimeError(
+                f"{file_path}: scanned {counts['rows_read']} rows but the file has "
+                f"{lines_planned[file_path]} lines"
+            )
+        counts["rows_with_text"] = counts["rows_read"] - counts["rows_without_text"]
+    if sum(counts["findings"] for counts in per_file.values()) != sum(
+        final_pii_counts.values()
+    ):
+        raise RuntimeError("Per-file findings do not add up to the merged stage 1 hits")
+
     input_files = [
         {
             "path": Path(file_path).relative_to(base_dir).as_posix(),
             "sha256": sha256_by_file[file_path],
+            "rows_read": per_file[file_path]["rows_read"],
+            "rows_with_text": per_file[file_path]["rows_with_text"],
+            "rows_without_text": per_file[file_path]["rows_without_text"],
+            "findings": per_file[file_path]["findings"],
         }
         for file_path in jsonl_files
     ]
@@ -361,6 +392,8 @@ def main():
         pii_counts=final_pii_counts,
         num_workers=num_workers,
     )
+
+    paths["success"].touch()
 
     print(f"\nStage 1 summary: {paths['metrics_file']}")
     print_run_summary(run_dir)

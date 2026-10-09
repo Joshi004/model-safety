@@ -50,7 +50,22 @@ CANDIDATE_FIELDS = [
     "end",
     "confidence",
     "tier",
+    "source_sha256",
 ]
+
+# The counts every scanner keeps per file, plus the ones NER already had.
+# aggregate() sums them from the work units into each source file.
+SUMMED_COUNTS = (
+    "rows",
+    "rows_read",
+    "rows_with_text",
+    "rows_without_text",
+    "messages",
+    "spans",
+    "findings",
+    "policy_eligible_spans",
+    "llm_candidates",
+)
 
 
 def batched(iterator: Iterator[dict[str, Any]], size: int) -> Iterator[list[dict[str, Any]]]:
@@ -137,6 +152,7 @@ def process_unit(
     )
     started = time.monotonic()
     rows_seen = 0
+    rows_without_text = 0
     messages = 0
     span_count = 0
     candidate_count = 0
@@ -148,10 +164,15 @@ def process_unit(
     last_progress = started
 
     def records() -> Iterator[dict[str, Any]]:
-        nonlocal rows_seen
+        nonlocal rows_seen, rows_without_text
         for row in iter_unit_rows(input_root, unit):
             rows_seen += 1
-            yield from iter_record_texts(row)
+            row_has_text = False
+            for text_row in iter_record_texts(row):
+                row_has_text = True
+                yield text_row
+            if not row_has_text:
+                rows_without_text += 1
 
     try:
         with spans_temp.open("w", encoding="utf-8") as spans_handle, (
@@ -193,6 +214,7 @@ def process_unit(
                             "unit_id": unit.unit_id,
                             "source_file": row["source_file"],
                             "source_line": row["source_line"],
+                            "source_sha256": row["source_sha256"],
                             "message_index": row["message_index"],
                             "role": row["role"],
                             **span.to_dict(),
@@ -234,6 +256,7 @@ def process_unit(
                                 "end": span.end,
                                 "confidence": f"{span.confidence:.8f}",
                                 "tier": tier,
+                                "source_sha256": row["source_sha256"],
                             }
                         )
                 spans_handle.flush()
@@ -263,8 +286,12 @@ def process_unit(
         "model_revision": getattr(backend, "model_revision", "unknown"),
         "backend": backend.backend_name,
         "rows": rows_seen,
+        "rows_read": rows_seen,
+        "rows_with_text": rows_seen - rows_without_text,
+        "rows_without_text": rows_without_text,
         "messages": messages,
         "spans": span_count,
+        "findings": span_count,
         "policy_eligible_spans": eligible_span_count,
         "llm_candidates": candidate_count,
         "labels": dict(sorted(labels.items())),
@@ -360,6 +387,8 @@ def load_input_block(work_manifest: Path) -> dict[str, Any]:
 def aggregate(args: argparse.Namespace) -> int:
     output_root = args.output_root.expanduser().resolve()
     work_manifest = args.work_manifest.expanduser().resolve()
+    # A marker from an earlier aggregate must not outlive one that fails.
+    (output_root / "_SUCCESS").unlink(missing_ok=True)
     input_files = load_input_block(work_manifest)
     units = load_work_units(work_manifest)
     if args.max_units:
@@ -412,26 +441,20 @@ def aggregate(args: argparse.Namespace) -> int:
             if not (unit_dir / "_SUCCESS").is_file():
                 continue
             summary = json.loads((unit_dir / "summary.json").read_text(encoding="utf-8"))
-            for key in (
-                "rows",
-                "messages",
-                "spans",
-                "policy_eligible_spans",
-                "llm_candidates",
-            ):
+            absent = [key for key in SUMMED_COUNTS if key not in summary]
+            if absent:
+                raise RuntimeError(
+                    f"{unit_dir / 'summary.json'} has no {absent}: this work unit was "
+                    "scanned before these counts were recorded. Scan again in a new run folder."
+                )
+            for key in SUMMED_COUNTS:
                 totals[key] += int(summary[key])
             labels.update(summary["labels"])
             tiers.update(summary["tiers"])
             policy_exclusions.update(summary["policy_exclusions"])
             source_file = str(summary["unit"]["source_file"])
             source_summary = sources.setdefault(source_file, Counter())
-            for key in (
-                "rows",
-                "messages",
-                "spans",
-                "policy_eligible_spans",
-                "llm_candidates",
-            ):
+            for key in SUMMED_COUNTS:
                 source_summary[key] += int(summary[key])
             with (output_root / "spans" / "units" / f"{unit.unit_id}.jsonl").open(
                 "r",
@@ -512,6 +535,9 @@ def aggregate(args: argparse.Namespace) -> int:
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     write_json_atomic(output_root / "summary.json", summary)
+    # Written last, and not at all when --allow-incomplete left units out.
+    if not missing:
+        write_json_atomic(output_root / "_SUCCESS", {"completed_at": summary["created_at"]})
     print(
         f"Aggregated {summary['completed_units']}/{summary['expected_units']} units, "
         f"{summary.get('spans', 0):,} spans"

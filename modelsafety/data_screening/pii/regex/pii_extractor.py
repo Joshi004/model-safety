@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import sqlite3
 import sys
@@ -13,7 +12,8 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from pii_output import PII_CATEGORIES
+from pii_output import PII_CATEGORIES, SUCCESS_FILENAME
+from modelsafety.contract.fingerprints import line_fingerprint
 from modelsafety.contract.textract import (
     load_source_snapshot,
     parse_record_text,
@@ -139,9 +139,7 @@ def write_source_hits(
         for source_line, raw_line in enumerate(handle, 1):
             record_text = None
             while current is not None and current[0] == source_line:
-                actual_sha256 = hashlib.sha256(
-                    raw_line.rstrip(b"\r\n")
-                ).hexdigest()
+                actual_sha256 = line_fingerprint(raw_line)
                 if actual_sha256 != current[1]:
                     raise RuntimeError(
                         f"PII source mismatch at {source_file}:{source_line}: "
@@ -203,6 +201,8 @@ def main() -> int:
     )
 
     output.parent.mkdir(parents=True, exist_ok=True)
+    success = output.parent / SUCCESS_FILENAME
+    success.unlink(missing_ok=True)
     database = output.with_name(f".{output.name}.sqlite3")
     output_temp = output.with_name(f".{output.name}.partial")
     database.unlink(missing_ok=True)
@@ -238,6 +238,7 @@ def main() -> int:
             if written != hit_count:
                 raise RuntimeError(f"Indexed {hit_count} hits but wrote {written}")
             output_temp.replace(output)
+            success.touch()
         finally:
             connection.close()
     except BaseException:

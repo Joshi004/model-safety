@@ -28,7 +28,7 @@ from datasketch import MinHash, MinHashLSH
 # Run as a script from this folder, so the repo root isn't on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from modelsafety.contract.fingerprints import input_block  # noqa: E402
+from modelsafety.contract.fingerprints import input_block, line_fingerprint  # noqa: E402
 from modelsafety.contract.origin import check_first_line, check_line  # noqa: E402
 from modelsafety.contract.run_identity import (  # noqa: E402
     check_run_identity,
@@ -42,6 +42,7 @@ class Candidate:
     key: str
     source_file: str
     source_line: int
+    source_sha256: str
     text: str
 
 
@@ -52,6 +53,9 @@ class ScanStats:
     rows_without_text: int = 0
     candidate_pairs: int = 0
     input_files: list[dict[str, str]] = field(default_factory=list)
+    # Per file: rows_read, rows_with_text, rows_without_text. Blank lines are
+    # not rows, as in rows_total.
+    per_file: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 def content_text(content: Any) -> str:
@@ -201,16 +205,18 @@ def _record_key(
     dataset: str,
     source_file: str,
     source_line: int,
+    source_sha256: str,
 ) -> str:
-    return f"{order:020d}\0{dataset}\0{source_file}\0{source_line}"
+    return f"{order:020d}\0{dataset}\0{source_file}\0{source_line}\0{source_sha256}"
 
 
 def _key_reference(key: str) -> dict[str, Any]:
-    order, dataset, source_file, source_line = key.split("\0", 3)
+    order, dataset, source_file, source_line, source_sha256 = key.split("\0", 4)
     return {
         "dataset": dataset,
         "source_file": source_file,
         "source_line": int(source_line),
+        "source_sha256": source_sha256,
         "source_order": int(order),
     }
 
@@ -227,6 +233,11 @@ def iter_candidates(
     for path in files:
         relative = path.relative_to(input_root).as_posix()
         digest = hashlib.sha256()
+        counts = stats.per_file[relative] = {
+            "rows_read": 0,
+            "rows_with_text": 0,
+            "rows_without_text": 0,
+        }
         with path.open("rb") as handle:
             for source_line, raw_line in enumerate(handle, 1):
                 digest.update(raw_line)
@@ -234,6 +245,7 @@ def iter_candidates(
                 if not line.strip():
                     continue
                 stats.rows_total += 1
+                counts["rows_read"] += 1
                 order += 1
                 try:
                     record = json.loads(line)
@@ -244,11 +256,15 @@ def iter_candidates(
                 text = extract_text(record, text_scope, exclude_system)
                 if not normalize_text(text):
                     stats.rows_without_text += 1
+                    counts["rows_without_text"] += 1
                     continue
+                counts["rows_with_text"] += 1
+                source_sha256 = line_fingerprint(raw_line)
                 yield Candidate(
-                    key=_record_key(order, dataset, relative, source_line),
+                    key=_record_key(order, dataset, relative, source_line, source_sha256),
                     source_file=relative,
                     source_line=source_line,
+                    source_sha256=source_sha256,
                     text=text,
                 )
         stats.input_files.append({"path": relative, "sha256": digest.hexdigest()})
@@ -370,9 +386,11 @@ def detect_duplicates(
                 {
                     "source_file": reference["source_file"],
                     "source_line": reference["source_line"],
+                    "source_sha256": reference["source_sha256"],
                     "duplicate_of": {
                         "source_file": canonical_ref["source_file"],
                         "source_line": canonical_ref["source_line"],
+                        "source_sha256": canonical_ref["source_sha256"],
                     },
                     "method": "minhash_lsh",
                 }
@@ -487,10 +505,12 @@ def detect_cross_duplicates(
                         "source_dataset": "candidate",
                         "source_file": candidate.source_file,
                         "source_line": candidate.source_line,
+                        "source_sha256": candidate.source_sha256,
                         "duplicate_of": {
                             "dataset": "reference",
                             "source_file": canonical_ref["source_file"],
                             "source_line": canonical_ref["source_line"],
+                            "source_sha256": canonical_ref["source_sha256"],
                         },
                         "method": "cross_minhash_lsh",
                     }
@@ -511,6 +531,26 @@ def detect_cross_duplicates(
         )
     )
     return decisions, direct_matches, reference_rows_by_file
+
+
+def per_file_summary(
+    stats: ScanStats, decisions: list[dict[str, Any]] | None = None
+) -> dict[str, dict[str, int]]:
+    """Each file's row counts, plus its duplicate rows when ``decisions`` is given.
+
+    Reference files in cross mode pass no decisions: their rows are never marked.
+    """
+    if sum(item["rows_with_text"] for item in stats.per_file.values()) != stats.rows_hashed:
+        raise RuntimeError("Per-file rows with text do not add up to the rows hashed")
+    summary = {path: dict(counts) for path, counts in sorted(stats.per_file.items())}
+    if decisions is not None:
+        findings = Counter(item["source_file"] for item in decisions)
+        unknown = set(findings) - set(summary)
+        if unknown:
+            raise RuntimeError(f"Duplicates found in files that were not read: {sorted(unknown)[:5]}")
+        for path, entry in summary.items():
+            entry["findings"] = findings[path]
+    return summary
 
 
 def write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
@@ -863,6 +903,7 @@ def run(
         "kept_rows": kept_rows,
         "filtered_duplicate_rows": filtered_duplicate_rows,
         "input": input_block(str(input_root), stats.input_files),
+        "per_file": per_file_summary(stats, decisions),
         "configuration": {
             "text_scope": text_scope,
             "exclude_system": exclude_system,
@@ -1001,6 +1042,7 @@ def run_cross(
             "rows_hashed": reference_stats.rows_hashed,
             "rows_without_text": reference_stats.rows_without_text,
             "input": input_block(str(reference_root), reference_stats.input_files),
+            "per_file": per_file_summary(reference_stats),
             **contamination_summary,
         },
         "candidate": {
@@ -1012,6 +1054,7 @@ def run_cross(
             "kept_rows": kept_rows,
             "duplicate_rows": len(decisions),
             "filtered_duplicate_rows": filtered_duplicate_rows,
+            "per_file": per_file_summary(candidate_stats, decisions),
         },
         "candidate_pairs": candidate_stats.candidate_pairs,
         "input": input_block(str(candidate_root), candidate_stats.input_files),

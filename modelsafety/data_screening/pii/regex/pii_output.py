@@ -24,6 +24,7 @@ HITS_DIRNAME = "hits"
 WORKERS_DIRNAME = "workers"
 METRICS_FILENAME = "metrics.txt"
 INPUT_FILES_FILENAME = "input_files.json"
+SUCCESS_FILENAME = "_SUCCESS"
 
 
 def script_dir() -> Path:
@@ -65,6 +66,7 @@ def stage1_paths(run_dir: Path | None = None) -> dict[str, Path]:
         "workers_dir": stage / WORKERS_DIRNAME,
         "metrics_file": stage / METRICS_FILENAME,
         "input_files": stage / INPUT_FILES_FILENAME,
+        "success": stage / SUCCESS_FILENAME,
     }
 
 
@@ -103,6 +105,7 @@ def stage2_paths(run_dir: Path | None = None) -> dict[str, Path]:
         "stage_dir": stage,
         "hits_dir": stage / HITS_DIRNAME,
         "metrics_file": stage / METRICS_FILENAME,
+        "success": stage / SUCCESS_FILENAME,
     }
 
 

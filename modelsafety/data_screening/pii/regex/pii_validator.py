@@ -125,6 +125,7 @@ def main():
     paths = stage2_paths(run_dir)
     if not input_hits_dir.is_dir():
         raise FileNotFoundError(f"Missing Stage-1 hits directory: {input_hits_dir}")
+    paths["success"].unlink(missing_ok=True)
     if paths["hits_dir"].exists():
         shutil.rmtree(paths["hits_dir"])
     paths["hits_dir"].mkdir(parents=True, exist_ok=True)
@@ -164,6 +165,8 @@ def main():
         processing_time=processing_time,
         num_workers=NUM_WORKERS,
     )
+
+    paths["success"].touch()
 
     grand_total = sum(total for total, _ in results.values())
     grand_valid = sum(valid for _, valid in results.values())

@@ -101,6 +101,11 @@ Candidate rows are not compared with other candidate rows in this mode. Run a
 normal global dedup pass afterward if the candidate output also needs internal
 deduplication.
 
+`DEDUP_INPUT_MODE` applies to the candidate folder only. By default it reads
+the files of finished `prepare_rows.py` runs; if the candidate folder is a
+plain folder of `.jsonl` files, set `DEDUP_INPUT_MODE=folder`. The reference
+folder is always read as a plain folder.
+
 ```bash
 cd /path/to/qvac-model-safety
 export DEDUP_REFERENCE_ROOT="/path/to/dataset_always_retained"
@@ -153,7 +158,8 @@ counted in `manifest.json`.
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `DEDUP_INPUT_ROOT` | `tmp/qa_scan_test/input` | Recursive JSONL root |
+| `DEDUP_INPUT_ROOT` | `tmp/qa_scan_test/input` | Folder to scan |
+| `DEDUP_INPUT_MODE` | `runs` | `runs` reads only the files of finished `prepare_rows.py` runs under the folder and lists what it skipped in `<run dir>/scan_inputs.json`; `folder` reads every `.jsonl` under it (use it for a plain folder that isn't a set of run folders) |
 | `DEDUP_INPUT_MANIFEST` | empty | Optional root-relative file manifest |
 | `DEDUP_REFERENCE_ROOT` | empty | Cross mode reference root |
 | `DEDUP_CANDIDATE_ROOT` | empty | Cross mode candidate root |

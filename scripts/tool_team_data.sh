@@ -22,11 +22,16 @@
 #   --sft-mix-path PATH   --mopd-mix-path PATH   --rl-mix-path PATH
 #   --output-root PATH     --pii-run-dir PATH      --partition NAME
 #   --cpus N               --mem SIZE              --time HH:MM:SS
-#   --workers N            --chunk-size N
+#   --workers N            --chunk-size N          --input-mode runs|folder
 #   --convert-cpus N       --convert-mem SIZE      --convert-time HH:MM:SS
 #
 # (--cpus/--mem/--time size the scan/extract job; --convert-* size each
 # conversion job.)
+#
+# --input-mode decides which files 'scan' reads under --output-root. The
+# default, 'runs', reads only the files of finished conversions and writes
+# stage1_scan/scan_inputs.json listing what it skipped (an unfinished
+# conversion, a stray .jsonl). 'folder' reads every .jsonl under it.
 #
 # Examples:
 #   ./scripts/tool_team_data.sh convert
@@ -84,6 +89,7 @@ CONVERT_TIME="${CONVERT_TIME:-04:00:00}"
 # --- Scanner tuning ----------------------------------------------------------
 PII_NUM_WORKERS="${PII_NUM_WORKERS:-32}"    # keep roughly equal to SCAN_CPUS
 PII_CHUNK_SIZE="${PII_CHUNK_SIZE:-10000}"   # lines per work chunk
+PII_INPUT_MODE="${PII_INPUT_MODE:-runs}"    # runs = files of finished conversions only; folder = every .jsonl
 
 # --- Tooling (rarely changed) ------------------------------------------------
 READERS_PY="${REPO}/modelsafety/readers/.venv/bin/python"   # only checked here; the job script runs it
@@ -106,6 +112,7 @@ REVIEW_PAIRS=(
   CONVERT_TIME "Convert time"
   PII_NUM_WORKERS "PII workers"
   PII_CHUNK_SIZE "PII chunk size"
+  PII_INPUT_MODE "Input mode (runs|folder)"
 )
 
 # --- Which stages were requested, and whether any word (stage or action)
@@ -147,12 +154,17 @@ Flags (each overrides the matching setting for this run only):
   --sft-mix-path PATH    --mopd-mix-path PATH   --rl-mix-path PATH
   --output-root PATH     --pii-run-dir PATH      --partition NAME
   --cpus N               --mem SIZE              --time HH:MM:SS
-  --workers N            --chunk-size N
+  --workers N            --chunk-size N          --input-mode runs|folder
   --convert-cpus N       --convert-mem SIZE      --convert-time HH:MM:SS
 
 --cpus/--mem/--time size the scan/extract job; --convert-* size each
 conversion job (1-32 CPUs, memory in M or G above zero, a time limit above
 zero -- anything else is refused before a job is submitted).
+
+--input-mode decides which files 'scan' reads under \$OUTPUT_ROOT. 'runs'
+(the default) reads only the files of finished conversions and lists
+everything it skipped, with the reason, in stage1_scan/scan_inputs.json.
+'folder' reads every .jsonl under \$OUTPUT_ROOT.
 
 Precedence, lowest to highest: hardcoded default in this file < environment
 variable < CLI flag < interactive edit. Interactive editing is only offered
@@ -188,6 +200,7 @@ Current settings:
   CONVERT_TIME    ${CONVERT_TIME}
   PII_NUM_WORKERS ${PII_NUM_WORKERS}
   PII_CHUNK_SIZE  ${PII_CHUNK_SIZE}
+  PII_INPUT_MODE  ${PII_INPUT_MODE}
 EOF
 }
 
@@ -256,6 +269,7 @@ parse_args() {
         --convert-time) CONVERT_TIME="$2" ;;
         --workers) PII_NUM_WORKERS="$2" ;;
         --chunk-size) PII_CHUNK_SIZE="$2" ;;
+        --input-mode) PII_INPUT_MODE="$2" ;;
         *)
           echo "error: unknown flag '$1'" >&2
           usage
@@ -535,6 +549,11 @@ run_summary() {
 # (stage 3) were requested, via PII_STAGES. Always returns immediately --
 # regex scanning must go through sbatch, never directly on the login node.
 run_scan_and_extract() {
+  case "${PII_INPUT_MODE}" in
+    runs | folder) ;;
+    *) die "--input-mode must be 'runs' or 'folder', got '${PII_INPUT_MODE}'" ;;
+  esac
+
   local stages
   if [[ "${DO_SCAN}" -eq 1 && "${DO_EXTRACT}" -eq 1 ]]; then
     stages="all"
@@ -558,7 +577,7 @@ run_scan_and_extract() {
   local sbatch_args=(
     --parsable --partition="${PARTITION}" --job-name="pii_${stages}"
     --cpus-per-task="${SCAN_CPUS}" --mem="${SCAN_MEM}" --time="${SCAN_TIME}"
-    --export=ALL,PII_BASE_DIR="${OUTPUT_ROOT}",PII_RUN_DIR="${PII_RUN_DIR}",PII_STAGES="${stages}",PII_NUM_WORKERS="${PII_NUM_WORKERS}",PII_CHUNK_SIZE="${PII_CHUNK_SIZE}"
+    --export=ALL,PII_BASE_DIR="${OUTPUT_ROOT}",PII_RUN_DIR="${PII_RUN_DIR}",PII_STAGES="${stages}",PII_NUM_WORKERS="${PII_NUM_WORKERS}",PII_CHUNK_SIZE="${PII_CHUNK_SIZE}",PII_INPUT_MODE="${PII_INPUT_MODE}"
   )
 
   # Conversions submitted by this same command haven't finished yet, so this
@@ -572,6 +591,7 @@ run_scan_and_extract() {
 
   echo "Scanning:  ${OUTPUT_ROOT}"
   echo "Run dir:   ${PII_RUN_DIR}"
+  echo "Input mode: ${PII_INPUT_MODE}"
   echo "Stages:    ${stages}"
   echo "Partition: ${PARTITION}"
   if [[ "${DO_CONVERT}" -eq 1 ]]; then

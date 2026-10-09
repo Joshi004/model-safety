@@ -30,6 +30,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from modelsafety.contract.fingerprints import input_block, line_fingerprint  # noqa: E402
 from modelsafety.contract.origin import check_first_line, check_line  # noqa: E402
+from modelsafety.contract.run_finder import (  # noqa: E402
+    DEFAULT_INPUT_MODE,
+    INPUT_MODE_HELP,
+    INPUT_MODES,
+    SCAN_INPUTS_FILENAME,
+    ScanSelection,
+    check_fingerprints,
+    folder_selection,
+    pick_files,
+    select_scan_files,
+    summarize_scan_inputs,
+    write_scan_inputs,
+)
 from modelsafety.contract.run_identity import (  # noqa: E402
     check_run_identity,
     describe_input_files,
@@ -146,11 +159,27 @@ def _refuse_skipped_entries(files: list[Path]) -> None:
         check_first_line(path)
 
 
+def _selection_for(root: Path, files: list[Path], input_mode: str) -> ScanSelection:
+    """The selection that records where ``files``, already found under ``root``,
+    came from. In runs mode each must be a file a finished run wrote."""
+    relative = [path.relative_to(root).as_posix() for path in files]
+    selection = select_scan_files(root) if input_mode == "runs" else folder_selection(root, relative)
+    return pick_files(selection, relative)
+
+
 def resolve_inputs(
     input_path: Path | None,
     input_root: Path | None,
     input_manifest: Path | None,
-) -> tuple[Path, list[Path]]:
+    input_mode: str = DEFAULT_INPUT_MODE,
+) -> tuple[Path, list[Path], ScanSelection]:
+    """The scan folder, the files to read, and the selection that records
+    where each file came from (and, in runs mode, what was skipped).
+
+    In runs mode the files are those of finished runs under the folder, and
+    ``input_manifest`` may narrow them. In folder mode they are every ``.jsonl``
+    under it, or a single file.
+    """
     if input_manifest is not None:
         if input_root is None:
             raise ValueError("--input-root is required with --input-manifest")
@@ -181,23 +210,33 @@ def resolve_inputs(
         if not files:
             raise ValueError(f"Manifest has no JSONL inputs: {manifest}")
         _refuse_skipped_entries(files)
-        return root, files
+        return root, files, _selection_for(root, files, input_mode)
 
     if input_path is None:
         raise ValueError("Provide --input, or --input-root with --input-manifest")
     resolved = input_path.expanduser().resolve()
     if resolved.is_file():
+        if input_mode == "runs":
+            raise ValueError(
+                f"{resolved} is a single file, but the runs input mode reads a folder of runs. "
+                "Use --input-mode folder to scan a single file."
+            )
         if resolved.suffix != ".jsonl":
             raise ValueError(f"Input file must be JSONL: {resolved}")
         _refuse_skipped_entries([resolved])
-        return resolved.parent, [resolved]
+        return resolved.parent, [resolved], _selection_for(resolved.parent, [resolved], input_mode)
     if not resolved.is_dir():
         raise ValueError(f"Input path does not exist: {resolved}")
+    if input_mode == "runs":
+        selection = select_scan_files(resolved)
+        files = [resolved / item.path for item in selection.files]
+        _refuse_skipped_entries(files)
+        return resolved, files, selection
     files = sorted(path.resolve() for path in resolved.rglob("*.jsonl") if path.is_file())
     if not files:
         raise ValueError(f"No JSONL files found under: {resolved}")
     _refuse_skipped_entries(files)
-    return resolved, files
+    return resolved, files, _selection_for(resolved, files, input_mode)
 
 
 def _record_key(
@@ -822,7 +861,12 @@ def run(
     report_text_chars: int = 2000,
     write_filtered: bool = True,
     overwrite: bool = False,
+    selection: ScanSelection | None = None,
 ) -> dict[str, Any]:
+    if selection is None:
+        selection = folder_selection(
+            input_root, [path.relative_to(input_root).as_posix() for path in files]
+        )
     output_dir = output_dir.expanduser().resolve()
     if (
         output_dir == input_root
@@ -852,11 +896,14 @@ def run(
                 "bands": bands,
                 "rows_per_band": rows,
                 "write_filtered": write_filtered,
+                "input_mode": selection.mode,
             },
             input_root=str(input_root),
             input_files=describe_input_files(input_root, files),
         ),
     )
+    write_scan_inputs(output_dir / SCAN_INPUTS_FILENAME, selection)
+    print(summarize_scan_inputs(selection))
 
     stats = ScanStats()
     decisions = detect_duplicates(
@@ -873,6 +920,12 @@ def run(
         chunksize=chunksize,
         stats=stats,
     )
+    if selection.mode == "runs":
+        check_fingerprints(
+            {item.path: item.sha256 for item in selection.files},
+            stats.input_files,
+            what="The duplicates scan",
+        )
     write_jsonl(output_dir / "dedup_results.jsonl", decisions)
     write_matched_samples_csv(
         output_dir / "matched_samples.csv",
@@ -892,6 +945,7 @@ def run(
 
     summary = {
         "mode": "global",
+        "input_mode": selection.mode,
         "input_root": str(input_root),
         "output_dir": str(output_dir),
         "files": len(files),
@@ -944,8 +998,18 @@ def run_cross(
     report_text_chars: int = 2000,
     write_filtered: bool = True,
     overwrite: bool = False,
+    candidate_selection: ScanSelection | None = None,
 ) -> dict[str, Any]:
-    """Remove candidate rows that match any row in the retained reference."""
+    """Remove candidate rows that match any row in the retained reference.
+
+    ``candidate_selection`` records where the candidate files came from. The
+    reference is a plain folder (benchmarks aren't runs), so it has none.
+    """
+    if candidate_selection is None:
+        candidate_selection = folder_selection(
+            candidate_root,
+            [path.relative_to(candidate_root).as_posix() for path in candidate_files],
+        )
     overlapping_files = set(reference_files).intersection(candidate_files)
     if overlapping_files:
         example = sorted(overlapping_files)[0]
@@ -980,11 +1044,14 @@ def run_cross(
                 "rows_per_band": rows,
                 "write_filtered": write_filtered,
                 "reference_input": str(reference_root),
+                "input_mode": candidate_selection.mode,
             },
             input_root=str(candidate_root),
             input_files=describe_input_files(candidate_root, candidate_files),
         ),
     )
+    write_scan_inputs(output_dir / SCAN_INPUTS_FILENAME, candidate_selection)
+    print(summarize_scan_inputs(candidate_selection))
 
     reference_stats = ScanStats()
     candidate_stats = ScanStats()
@@ -1005,6 +1072,12 @@ def run_cross(
         reference_stats=reference_stats,
         candidate_stats=candidate_stats,
     )
+    if candidate_selection.mode == "runs":
+        check_fingerprints(
+            {item.path: item.sha256 for item in candidate_selection.files},
+            candidate_stats.input_files,
+            what="The duplicates scan (candidate side)",
+        )
     write_jsonl(output_dir / "dedup_results.jsonl", decisions)
     write_matched_samples_csv(
         output_dir / "matched_samples.csv",
@@ -1035,6 +1108,8 @@ def run_cross(
 
     summary = {
         "mode": "cross",
+        # How the candidate files were chosen; the reference is always a plain folder.
+        "input_mode": candidate_selection.mode,
         "reference": {
             "input_root": str(reference_root),
             "files": len(reference_files),
@@ -1117,6 +1192,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-write-filtered", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--input-mode",
+        choices=INPUT_MODES,
+        default=DEFAULT_INPUT_MODE,
+        help=INPUT_MODE_HELP
+        + " In cross mode this applies to --candidate-input; --reference-input is "
+        "always read as a plain folder.",
+    )
     return parser.parse_args()
 
 
@@ -1146,11 +1229,11 @@ def main() -> int:
                 raise ValueError(
                     "Do not combine global input arguments with cross-mode inputs"
                 )
-            reference_root, reference_files = resolve_inputs(
-                args.reference_input, None, None
+            reference_root, reference_files, _ = resolve_inputs(
+                args.reference_input, None, None, "folder"
             )
-            candidate_root, candidate_files = resolve_inputs(
-                args.candidate_input, None, None
+            candidate_root, candidate_files, candidate_selection = resolve_inputs(
+                args.candidate_input, None, None, args.input_mode
             )
             summary = run_cross(
                 reference_root,
@@ -1158,16 +1241,18 @@ def main() -> int:
                 candidate_root,
                 candidate_files,
                 args.output_dir,
+                candidate_selection=candidate_selection,
                 **common,
             )
         else:
-            input_root, files = resolve_inputs(
-                args.input, args.input_root, args.input_manifest
+            input_root, files, selection = resolve_inputs(
+                args.input, args.input_root, args.input_manifest, args.input_mode
             )
             summary = run(
                 input_root,
                 files,
                 args.output_dir,
+                selection=selection,
                 **common,
             )
     except ValueError as exc:

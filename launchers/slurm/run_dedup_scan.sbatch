@@ -17,6 +17,10 @@ VENV="${DEDUP_DIR}/.venv"
 
 DEDUP_INPUT_ROOT="${DEDUP_INPUT_ROOT:-${REPO}/tmp/qa_scan_test/input}"
 DEDUP_INPUT_MANIFEST="${DEDUP_INPUT_MANIFEST:-}"
+# runs: read only the files of finished runs and report what was skipped.
+# folder: read every .jsonl. In cross mode this applies to the candidate side;
+# the reference side is always read as a plain folder.
+DEDUP_INPUT_MODE="${DEDUP_INPUT_MODE:-runs}"
 DEDUP_REFERENCE_ROOT="${DEDUP_REFERENCE_ROOT:-}"
 DEDUP_CANDIDATE_ROOT="${DEDUP_CANDIDATE_ROOT:-}"
 DEDUP_RUN_DIR="${DEDUP_RUN_DIR:-${REPO}/tmp/qa_scan_test/dedup_out}"
@@ -63,6 +67,7 @@ args=(
   --workers "${DEDUP_WORKERS}"
   --chunksize "${DEDUP_CHUNKSIZE}"
   --report-text-chars "${DEDUP_REPORT_TEXT_CHARS}"
+  --input-mode "${DEDUP_INPUT_MODE}"
 )
 if [[ "${DEDUP_EXCLUDE_SYSTEM}" == "1" ]]; then
   args+=(--exclude-system)
@@ -103,6 +108,7 @@ echo "Node:          ${SLURMD_NODENAME:-unknown}"
 echo "CPUs:          ${SLURM_CPUS_PER_TASK:-unknown}"
 echo "Memory:        ${SLURM_MEM_PER_NODE:-unknown} MB"
 echo "Mode:          ${DEDUP_MODE}"
+echo "Input mode:    ${DEDUP_INPUT_MODE}"
 echo "Input root:    ${DEDUP_INPUT_ROOT}"
 echo "Manifest:      ${DEDUP_INPUT_MANIFEST:-none}"
 echo "Reference:     ${DEDUP_REFERENCE_ROOT:-none}"

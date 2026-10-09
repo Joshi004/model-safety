@@ -26,9 +26,9 @@
 #   pilot   A small real run over a subset of the input (--pilot-files,
 #           default 50, spread evenly across every sub-dataset), to see the
 #           output and measure time/memory before committing to a full run.
-#   full    Every .jsonl file under --input-root, as a single job. Dedup's
-#           index is global and in memory, so this can't be sharded the way
-#           the toxicity scan is -- one job sees everything.
+#   full    Every file to scan under --input-root (see --input-mode), as a
+#           single job. Dedup's index is global and in memory, so this can't
+#           be sharded the way the toxicity scan is -- one job sees everything.
 #   report  Local only, no GPU, no SLURM job, a few seconds. Reads an
 #           existing run's summary.json and dedup_results.jsonl. Safe to
 #           run at any time, including while a job is still on the cluster.
@@ -38,6 +38,12 @@
 #   --cpus N              --mem SIZE              --time HH:MM:SS
 #   --text-scope prompt|all                       --exclude-system 0|1
 #   --write-filtered 0|1  --pilot-files N          --overwrite 1
+#   --input-mode runs|folder
+#
+# --input-mode decides which files are read under --input-root. The default,
+# 'runs', reads only the files of finished conversions and writes
+# <run-dir>/scan_inputs.json listing what it skipped (an unfinished
+# conversion, a stray .jsonl). 'folder' reads every .jsonl under it.
 #
 # Resource defaults differ by action: pilot is 8 CPUs / 32G / 2 hours, full
 # is 16 CPUs / 128G / 24 hours -- override with the flags above if a pilot
@@ -90,6 +96,7 @@ DEDUP_TEXT_SCOPE="${DEDUP_TEXT_SCOPE:-prompt}"
 DEDUP_EXCLUDE_SYSTEM="${DEDUP_EXCLUDE_SYSTEM:-1}"   # on by default here, unlike the launcher
 DEDUP_WRITE_FILTERED="${DEDUP_WRITE_FILTERED:-1}"
 DEDUP_PILOT_FILES="${DEDUP_PILOT_FILES:-50}"        # pilot only
+DEDUP_INPUT_MODE="${DEDUP_INPUT_MODE:-runs}"        # runs = files of finished conversions only; folder = every .jsonl
 
 # --- Destructive: only ever set via --overwrite or an interactive y/N
 # confirmation, never via environment variable, since it deletes --run-dir.
@@ -107,15 +114,21 @@ Actions (exactly one per call):
   pilot   A small real run over a subset of the input (--pilot-files,
           default 50, spread evenly across every sub-dataset), to see the
           output and measure time/memory before committing to a full run.
-  full    Every .jsonl file under --input-root, as a single job. Dedup's
-          index is global and in memory, so this can't be sharded the way
-          the toxicity scan is -- one job sees everything.
+  full    Every file to scan under --input-root (see --input-mode), as a
+          single job. Dedup's index is global and in memory, so this can't
+          be sharded the way the toxicity scan is -- one job sees everything.
   report  Local only, no GPU, no SLURM job, a few seconds. Reads an
           existing run's summary.json and dedup_results.jsonl. Safe to run
           at any time, including while a job is still on the cluster.
 
 Flags (each overrides the matching setting for this run only):
-  --input-root PATH      Recursive JSONL root (default: output/tool_team_converted)
+  --input-root PATH      Folder to scan (default: output/tool_team_converted)
+  --input-mode runs|folder
+                          runs (default): read only the files of finished
+                          conversions under --input-root, and list what was
+                          skipped, with the reason, in
+                          <run-dir>/scan_inputs.json. folder: read every
+                          .jsonl under --input-root.
   --run-dir PATH         Where results go (default: output/tool_team_dedup_pilot
                           for pilot, output/tool_team_dedup_run for full/report)
   --partition NAME       SLURM partition (default: health)
@@ -158,6 +171,7 @@ Examples:
 Current settings (pilot/full-only resource and run-dir defaults are not
 shown here -- see the flag descriptions above):
   DEDUP_INPUT_ROOT      ${DEDUP_INPUT_ROOT}
+  DEDUP_INPUT_MODE      ${DEDUP_INPUT_MODE}
   PARTITION             ${PARTITION}
   DEDUP_TEXT_SCOPE      ${DEDUP_TEXT_SCOPE}
   DEDUP_EXCLUDE_SYSTEM  ${DEDUP_EXCLUDE_SYSTEM}
@@ -196,6 +210,7 @@ parse_args() {
       fi
       case "$1" in
         --input-root) DEDUP_INPUT_ROOT="$2" ;;
+        --input-mode) DEDUP_INPUT_MODE="$2" ;;
         --run-dir) DEDUP_RUN_DIR="$2" ;;
         --partition) PARTITION="$2" ;;
         --cpus) DEDUP_CPUS="$2" ;;
@@ -269,6 +284,7 @@ apply_action_defaults() {
 build_review_pairs() {
   REVIEW_PAIRS=(
     DEDUP_INPUT_ROOT "Input root"
+    DEDUP_INPUT_MODE "Input mode (runs/folder)"
     DEDUP_RUN_DIR "Run dir"
     PARTITION "Partition"
     DEDUP_CPUS "CPUs"
@@ -287,6 +303,10 @@ build_review_pairs() {
 # before paths get resolved and used. Fails loudly on a bad value instead
 # of letting it reach sbatch or run.py with a confusing downstream error.
 validate_settings() {
+  case "${DEDUP_INPUT_MODE}" in
+    runs | folder) ;;
+    *) die "--input-mode must be 'runs' or 'folder', got '${DEDUP_INPUT_MODE}'" ;;
+  esac
   case "${DEDUP_TEXT_SCOPE}" in
     prompt | all) ;;
     *) die "--text-scope must be 'prompt' or 'all', got '${DEDUP_TEXT_SCOPE}'" ;;
@@ -318,7 +338,13 @@ preflight_checks() {
   if [[ ! -d "${DEDUP_INPUT_ROOT}" ]]; then
     die "input root does not exist: ${DEDUP_INPUT_ROOT} -- run './scripts/tool_team_data.sh convert' first"
   fi
-  if [[ -z "$(find "${DEDUP_INPUT_ROOT}" -name '*.jsonl' -type f -print -quit)" ]]; then
+  # The files the scan will read: those of finished runs, or every .jsonl.
+  # The finder prints why it skipped anything, and fails when nothing is left.
+  local file_list
+  file_list="$(python3 "${REPO}/modelsafety/contract/run_finder.py" files \
+    --scan-root "${DEDUP_INPUT_ROOT}" --input-mode "${DEDUP_INPUT_MODE}")" \
+    || die "nothing to scan under ${DEDUP_INPUT_ROOT} (see the reason above)"
+  if [[ -z "${file_list}" ]]; then
     die "no .jsonl files found under ${DEDUP_INPUT_ROOT}"
   fi
   if [[ "${DEDUP_RUN_DIR}" == "${DEDUP_INPUT_ROOT}" || "${DEDUP_RUN_DIR}" == "${DEDUP_INPUT_ROOT}/"* ]]; then
@@ -375,21 +401,29 @@ check_run_dir() {
 }
 
 # write_pilot_manifest <path> -- picks DEDUP_PILOT_FILES paths spread evenly
-# by index across every .jsonl under DEDUP_INPUT_ROOT (relative to it) and
+# by index across the files the scan would read under DEDUP_INPUT_ROOT (those
+# of finished runs, or every .jsonl, per DEDUP_INPUT_MODE; relative to it) and
 # writes them one per line to <path>. Even spacing by index, not random,
 # keeps this deterministic and covers all three mixes and their
 # sub-datasets in rough proportion to how many files each one has.
 write_pilot_manifest() {
   local manifest_path="$1"
-  python3 - "${DEDUP_INPUT_ROOT}" "${DEDUP_PILOT_FILES}" "${manifest_path}" <<'PY'
+  PYTHONPATH="${REPO}${PYTHONPATH:+:${PYTHONPATH}}" python3 - \
+    "${DEDUP_INPUT_ROOT}" "${DEDUP_PILOT_FILES}" "${manifest_path}" "${DEDUP_INPUT_MODE}" <<'PY'
 import sys
 from pathlib import Path
+
+from modelsafety.contract.run_finder import RunFinderError, scan_file_paths
 
 root = Path(sys.argv[1])
 count = int(sys.argv[2])
 out_path = Path(sys.argv[3])
+input_mode = sys.argv[4]
 
-files = sorted(p.relative_to(root).as_posix() for p in root.rglob("*.jsonl") if p.is_file())
+try:
+    files = scan_file_paths(root, input_mode)
+except RunFinderError as exc:
+    sys.exit(str(exc))
 if not files:
     sys.exit("no .jsonl files found")
 
@@ -429,6 +463,7 @@ run_dedup() {
   fi
 
   echo "Input root:     ${DEDUP_INPUT_ROOT}"
+  echo "Input mode:     ${DEDUP_INPUT_MODE}"
   echo "Run dir:        ${DEDUP_RUN_DIR}"
   echo "Action:         ${action}"
   echo "Partition:      ${PARTITION}"
@@ -441,7 +476,7 @@ run_dedup() {
   echo
 
   local export_spec
-  export_spec="ALL,REPO=${REPO},DEDUP_INPUT_ROOT=${DEDUP_INPUT_ROOT},DEDUP_RUN_DIR=${DEDUP_RUN_DIR},DEDUP_TEXT_SCOPE=${DEDUP_TEXT_SCOPE},DEDUP_EXCLUDE_SYSTEM=${DEDUP_EXCLUDE_SYSTEM},DEDUP_WRITE_FILTERED=${DEDUP_WRITE_FILTERED},DEDUP_OVERWRITE=${OVERWRITE}"
+  export_spec="ALL,REPO=${REPO},DEDUP_INPUT_ROOT=${DEDUP_INPUT_ROOT},DEDUP_INPUT_MODE=${DEDUP_INPUT_MODE},DEDUP_RUN_DIR=${DEDUP_RUN_DIR},DEDUP_TEXT_SCOPE=${DEDUP_TEXT_SCOPE},DEDUP_EXCLUDE_SYSTEM=${DEDUP_EXCLUDE_SYSTEM},DEDUP_WRITE_FILTERED=${DEDUP_WRITE_FILTERED},DEDUP_OVERWRITE=${OVERWRITE}"
   if [[ -n "${manifest}" ]]; then
     export_spec="${export_spec},DEDUP_INPUT_MANIFEST=${manifest}"
   fi

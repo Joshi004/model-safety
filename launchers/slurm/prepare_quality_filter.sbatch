@@ -16,6 +16,7 @@ RUN_ROOT="${QUALITY_RUN_ROOT:?QUALITY_RUN_ROOT is required}"
 OUTPUT_ROOT="${QUALITY_OUTPUT_ROOT:-${RUN_ROOT}}"
 SHARD_COUNT="${QUALITY_SHARD_COUNT:?QUALITY_SHARD_COUNT is required}"
 PILOT_FILES="${QUALITY_PILOT_FILES:-0}"
+INPUT_MODE="${QUALITY_INPUT_MODE:?QUALITY_INPUT_MODE is required (runs or folder)}"
 PYTHON="${QUALITY_PYTHON:-python3}"
 
 if [[ "${QUALITY_ALLOW_RERUN:-0}" == "1" && -e "${RUN_ROOT}" ]]; then
@@ -29,5 +30,6 @@ mkdir -p "${MANIFEST_DIR}"
   --input-root "${INPUT_ROOT}" \
   --output-dir "${MANIFEST_DIR}" \
   --shards "${SHARD_COUNT}" \
-  --pilot-files "${PILOT_FILES}"
+  --pilot-files "${PILOT_FILES}" \
+  --input-mode "${INPUT_MODE}"
 touch "${MANIFEST_DIR}/_SUCCESS"

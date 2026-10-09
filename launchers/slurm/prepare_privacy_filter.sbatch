@@ -20,6 +20,7 @@ args=(
   --input-root "${INPUT_ROOT}"
   --output-dir "${RUN_ROOT}/manifest"
   --target-mib "${PRIVACY_FILTER_UNIT_MIB:-256}"
+  --input-mode "${PRIVACY_FILTER_INPUT_MODE:?PRIVACY_FILTER_INPUT_MODE is required (runs or folder)}"
 )
 if [[ -n "${PRIVACY_FILTER_SOURCE_MANIFEST:-}" ]]; then
   args+=(--source-manifest "${PRIVACY_FILTER_SOURCE_MANIFEST}")

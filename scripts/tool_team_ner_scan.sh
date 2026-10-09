@@ -13,10 +13,16 @@
 #
 # Flags (each overrides the matching setting below, for this run only):
 #   --input-root PATH   --run-root PATH   --partition NAME
+#   --input-mode runs|folder
 #
 # --run-root defaults to output/tool_team_ner_pilot for pilot and
 # output/tool_team_ner_run for full, so a pilot never shares a folder with the
 # full scan that follows it.
+#
+# --input-mode decides which files are scanned under --input-root. The
+# default, 'runs', reads only the files of finished conversions and writes
+# <run-root>/manifest/scan_inputs.json listing what it skipped (an unfinished
+# conversion, a stray .jsonl). 'folder' reads every .jsonl under it.
 #
 # Examples:
 #   ./scripts/tool_team_ner_scan.sh pilot
@@ -45,11 +51,13 @@ PRIVACY_FILTER_INPUT_ROOT="${PRIVACY_FILTER_INPUT_ROOT:-${REPO}/output/tool_team
 # Empty on purpose -- the real default depends on the action, and is filled in
 # by apply_action_defaults() once that's known.
 PRIVACY_FILTER_RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT:-}"
+PRIVACY_FILTER_INPUT_MODE="${PRIVACY_FILTER_INPUT_MODE:-runs}"   # runs = files of finished conversions only; folder = every .jsonl
 PARTITION="${PARTITION:-health}"
 
 REVIEW_PAIRS=(
   PRIVACY_FILTER_INPUT_ROOT "Input root"
   PRIVACY_FILTER_RUN_ROOT "Run root"
+  PRIVACY_FILTER_INPUT_MODE "Input mode (runs|folder)"
   PARTITION "Partition"
 )
 
@@ -69,10 +77,16 @@ Actions:
 
 Flags (each overrides the matching setting for this run only):
   --input-root PATH   --run-root PATH   --partition NAME
+  --input-mode runs|folder
 
 --run-root defaults to output/tool_team_ner_pilot for pilot and
 output/tool_team_ner_run for full. A run folder remembers which mode and
 settings it was started with, and refuses a different one.
+
+--input-mode decides which files are scanned under --input-root. 'runs' (the
+default) reads only the files of finished conversions and lists everything it
+skipped, with the reason, in <run-root>/manifest/scan_inputs.json. 'folder'
+reads every .jsonl under --input-root.
 
 Precedence, lowest to highest: hardcoded default in this file < environment
 variable < CLI flag < interactive edit. Interactive editing is only offered
@@ -89,6 +103,7 @@ Examples:
 Current settings:
   PRIVACY_FILTER_INPUT_ROOT ${PRIVACY_FILTER_INPUT_ROOT}
   PRIVACY_FILTER_RUN_ROOT   ${PRIVACY_FILTER_RUN_ROOT:-(set per action, see above)}
+  PRIVACY_FILTER_INPUT_MODE ${PRIVACY_FILTER_INPUT_MODE}
   PARTITION                 ${PARTITION}
 EOF
 }
@@ -130,6 +145,7 @@ parse_args() {
       case "$1" in
         --input-root) PRIVACY_FILTER_INPUT_ROOT="$2" ;;
         --run-root) PRIVACY_FILTER_RUN_ROOT="$2" ;;
+        --input-mode) PRIVACY_FILTER_INPUT_MODE="$2" ;;
         --partition) PARTITION="$2" ;;
         *)
           echo "error: unknown flag '$1'" >&2
@@ -168,6 +184,10 @@ preflight_checks() {
     echo "error: ${PRIVACY_FILTER_INPUT_ROOT} does not exist -- run './scripts/tool_team_data.sh convert' first" >&2
     exit 2
   fi
+  if [[ "${PRIVACY_FILTER_INPUT_MODE}" != "runs" && "${PRIVACY_FILTER_INPUT_MODE}" != "folder" ]]; then
+    echo "error: --input-mode must be 'runs' or 'folder', got '${PRIVACY_FILTER_INPUT_MODE}'" >&2
+    exit 2
+  fi
 }
 
 run_ner_scan() {
@@ -175,6 +195,7 @@ run_ner_scan() {
   preflight_checks
 
   echo "Scanning:  ${PRIVACY_FILTER_INPUT_ROOT}"
+  echo "Input mode: ${PRIVACY_FILTER_INPUT_MODE}"
   echo "Mode:      ${mode}"
   echo "Partition: ${PARTITION}"
   echo "Run root:  ${PRIVACY_FILTER_RUN_ROOT}"
@@ -188,6 +209,7 @@ run_ner_scan() {
   output="$(
     PRIVACY_FILTER_MODE="${mode}" \
     PRIVACY_FILTER_INPUT_ROOT="${PRIVACY_FILTER_INPUT_ROOT}" \
+    PRIVACY_FILTER_INPUT_MODE="${PRIVACY_FILTER_INPUT_MODE}" \
     PRIVACY_FILTER_RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT}" \
     PRIVACY_FILTER_PARTITION="${PARTITION}" \
       bash "${REPO}/launchers/slurm/submit_privacy_filter.sh"

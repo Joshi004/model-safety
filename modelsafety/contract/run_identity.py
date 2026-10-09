@@ -10,7 +10,8 @@ Standard library only, so shell launchers can call it with the system
 ``python3``:
 
     python3 modelsafety/contract/run_identity.py check --run-dir D --tool T \\
-        --input-root R [--mode M] [--setting key=value ...] [--input-list FILE]
+        --input-root R [--mode M] [--setting key=value ...] [--input-list FILE] \\
+        [--input-mode runs|folder]
 """
 
 from __future__ import annotations
@@ -237,6 +238,11 @@ def _run_check(args: argparse.Namespace) -> int:
         raise RunIdentityError(f"Input root is not a directory: {root}")
     if args.input_list is not None:
         files = _input_files_from_list(root, args.input_list)
+    elif args.input_mode == "runs":
+        # Imported here: run_finder isn't needed by the scanners that import this module.
+        from modelsafety.contract.run_finder import scan_file_paths
+
+        files = [root / relative for relative in scan_file_paths(root, "runs")]
     else:
         files = sorted(path for path in root.rglob("*.jsonl") if path.is_file())
 
@@ -252,6 +258,8 @@ def _run_check(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from modelsafety.contract.run_finder import DEFAULT_INPUT_MODE, INPUT_MODE_HELP, INPUT_MODES
+
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     subparsers = parser.add_subparsers(dest="command", required=True)
     check = subparsers.add_parser("check", help="Write or verify run_identity.json in a run folder.")
@@ -271,19 +279,29 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="File of relative paths, one per line; blank lines and lines starting with # are "
-        "skipped. Default: every *.jsonl under --input-root.",
+        "skipped. Takes precedence over --input-mode.",
+    )
+    check.add_argument(
+        "--input-mode",
+        choices=INPUT_MODES,
+        default=DEFAULT_INPUT_MODE,
+        help="Which files the run reads when --input-list isn't given. " + INPUT_MODE_HELP,
     )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    from modelsafety.contract.run_finder import RunFinderError
+
     args = build_parser().parse_args(argv)
     try:
         return _run_check(args)
-    except RunIdentityError as exc:
+    except (RunIdentityError, RunFinderError) as exc:
         print(exc, file=sys.stderr)
         return 2
 
 
 if __name__ == "__main__":
+    # Run as a script by the launchers, so only this folder is on sys.path.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     raise SystemExit(main())

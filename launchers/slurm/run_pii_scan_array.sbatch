@@ -46,6 +46,7 @@ mkdir -p "${REPO}/logs/slurm" "${RUN_ROOT}/scans/pii/shards"
 
 export PII_BASE_DIR="${INPUT_ROOT}"
 export PII_INPUT_MANIFEST="${MANIFEST}"
+export PII_INPUT_MODE="${QUALITY_INPUT_MODE:?QUALITY_INPUT_MODE is required (runs or folder)}"
 export PII_SNAPSHOT_MANIFEST="${MANIFEST_DIR}/manifest.json"
 export PII_RUN_DIR="${RUN_ROOT}/scans/pii/shards/${SHARD_NAME}"
 export PII_NUM_WORKERS="${PII_NUM_WORKERS:-${SLURM_CPUS_PER_TASK:-64}}"

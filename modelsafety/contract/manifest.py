@@ -16,6 +16,20 @@ from typing import Iterable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from modelsafety.contract.origin import check_first_line  # noqa: E402
+from modelsafety.contract.run_finder import (  # noqa: E402
+    DEFAULT_INPUT_MODE,
+    INPUT_MODE_HELP,
+    INPUT_MODES,
+    SCAN_INPUTS_FILENAME,
+    RunFinderError,
+    ScanSelection,
+    check_fingerprints,
+    folder_selection,
+    pick_files,
+    select_scan_files,
+    summarize_scan_inputs,
+    write_scan_inputs,
+)
 
 
 @dataclass(frozen=True)
@@ -26,11 +40,20 @@ class SourceFile:
     sha256: str = ""
 
 
-def discover_jsonl(input_root: Path) -> list[SourceFile]:
-    """Return JSONL files below ``input_root`` in stable relative-path order."""
+def discover_jsonl(input_root: Path, selection: ScanSelection | None = None) -> list[SourceFile]:
+    """Return JSONL files below ``input_root`` in stable relative-path order.
+
+    With a ``selection`` (runs mode) only its files are returned, and each
+    file's SHA-256 must be the one its run wrote.
+    """
     root = input_root.resolve()
+    paths = (
+        root.rglob("*.jsonl")
+        if selection is None
+        else (root / item.path for item in selection.files)
+    )
     files = []
-    for path in root.rglob("*.jsonl"):
+    for path in paths:
         if not path.is_file():
             continue
         check_first_line(path)
@@ -46,6 +69,12 @@ def discover_jsonl(input_root: Path) -> list[SourceFile]:
                 stat.st_mtime_ns,
                 digest.hexdigest(),
             )
+        )
+    if selection is not None:
+        check_fingerprints(
+            {item.path: item.sha256 for item in selection.files},
+            [{"path": item.relative_path, "sha256": item.sha256} for item in files],
+            what="The toxicity manifest",
         )
     return sorted(files, key=lambda item: item.relative_path)
 
@@ -110,6 +139,7 @@ def write_manifests(
     shards: list[list[SourceFile]],
     *,
     pilot_files: int,
+    input_mode: str = DEFAULT_INPUT_MODE,
 ) -> Path:
     """Write one relative-path manifest per shard and an aggregate metadata file."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -138,6 +168,7 @@ def write_manifests(
     metadata = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "input_root": str(input_root.resolve()),
+        "input_mode": input_mode,
         "output_dir": str(output_dir.resolve()),
         "pilot_files": pilot_files,
         "file_count": len(all_files),
@@ -162,6 +193,9 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Select at most this many files, spread across top-level groups.",
     )
+    parser.add_argument(
+        "--input-mode", choices=INPUT_MODES, default=DEFAULT_INPUT_MODE, help=INPUT_MODE_HELP
+    )
     return parser.parse_args()
 
 
@@ -172,7 +206,11 @@ def main() -> int:
     if args.shards < 1:
         raise SystemExit("--shards must be at least 1")
 
-    files = discover_jsonl(args.input_root)
+    try:
+        selection = select_scan_files(args.input_root) if args.input_mode == "runs" else None
+        files = discover_jsonl(args.input_root, selection)
+    except RunFinderError as exc:
+        raise SystemExit(str(exc)) from exc
     if not files:
         raise SystemExit(f"No JSONL files found under {args.input_root}")
     selected = stratified_pilot(files, args.pilot_files)
@@ -180,11 +218,22 @@ def main() -> int:
         raise SystemExit(
             f"--shards ({args.shards}) exceeds selected file count ({len(selected)})"
         )
+
+    selected_paths = [item.relative_path for item in selected]
+    if selection is None:
+        selection = folder_selection(args.input_root, selected_paths)
+    else:
+        selection = pick_files(selection, selected_paths)
+    # Written before manifest.json, which callers treat as "this folder holds a manifest".
+    write_scan_inputs(args.output_dir / SCAN_INPUTS_FILENAME, selection)
+    print(summarize_scan_inputs(selection))
+
     metadata_path = write_manifests(
         args.input_root,
         args.output_dir,
         balance_files(selected, args.shards),
         pilot_files=args.pilot_files,
+        input_mode=args.input_mode,
     )
     print(metadata_path)
     return 0

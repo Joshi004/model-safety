@@ -24,6 +24,17 @@ from pii_output import (
 )
 from modelsafety.contract.fingerprints import input_block, line_fingerprint
 from modelsafety.contract.origin import check_first_line
+from modelsafety.contract.run_finder import (
+    DEFAULT_INPUT_MODE,
+    INPUT_MODES,
+    RunFinderError,
+    check_fingerprints,
+    folder_selection,
+    pick_files,
+    select_scan_files,
+    summarize_scan_inputs,
+    write_scan_inputs,
+)
 from modelsafety.contract.run_identity import (
     RunIdentityError,
     check_run_identity,
@@ -72,6 +83,25 @@ def discover_jsonl_files(base_dir, manifest_path=None):
         seen.add(candidate)
         files.append(str(candidate))
     return files
+
+
+def choose_jsonl_files(base_dir, manifest_path, input_mode):
+    """The files to scan, and the selection that records where each came from.
+
+    In runs mode the files are those of finished runs under ``base_dir``; a
+    manifest, if given, narrows them and must list only such files.
+    """
+    root = Path(base_dir).resolve()
+    if input_mode == "runs":
+        selection = select_scan_files(root)
+        if manifest_path is None:
+            files = [str(root / item.path) for item in selection.files]
+        else:
+            files = discover_jsonl_files(base_dir, manifest_path)
+    else:
+        files = discover_jsonl_files(base_dir, manifest_path)
+        selection = folder_selection(root, [Path(f).relative_to(root).as_posix() for f in files])
+    return files, pick_files(selection, [Path(f).relative_to(root).as_posix() for f in files])
 
 
 def create_chunks(jsonl_files, expected_sha256=None):
@@ -216,6 +246,9 @@ def main():
 
     base_dir = str(Path(base_dir).expanduser().resolve())
     manifest_path = os.environ.get("PII_INPUT_MANIFEST")
+    input_mode = os.environ.get("PII_INPUT_MODE", DEFAULT_INPUT_MODE)
+    if input_mode not in INPUT_MODES:
+        raise SystemExit(f"PII_INPUT_MODE must be one of {', '.join(INPUT_MODES)} (got: {input_mode})")
     run_dir = resolve_run_dir()
     paths = stage1_paths(run_dir)
 
@@ -226,6 +259,7 @@ def main():
     print("=" * 60)
     print(f"Input root:   {base_dir}")
     print(f"Manifest:     {manifest_path or 'directory discovery'}")
+    print(f"Input mode:   {input_mode}")
     print(f"Run root:     {run_dir}")
     print(f"Stage output: {paths['stage_dir']}")
     print(f"Hits:         {paths['hits_dir']}")
@@ -234,7 +268,10 @@ def main():
     print()
 
     print("Discovering JSONL files...")
-    jsonl_files = discover_jsonl_files(base_dir, manifest_path)
+    try:
+        jsonl_files, selection = choose_jsonl_files(base_dir, manifest_path, input_mode)
+    except RunFinderError as exc:
+        raise SystemExit(str(exc)) from exc
     # Before the folders below are cleared, so a refused run keeps earlier results.
     for file_path in jsonl_files:
         check_first_line(file_path)
@@ -245,7 +282,8 @@ def main():
         settings={
             "input_manifest": (
                 str(Path(manifest_path).expanduser().resolve()) if manifest_path else None
-            )
+            ),
+            "input_mode": input_mode,
         },
         input_root=base_dir,
         input_files=describe_input_files(Path(base_dir), [Path(f) for f in jsonl_files]),
@@ -257,6 +295,8 @@ def main():
     print(f"Run identity: {run_state}")
 
     paths["stage_dir"].mkdir(parents=True, exist_ok=True)
+    write_scan_inputs(paths["scan_inputs"], selection)
+    print(summarize_scan_inputs(selection))
     paths["success"].unlink(missing_ok=True)
     if paths["hits_dir"].exists():
         shutil.rmtree(paths["hits_dir"])
@@ -289,6 +329,18 @@ def main():
             relative = Path(file_path).relative_to(base_dir).as_posix()
             expected_sha256[file_path] = snapshots[relative]["sha256"]
     chunks, sha256_by_file = create_chunks(jsonl_files, expected_sha256)
+    if selection.mode == "runs":
+        try:
+            check_fingerprints(
+                {item.path: item.sha256 for item in selection.files},
+                (
+                    {"path": Path(file_path).relative_to(base_dir).as_posix(), "sha256": sha256}
+                    for file_path, sha256 in sha256_by_file.items()
+                ),
+                what="Regex PII stage 1",
+            )
+        except RunFinderError as exc:
+            raise SystemExit(str(exc)) from exc
     chunk_time = time.time() - start_chunk_time
     print(f"\nCreated {len(chunks)} chunks in {chunk_time:.2f}s\n")
 

@@ -32,6 +32,15 @@ from modelsafety.contract.fingerprints import (  # noqa: E402
     row_fingerprint,
 )
 from modelsafety.contract.origin import ORIGIN_KEY, json_safe  # noqa: E402
+from modelsafety.contract.run_finder import (  # noqa: E402
+    JOBS_FOLDER,
+    MAX_RUN_FOLDERS,
+    PREPARE_ROWS_TOOL,
+    STALE_AFTER_SECONDS,
+    list_runs,
+    may_have_stopped,
+    read_progress,
+)
 from modelsafety.contract.run_identity import (  # noqa: E402
     IDENTITY_FILENAME,
     RunIdentityError,
@@ -65,6 +74,13 @@ __all__ = [
     "PROGRESS_TOOL",
     "PROGRESS_PHASES",
     "PROGRESS_END_PHASES",
+    "JOBS_FOLDER",
+    "MAX_RUN_FOLDERS",
+    "PREPARE_ROWS_TOOL",
+    "STALE_AFTER_SECONDS",
+    "list_runs",
+    "may_have_stopped",
+    "read_progress",
     "extract_record_text",
     "json_safe",
     "line_fingerprint",

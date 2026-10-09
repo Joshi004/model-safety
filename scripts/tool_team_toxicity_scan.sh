@@ -21,7 +21,12 @@
 #   --cpus N              --mem SIZE             --time HH:MM:SS
 #   --shards N            --concurrency N        --pilot-files N
 #   --threshold FLOAT     --batch-size N         --guard-concurrency N
-#   --max-model-len N     --vllm-image PATH
+#   --max-model-len N     --vllm-image PATH      --input-mode runs|folder
+#
+# --input-mode decides which files are scanned under --input-root. The
+# default, 'runs', reads only the files of finished conversions and writes
+# <run-dir>/manifests/scan_inputs.json listing what it skipped (an unfinished
+# conversion, a stray .jsonl). 'folder' reads every .jsonl under it.
 #
 # Examples:
 #   ./scripts/tool_team_toxicity_scan.sh all --pilot-files 3 --partition toolCall
@@ -64,6 +69,7 @@ TOX_INPUT_ROOT="${TOX_INPUT_ROOT:-${REPO}/output/tool_team_converted}"
 # Empty on purpose -- the real default depends on --pilot-files, and is filled
 # in by apply_run_dir_default() once that's known.
 TOX_RUN_DIR="${TOX_RUN_DIR:-}"
+TOX_INPUT_MODE="${TOX_INPUT_MODE:-runs}"   # runs = files of finished conversions only; folder = every .jsonl
 
 # --- SLURM resources, per shard (one shard = one H100) -------------------
 PARTITION="${PARTITION:-health}"    # main | health | toolCall | VLM -- pick_partition lists the real, live set
@@ -103,6 +109,7 @@ VLLM_IMAGE="${VLLM_IMAGE:-$(default_vllm_image)}"
 REVIEW_PAIRS=(
   TOX_INPUT_ROOT "Input root"
   TOX_RUN_DIR "Run dir"
+  TOX_INPUT_MODE "Input mode (runs|folder)"
   PARTITION "Partition"
   TOX_CPUS "CPUs per shard"
   TOX_MEM "Memory per shard"
@@ -150,7 +157,12 @@ Flags (each overrides the matching setting for this run only):
   --cpus N              --mem SIZE             --time HH:MM:SS
   --shards N            --concurrency N        --pilot-files N
   --threshold FLOAT     --batch-size N         --guard-concurrency N
-  --max-model-len N     --vllm-image PATH
+  --max-model-len N     --vllm-image PATH      --input-mode runs|folder
+
+--input-mode decides which files are scanned under --input-root. 'runs' (the
+default) reads only the files of finished conversions and lists everything it
+skipped, with the reason, in <run-dir>/manifests/scan_inputs.json. 'folder'
+reads every .jsonl under --input-root.
 
 Precedence, lowest to highest: hardcoded default in this file < environment
 variable < CLI flag < interactive edit. Interactive editing is only offered
@@ -186,6 +198,7 @@ Examples:
 Current settings:
   TOX_INPUT_ROOT      ${TOX_INPUT_ROOT}
   TOX_RUN_DIR         ${TOX_RUN_DIR:-(set from --pilot-files, see above)}
+  TOX_INPUT_MODE      ${TOX_INPUT_MODE}
   PARTITION           ${PARTITION}
   TOX_CPUS            ${TOX_CPUS}
   TOX_MEM             ${TOX_MEM}
@@ -249,6 +262,7 @@ parse_args() {
       case "$1" in
         --input-root) TOX_INPUT_ROOT="$2" ;;
         --run-dir) TOX_RUN_DIR="$2" ;;
+        --input-mode) TOX_INPUT_MODE="$2" ;;
         --partition) PARTITION="$2" ;;
         --cpus) TOX_CPUS="$2" ;;
         --mem) TOX_MEM="$2" ;;
@@ -356,6 +370,9 @@ preflight_checks() {
   if [[ "${resolved_run}" == "${resolved_input}" || "${resolved_run}" == "${resolved_input}/"* ]]; then
     die "run dir (${TOX_RUN_DIR}) is inside the input root (${TOX_INPUT_ROOT}) -- scan output would be picked up as input on the next run. Choose a --run-dir outside --input-root."
   fi
+  if [[ "${TOX_INPUT_MODE}" != "runs" && "${TOX_INPUT_MODE}" != "folder" ]]; then
+    die "--input-mode must be 'runs' or 'folder', got '${TOX_INPUT_MODE}'"
+  fi
 }
 
 # check_identity -- stops this script if TOX_RUN_DIR already holds a different
@@ -371,6 +388,8 @@ check_identity() {
     --tool toxicity \
     --mode "${mode}" \
     --input-root "${TOX_INPUT_ROOT}" \
+    --input-mode "${TOX_INPUT_MODE}" \
+    --setting "input_mode=${TOX_INPUT_MODE}" \
     --setting "pilot_files=${TOX_PILOT_FILES}" \
     --setting "threshold=${TOX_THRESHOLD}" \
     --setting "stage1_model=${TOX_STAGE1_MODEL}" \
@@ -394,8 +413,15 @@ preflight_for_submit() {
 # available, so the prepare job can't fail with a confusing error after
 # the fact. manifest.py itself would reject --shards > selected file count.
 clamp_shards_for_fresh_run() {
-  local file_count
-  file_count="$(find "${TOX_INPUT_ROOT}" -name '*.jsonl' -type f | wc -l)"
+  # The files the scan will read: those of finished runs, or every .jsonl.
+  # The finder prints why it skipped anything, and fails when nothing is left.
+  local file_list file_count=0
+  file_list="$(python3 "${REPO}/modelsafety/contract/run_finder.py" files \
+    --scan-root "${TOX_INPUT_ROOT}" --input-mode "${TOX_INPUT_MODE}")" \
+    || die "nothing to scan under ${TOX_INPUT_ROOT} (see the reason above)"
+  if [[ -n "${file_list}" ]]; then
+    file_count="$(wc -l <<< "${file_list}")"
+  fi
   if (( file_count == 0 )); then
     die "no .jsonl files found under ${TOX_INPUT_ROOT}"
   fi
@@ -421,7 +447,7 @@ submit_prepare() {
     --cpus-per-task=2 --mem=8G --time=01:00:00 \
     --output="${REPO}/logs/slurm/tool_team_toxicity_prep_%j.out" \
     --error="${REPO}/logs/slurm/tool_team_toxicity_prep_%j.err" \
-    --export=ALL,REPO="${REPO}",QUALITY_INPUT_ROOT="${TOX_INPUT_ROOT}",QUALITY_MANIFEST_DIR="${TOX_RUN_DIR}/manifests",QUALITY_RUN_ROOT="${TOX_RUN_DIR}",QUALITY_SHARD_COUNT="${TOX_SHARDS}",QUALITY_PILOT_FILES="${TOX_PILOT_FILES}",QUALITY_ALLOW_RERUN=0 \
+    --export=ALL,REPO="${REPO}",QUALITY_INPUT_ROOT="${TOX_INPUT_ROOT}",QUALITY_INPUT_MODE="${TOX_INPUT_MODE}",QUALITY_MANIFEST_DIR="${TOX_RUN_DIR}/manifests",QUALITY_RUN_ROOT="${TOX_RUN_DIR}",QUALITY_SHARD_COUNT="${TOX_SHARDS}",QUALITY_PILOT_FILES="${TOX_PILOT_FILES}",QUALITY_ALLOW_RERUN=0 \
     "${REPO}/launchers/slurm/prepare_quality_filter.sbatch"
 }
 

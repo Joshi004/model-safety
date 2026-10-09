@@ -24,6 +24,9 @@ export PII_BASE_DIR="${PII_BASE_DIR:-${REPO}/tmp/qa_scan_test/input}"
 export PII_RUN_DIR="${PII_RUN_DIR:-${REPO}/tmp/qa_scan_test/pii_run}"
 export PII_NUM_WORKERS="${PII_NUM_WORKERS:-${SLURM_CPUS_PER_TASK:-4}}"
 export PII_CHUNK_SIZE="${PII_CHUNK_SIZE:-10000}"
+# runs: scan only the files of finished runs under PII_BASE_DIR and report what
+# was skipped. folder: scan every .jsonl under it.
+export PII_INPUT_MODE="${PII_INPUT_MODE:-runs}"
 
 # Which of this job's stages to actually run. Default "all" keeps this file's
 # original behavior for anyone submitting it directly without setting this.
@@ -75,6 +78,7 @@ echo "============================================================"
 echo "Node:           ${SLURMD_NODENAME:-unknown}"
 echo "CPUs:           ${SLURM_CPUS_PER_TASK}"
 echo "Input root:     ${PII_BASE_DIR}"
+echo "Input mode:     ${PII_INPUT_MODE}"
 echo "Run root:       ${PII_RUN_DIR}"
 echo "Log root:       ${PII_LOG_ROOT}"
 echo "Main log:       ${PII_MAIN_LOG}"

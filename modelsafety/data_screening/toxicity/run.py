@@ -24,6 +24,7 @@ from detoxify import Detoxify
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from modelsafety.contract.fingerprints import input_block, line_fingerprint  # noqa: E402
+from modelsafety.contract.run_finder import check_fingerprints  # noqa: E402
 
 
 def content_text(content: Any) -> str:
@@ -188,22 +189,30 @@ def count_candidates(
         yield candidate
 
 
-def verify_snapshot(input_root: Path, files: list[Path], snapshot_manifest: Path) -> None:
+def verify_snapshot(
+    input_root: Path, files: list[Path], snapshot_manifest: Path
+) -> dict[str, str]:
     """Confirm every file this run is about to scan still matches the size
     and mtime recorded when the shard manifest (with its per-file SHA-256)
     was built -- the same manifest.json shape, and the same check,
     pii_extractor.py and quality_filter_finalize.py already run before
     trusting a source file.
+
+    Returns each file's recorded SHA-256 by relative path, for ``run()`` to
+    compare with what it reads.
     """
     from modelsafety.contract.textract import load_source_snapshot, verify_source_snapshot
 
     snapshots = load_source_snapshot(snapshot_manifest, input_root)
+    expected_sha256: dict[str, str] = {}
     for path in files:
         relative = path.relative_to(input_root).as_posix()
         expected = snapshots.get(relative)
         if expected is None:
             raise RuntimeError(f"{relative} is not present in the snapshot manifest")
         verify_source_snapshot(path, expected)
+        expected_sha256[relative] = expected["sha256"]
+    return expected_sha256
 
 
 def histogram_to_dict(histogram: list[int]) -> dict[str, int]:
@@ -262,8 +271,9 @@ def run(
     if summary_file is not None:
         summary_file.unlink(missing_ok=True)
 
+    expected_sha256 = None
     if snapshot_manifest is not None:
-        verify_snapshot(input_root, files, snapshot_manifest)
+        expected_sha256 = verify_snapshot(input_root, files, snapshot_manifest)
 
     accelerator = accelerate.Accelerator()
     stats: dict[str, Any] = {"rows_read": 0, "messages_scored": 0, "messages_flagged": 0, "per_file": {}}
@@ -311,6 +321,10 @@ def run(
                         output_handle.write(json.dumps(output, ensure_ascii=False) + "\n")
                 output_handle.flush()
                 progress.update(len(batch))
+        # Every file has been read to the end, so a file that changed since the
+        # manifest was built can't have been scanned as if it hadn't.
+        if expected_sha256 is not None:
+            check_fingerprints(expected_sha256, input_files, what="Toxicity stage 1")
         completed = True
     finally:
         if accelerator.is_main_process:

@@ -12,14 +12,22 @@ MODE="${PRIVACY_FILTER_MODE:-pilot}"
 BACKEND="${PRIVACY_FILTER_BACKEND:-transformers}"
 MODEL="${PRIVACY_FILTER_MODEL:-OpenMed/privacy-filter-nemotron-v2}"
 PARTITION="${PRIVACY_FILTER_PARTITION:-health}"
+# The default input above (the medpsy filtered folder) isn't a run folder, so
+# this script reads it as a plain folder unless told otherwise. The tool team
+# wrapper passes "runs".
+INPUT_MODE="${PRIVACY_FILTER_INPUT_MODE:-folder}"
 
 if [[ "${MODE}" != "pilot" && "${MODE}" != "full" ]]; then
   echo "PRIVACY_FILTER_MODE must be pilot or full" >&2
   exit 2
 fi
+if [[ "${INPUT_MODE}" != "runs" && "${INPUT_MODE}" != "folder" ]]; then
+  echo "PRIVACY_FILTER_INPUT_MODE must be runs or folder" >&2
+  exit 2
+fi
 mkdir -p "${REPO}/logs/slurm" "${RUN_ROOT}"
 
-export_values="ALL,REPO=${REPO},PRIVACY_FILTER_INPUT_ROOT=${INPUT_ROOT},PRIVACY_FILTER_RUN_ROOT=${RUN_ROOT},PRIVACY_FILTER_BACKEND=${BACKEND},PRIVACY_FILTER_MODEL=${MODEL}"
+export_values="ALL,REPO=${REPO},PRIVACY_FILTER_INPUT_ROOT=${INPUT_ROOT},PRIVACY_FILTER_INPUT_MODE=${INPUT_MODE},PRIVACY_FILTER_RUN_ROOT=${RUN_ROOT},PRIVACY_FILTER_BACKEND=${BACKEND},PRIVACY_FILTER_MODEL=${MODEL}"
 if [[ -n "${PRIVACY_FILTER_SOURCE_MANIFEST:-}" ]]; then
   export_values+=",PRIVACY_FILTER_SOURCE_MANIFEST=${PRIVACY_FILTER_SOURCE_MANIFEST}"
 fi
@@ -45,6 +53,8 @@ identity_args=(
   --tool pii_model
   --mode "${MODE}"
   --input-root "${INPUT_ROOT}"
+  --input-mode "${INPUT_MODE}"
+  --setting "input_mode=${INPUT_MODE}"
   --setting "backend=${BACKEND}"
   --setting "model=${MODEL}"
   --setting "max_files=${max_files:-all}"

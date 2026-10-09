@@ -11,6 +11,8 @@ export QUALITY_OUTPUT_ROOT="${QUALITY_OUTPUT_ROOT:-${QUALITY_RUN_ROOT}}"
 export QUALITY_MANIFEST_DIR="${QUALITY_MANIFEST_DIR:-${QUALITY_RUN_ROOT}/manifests}"
 export QUALITY_SHARD_COUNT="${QUALITY_SHARD_COUNT:-16}"
 export QUALITY_PILOT_FILES="${QUALITY_PILOT_FILES:-0}"
+# The medpsy input isn't a set of run folders, so every .jsonl under it is read.
+export QUALITY_INPUT_MODE="${QUALITY_INPUT_MODE:-folder}"
 export QUALITY_ARRAY_CONCURRENCY="${QUALITY_ARRAY_CONCURRENCY:-8}"
 export QUALITY_PII_ARRAY_CONCURRENCY="${QUALITY_PII_ARRAY_CONCURRENCY:-4}"
 export REPO
@@ -33,6 +35,10 @@ fi
 if [[ -e "${QUALITY_MANIFEST_DIR}/manifest.json" && "${QUALITY_ALLOW_RERUN:-0}" != "1" ]]; then
   echo "An existing run is present at ${QUALITY_RUN_ROOT}." >&2
   echo "Resume failed jobs directly, or set QUALITY_ALLOW_RERUN=1 for a clean worker-node rerun." >&2
+  exit 2
+fi
+if [[ "${QUALITY_INPUT_MODE}" != "runs" && "${QUALITY_INPUT_MODE}" != "folder" ]]; then
+  echo "QUALITY_INPUT_MODE must be runs or folder" >&2
   exit 2
 fi
 if (( QUALITY_SHARD_COUNT < 1 )); then

@@ -295,6 +295,15 @@ def read_ner(
     return result
 
 
+def guard_outcome(guard: dict[str, Any]) -> tuple[str, str | None]:
+    """What a guard result says: ``("guard_error", None)`` for an error or a
+    verdict the guard didn't give, otherwise the verdict in lower case and as given."""
+    verdict = guard.get("safety")
+    if "error" in guard or verdict not in RECOGNISED_VERDICTS:
+        return "guard_error", None
+    return verdict.lower(), verdict
+
+
 def read_toxicity(
     results_dir: Path, index: HitIndex, rules: FilterRules, rows_by_file: dict[str, int]
 ) -> FindingsRead:
@@ -329,13 +338,9 @@ def read_toxicity(
             if not isinstance(guard, dict):
                 raise FindingsError(f"{where}: the record has no 'guard' verdict.")
 
-            verdict = guard.get("safety")
-            if "error" in guard or verdict not in RECOGNISED_VERDICTS:
-                outcome = "guard_error"
-                verdict = None
+            outcome, verdict = guard_outcome(guard)
+            if outcome == "guard_error":
                 guard_errors_by_slice[name] += 1
-            else:
-                outcome = verdict.lower()
             verdicts[outcome] += 1
 
             if outcome == "guard_error":

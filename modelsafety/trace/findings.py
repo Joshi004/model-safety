@@ -5,6 +5,11 @@ that line's fingerprint. This module only reads: it checks each finding names
 those three things and stops on one that doesn't, naming the file and line. It
 doesn't look at the Prepared data (the trace tool does that).
 
+Some sources also give each finding a ``detail``: what it found, kept short
+(NER label and positions, regex PII category and value, the toxicity verdict,
+the other row of a duplicate pair, the reasons a row was removed). The trace
+doesn't use it; the per-row status (``row_status.py``) does.
+
 Every source is read in a fixed order, so two reads of the same files give the
 same findings in the same order.
 """
@@ -13,7 +18,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -33,6 +38,7 @@ from modelsafety.filter.rules import (
     REGEX_PII_FILE,
     FindingsError,
     _allow_large_csv_fields,
+    guard_outcome,
 )
 from modelsafety.results.coverage import TOXICITY_SHARDS
 
@@ -51,7 +57,9 @@ class Finding:
     ends on). `file` is relative to `scan_root`. `side` is only set for
     duplicates: `row` is the duplicate, `duplicate_of` the row it duplicates.
     `reference` is true when that row is in a duplicates reference folder (cross
-    mode), which isn't a run.
+    mode), which isn't a run. `detail` is what the finding found, for the
+    sources that give it (None for the others); it isn't part of the finding's
+    identity.
     """
 
     source: str
@@ -63,6 +71,7 @@ class Finding:
     sha256: str
     side: str | None = None
     reference: bool = False
+    detail: dict[str, Any] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -204,33 +213,92 @@ def _read_regex_pii_stage1(source: Source) -> Iterator[Finding]:
                 yield Finding(source.name, results_file, number, source.scan_root, file, line, sha256)
 
 
-def _read_csv_findings(source: Source, path: Path, required: set[str]) -> Iterator[Finding]:
+def _read_csv_findings(
+    source: Source,
+    path: Path,
+    required: set[str],
+    detail: Callable[[dict[str, str]], dict[str, Any]] | None = None,
+) -> Iterator[Finding]:
     results_file = _relative(source, path)
     for number, row in _iter_csv(path, required):
         where = f"{path}:{number}"
         line = _csv_line(path, number, row)
         _check_location(where, row["file"], line, row["source_sha256"])
         yield Finding(
-            source.name, results_file, number, source.scan_root, row["file"], line, row["source_sha256"]
+            source.name,
+            results_file,
+            number,
+            source.scan_root,
+            row["file"],
+            line,
+            row["source_sha256"],
+            detail=detail(row) if detail is not None else None,
         )
+
+
+def _regex_pii_detail(row: dict[str, str]) -> dict[str, Any]:
+    return {"category": row["category"], "value": row["PII"]}
 
 
 def _read_regex_pii_stage3(source: Source) -> Iterator[Finding]:
     path = source.results_dir / STAGE3_NAME / REGEX_PII_FILE
-    yield from _read_csv_findings(source, path, {"file", "line", "source_sha256"})
+    yield from _read_csv_findings(
+        source, path, {"file", "line", "source_sha256", "category", "PII"}, _regex_pii_detail
+    )
 
 
-def _read_jsonl_findings(source: Source, path: Path) -> Iterator[Finding]:
+def _read_jsonl_findings(
+    source: Source,
+    path: Path,
+    detail: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+) -> Iterator[Finding]:
     """A JSONL file with `source_file`, `source_line` and `source_sha256` in each record."""
     results_file = _relative(source, path)
     for number, record in _iter_jsonl(path):
         file, line, sha256 = record.get("source_file"), record.get("source_line"), record.get("source_sha256")
         _check_location(f"{path}:{number}", file, line, sha256)
-        yield Finding(source.name, results_file, number, source.scan_root, file, line, sha256)
+        yield Finding(
+            source.name,
+            results_file,
+            number,
+            source.scan_root,
+            file,
+            line,
+            sha256,
+            detail=detail(record) if detail is not None else None,
+        )
+
+
+def _ner_detail(span: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "label": span.get("label"),
+        "message_index": span.get("message_index"),
+        "start": span.get("start"),
+        "end": span.get("end"),
+        "confidence": span.get("confidence"),
+        "tier": span.get("tier"),
+        "eligible": span.get("candidate_eligible"),
+    }
+
+
+def _guard_detail(record: dict[str, Any]) -> dict[str, Any]:
+    guard = record.get("guard")
+    guard = guard if isinstance(guard, dict) else {}
+    outcome, verdict = guard_outcome(guard)
+    return {
+        "message_index": record.get("message_index"),
+        "role": record.get("role"),
+        "outcome": outcome,
+        "verdict": verdict,
+        "error": guard.get("error"),
+        "categories": guard.get("categories") or [],
+        "detoxify_score": record.get("toxicity"),
+        "detoxify_category": record.get("trigger_category"),
+    }
 
 
 def _read_ner_all_spans(source: Source) -> Iterator[Finding]:
-    yield from _read_jsonl_findings(source, source.results_dir / NER_SPANS_FILE)
+    yield from _read_jsonl_findings(source, source.results_dir / NER_SPANS_FILE, _ner_detail)
 
 
 def _read_ner_llm_candidates(source: Source) -> Iterator[Finding]:
@@ -259,7 +327,7 @@ def _read_toxicity_flagged(source: Source) -> Iterator[Finding]:
 
 def _read_toxicity_guard(source: Source) -> Iterator[Finding]:
     for shard_dir in _toxicity_slices(source.results_dir):
-        yield from _read_jsonl_findings(source, shard_dir / "guard_results" / "all.jsonl")
+        yield from _read_jsonl_findings(source, shard_dir / "guard_results" / "all.jsonl", _guard_detail)
 
 
 def _read_dedup_results(source: Source) -> Iterator[Finding]:
@@ -271,7 +339,6 @@ def _read_dedup_results(source: Source) -> Iterator[Finding]:
         where = f"{path}:{number}"
         file, line, sha256 = record.get("source_file"), record.get("source_line"), record.get("source_sha256")
         _check_location(where, file, line, sha256)
-        yield Finding(source.name, results_file, number, source.scan_root, file, line, sha256, SIDE_ROW)
         original = record.get("duplicate_of")
         if not isinstance(original, dict):
             raise FindingsError(f"{where}: the record has no 'duplicate_of'.")
@@ -280,6 +347,25 @@ def _read_dedup_results(source: Source) -> Iterator[Finding]:
             original.get("source_file"),
             original.get("source_line"),
             original.get("source_sha256"),
+        )
+        reference = original.get("dataset") == "reference"
+        yield Finding(
+            source.name,
+            results_file,
+            number,
+            source.scan_root,
+            file,
+            line,
+            sha256,
+            SIDE_ROW,
+            detail={
+                "other": {
+                    "file": original["source_file"],
+                    "line": original["source_line"],
+                    "source_sha256": original["source_sha256"],
+                    "reference": reference,
+                }
+            },
         )
         yield Finding(
             source.name,
@@ -290,7 +376,8 @@ def _read_dedup_results(source: Source) -> Iterator[Finding]:
             original["source_line"],
             original["source_sha256"],
             SIDE_DUPLICATE_OF,
-            reference=original.get("dataset") == "reference",
+            reference=reference,
+            detail={"other": {"file": file, "line": line, "source_sha256": sha256, "reference": False}},
         )
 
 
@@ -323,7 +410,16 @@ def _read_removed_rows(source: Source) -> Iterator[Finding]:
                     f"{where}: the saved line isn't the one with the fingerprint it records "
                     f"({file} line {line})."
                 )
-            yield Finding(source.name, results_file, number, parent_dir, file, line, sha256)
+            yield Finding(
+                source.name,
+                results_file,
+                number,
+                parent_dir,
+                file,
+                line,
+                sha256,
+                detail={"reasons": entry.get("reasons"), "byte_offset": origin.get("byte_offset")},
+            )
 
 
 _READERS: dict[str, Callable[[Source], Iterator[Finding]]] = {

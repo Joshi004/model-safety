@@ -25,20 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from modelsafety.contract.fingerprints import input_block, line_fingerprint  # noqa: E402
 from modelsafety.contract.run_finder import check_fingerprints  # noqa: E402
-
-
-def content_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts = []
-    for block in content:
-        if isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict) and isinstance(block.get("text"), str):
-            parts.append(block["text"])
-    return "\n".join(parts)
+from modelsafety.data_screening.toxicity.row_text import iter_row_texts  # noqa: E402
 
 
 def resolve_inputs(
@@ -122,42 +109,20 @@ def iter_candidates(
                     raise ValueError(f"Malformed JSON at {path}:{source_line}") from exc
                 source_sha256 = line_fingerprint(raw_line)
 
-                text = source_record.get("text")
-                if isinstance(text, str):
-                    counts["rows_with_text"] += 1
+                row_has_candidate = False
+                for message_index, role, text in iter_row_texts(source_record):
+                    if not row_has_candidate:
+                        row_has_candidate = True
+                        counts["rows_with_text"] += 1
                     yield {
                         "source_file": relative,
                         "source_line": source_line,
                         "source_sha256": source_sha256,
-                        "message_index": None,
-                        "role": "user",
+                        "message_index": message_index,
+                        "role": role,
                         "text": text,
                         "source_record": source_record,
                     }
-                    continue
-
-                row_has_candidate = False
-                messages = source_record.get("messages")
-                if isinstance(messages, list):
-                    for message_index, message in enumerate(messages):
-                        if not isinstance(message, dict):
-                            continue
-                        role = str(message.get("role") or "")
-                        content = content_text(message.get("content"))
-                        if not content:
-                            continue
-                        if not row_has_candidate:
-                            row_has_candidate = True
-                            counts["rows_with_text"] += 1
-                        yield {
-                            "source_file": relative,
-                            "source_line": source_line,
-                            "source_sha256": source_sha256,
-                            "message_index": message_index,
-                            "role": role,
-                            "text": f"{role}: {content}",
-                            "source_record": source_record,
-                        }
                 if not row_has_candidate:
                     counts["rows_without_text"] += 1
         input_files.append({"path": relative, "sha256": digest.hexdigest()})

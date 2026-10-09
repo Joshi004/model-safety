@@ -20,6 +20,7 @@ PII_CATEGORIES = [
 
 STAGE1_NAME = "stage1_scan"
 STAGE2_NAME = "stage2_validated"
+STAGE3_NAME = "stage3_extract"
 HITS_DIRNAME = "hits"
 WORKERS_DIRNAME = "workers"
 METRICS_FILENAME = "metrics.txt"

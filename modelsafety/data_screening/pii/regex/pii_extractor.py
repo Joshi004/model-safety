@@ -5,14 +5,13 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import sqlite3
 import sys
 from pathlib import Path
 
 from tqdm import tqdm
 
-from pii_output import PII_CATEGORIES, SUCCESS_FILENAME
+from pii_output import PII_CATEGORIES, SUCCESS_FILENAME, parse_hit
 from modelsafety.contract.fingerprints import line_fingerprint
 from modelsafety.contract.textract import (
     load_source_snapshot,
@@ -35,30 +34,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--delimiter", default=",")
     return parser.parse_args()
-
-
-def parse_hit(line: str, path: Path, line_number: int) -> tuple[str, int, str, str]:
-    parts = line.rstrip("\r\n").split("|", 3)
-    if len(parts) != 4:
-        raise ValueError(f"{path}:{line_number}: malformed hit row")
-    source_file, source_line, source_sha256, encoded_pii_value = parts
-    try:
-        source_line_number = int(source_line)
-    except ValueError as exc:
-        raise ValueError(f"{path}:{line_number}: non-numeric source line") from exc
-    if source_line_number < 1:
-        raise ValueError(f"{path}:{line_number}: source line must be positive")
-    if len(source_sha256) != 64 or any(
-        character not in "0123456789abcdef" for character in source_sha256
-    ):
-        raise ValueError(f"{path}:{line_number}: invalid source SHA-256")
-    try:
-        pii_value = json.loads(encoded_pii_value)
-    except json.JSONDecodeError:
-        pii_value = encoded_pii_value
-    if not isinstance(pii_value, str):
-        pii_value = str(pii_value)
-    return source_file, source_line_number, source_sha256, pii_value
 
 
 def index_hits(

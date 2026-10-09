@@ -6,8 +6,8 @@ libraries, same calls -- just bounded to a handful of rows instead of the
 whole file, so this stays cheap to run from a web backend against real,
 large production data. Nothing here writes anything.
 
-`read_original_row()` at the bottom reads back one original row from an
-`_origin` note, the way the preparing step read it, and fingerprints it.
+Reading one original row back from an `_origin` note lives in
+`modelsafety/trace/original.py`, which the trace tool uses too.
 """
 
 from __future__ import annotations
@@ -20,7 +20,14 @@ from typing import Any
 
 import pandas as pd
 
-from reader_imports import arrow_ipc_row_count, clean_value, line_fingerprint, row_fingerprint
+from reader_imports import (
+    HF_MARKER_FILES,
+    PARQUET_BATCH_ROWS,
+    arrow_ipc_row_count,
+    clean_value,
+    load_json_rows,
+    may_convert_differently,
+)
 
 # -------------------------------------------------------------------------
 # Path validation -- any absolute path the running user can read is allowed
@@ -57,9 +64,6 @@ EXTENSION_TO_FORMAT = {
     ".parquet": "parquet",
     ".arrow": "arrow",
 }
-
-HF_MARKER_FILES = ("state.json", "dataset_dict.json")
-
 
 @dataclass
 class _Group:
@@ -393,23 +397,10 @@ def _sample_jsonl(
     return rows, info
 
 
-MAX_JSON_BYTES = 50 * 1024 * 1024  # a plain .json file has no streaming/bounded reader
-
-
 def _sample_json(
     target: Path, max_rows: int, start_row: int = 0
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    size = target.stat().st_size
-    if size > MAX_JSON_BYTES:
-        raise ValueError(
-            f"{target.name} is {size / 1e6:.0f} MB. Refusing to load a plain "
-            ".json file this large for a preview -- there's no streaming "
-            "reader for this format, so the real conversion would load the "
-            "whole thing into memory too."
-        )
-    with target.open("r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    all_rows = data if isinstance(data, list) else [data]
+    all_rows = load_json_rows(target)
     info = {
         "expected_rows": len(all_rows),
         "expected_rows_from": "full file read (the whole small .json file was loaded)",
@@ -441,57 +432,6 @@ def _sample_csv(
     return frame.to_dict("records"), info
 
 
-PARQUET_BATCH_ROWS = 1024
-
-
-def _has_integer_without_nulls(array: Any) -> bool:
-    """Whether `array`, or anything nested inside it, is a non-empty integer
-    array with no nulls."""
-    import pyarrow as pa
-
-    dtype = array.type
-    if pa.types.is_integer(dtype):
-        return len(array) > 0 and array.null_count == 0
-    if pa.types.is_struct(dtype):
-        return any(_has_integer_without_nulls(array.field(i)) for i in range(dtype.num_fields))
-    if pa.types.is_list(dtype) or pa.types.is_large_list(dtype) or pa.types.is_fixed_size_list(dtype):
-        return _has_integer_without_nulls(array.flatten())
-    if pa.types.is_map(dtype):
-        return _has_integer_without_nulls(array.keys) or _has_integer_without_nulls(array.items)
-    return False
-
-
-def _may_convert_differently(group_meta: Any, batch: Any) -> bool:
-    """Whether converting `batch` on its own could give different Python
-    values than converting its whole row group, as `prepare_rows.py` does.
-
-    pandas turns an integer column that has nulls into floats (5 -> 5.0), and
-    one without nulls into ints. A batch with no nulls in an integer column
-    that has nulls elsewhere in the row group would come out as ints where
-    `prepare_rows.py` wrote floats, and the row's fingerprint would differ.
-    So: true when the batch has an integer column without nulls in a
-    top-level column whose integer footer columns have nulls (or no null count).
-    """
-    names = [
-        name
-        for name, column in zip(batch.schema.names, batch.columns)
-        if _has_integer_without_nulls(column)
-    ]
-    if not names:
-        return False
-    for index in range(group_meta.num_columns):
-        chunk = group_meta.column(index)
-        if chunk.physical_type not in ("INT32", "INT64"):
-            continue
-        path = chunk.path_in_schema
-        if not any(path == name or path.startswith(name + ".") for name in names):
-            continue
-        statistics = chunk.statistics
-        if statistics is None or not statistics.has_null_count or statistics.null_count > 0:
-            return True
-    return False
-
-
 def _row_group_records(parquet_file: Any, group: int, first: int, count: int) -> list[dict[str, Any]]:
     """Up to `count` rows of one row group, starting at row `first` of that
     group, as `.to_pandas().to_dict("records")` gives them.
@@ -499,7 +439,7 @@ def _row_group_records(parquet_file: Any, group: int, first: int, count: int) ->
     Reads the group in batches of `PARQUET_BATCH_ROWS` instead of all at once,
     counts past the batches before `first` without converting them, and
     converts only the batch(es) that hold the wanted rows. If a batch could
-    convert differently from the whole group (see `_may_convert_differently`),
+    convert differently from the whole group (see `may_convert_differently`),
     this request reads the whole group instead, so the rows always match what
     `prepare_rows.py` read.
     """
@@ -510,7 +450,7 @@ def _row_group_records(parquet_file: Any, group: int, first: int, count: int) ->
         if seen + batch.num_rows <= first:
             seen += batch.num_rows
             continue
-        if _may_convert_differently(group_meta, batch):
+        if may_convert_differently(group_meta, batch):
             whole = parquet_file.read_row_group(group).to_pandas().to_dict("records")
             return whole[first : first + count]
         records.extend(batch.to_pandas().to_dict("records")[max(0, first - seen) :])
@@ -695,117 +635,3 @@ def sample_rows(
 
     rows = [clean_value(row) for row in rows]
     return rows, info
-
-
-# -------------------------------------------------------------------------
-# Reading one original row back from an `_origin` note
-# -------------------------------------------------------------------------
-
-MAX_RAW_LINE_CHARS = 2_000
-
-
-def _original_jsonl(path: Path, byte: int) -> dict[str, Any]:
-    """The line that starts at `byte`, fingerprinted from its raw bytes,
-    the same way `prepare_rows.py` fingerprints a JSONL line."""
-    with path.open("rb") as handle:
-        handle.seek(byte)
-        raw = handle.readline()
-    if not raw:
-        return {
-            "row": None,
-            "fingerprint": None,
-            "raw_line": None,
-            "note": f"The file has no line starting at byte {byte}.",
-        }
-    row = None
-    try:
-        parsed = json.loads(raw.decode("utf-8"))
-        if isinstance(parsed, dict):
-            row = clean_value(parsed)
-    except ValueError:  # not UTF-8, or not JSON
-        pass
-    raw_line = None
-    if row is None:
-        raw_line = raw.decode("utf-8", errors="replace").rstrip("\r\n")[:MAX_RAW_LINE_CHARS]
-    return {"row": row, "fingerprint": line_fingerprint(raw), "raw_line": raw_line, "note": None}
-
-
-def _original_parquet_row(path: Path, row_number: int) -> dict[str, Any] | None:
-    """One row of a parquet file, reading only the batches of the row group
-    that hold it. The row is the same one `prepare_rows.py` got from
-    `read_row_group(...).to_pandas().to_dict("records")` (see
-    `_row_group_records`)."""
-    import pyarrow.parquet as pq
-
-    parquet_file = pq.ParquetFile(path)
-    group_start = 0
-    for group in range(parquet_file.num_row_groups):
-        group_rows = parquet_file.metadata.row_group(group).num_rows
-        if row_number < group_start + group_rows:
-            return _row_group_records(parquet_file, group, row_number - group_start, 1)[0]
-        group_start += group_rows
-    return None
-
-
-def _original_arrow_row(path: Path, split: str | None, row_number: int) -> dict[str, Any] | None:
-    from datasets import load_from_disk
-
-    dataset = load_from_disk(str(path))
-    try:
-        if split is not None:
-            dataset = dataset[split]
-        return dataset[row_number]
-    except (IndexError, KeyError, OverflowError):
-        return None
-
-
-def _original_csv_row(path: Path, row_number: int) -> dict[str, Any] | None:
-    size = path.stat().st_size
-    if size > MAX_JSON_BYTES:
-        raise ValueError(
-            f"{path.name} is {size / 1e6:.0f} MB. Refusing to load a .csv file this large "
-            "to look up one row -- there's no way to read just one row of it."
-        )
-    records = pd.read_csv(path).to_dict("records")
-    return records[row_number] if row_number < len(records) else None
-
-
-def _original_json_row(path: Path, row_number: int) -> dict[str, Any] | None:
-    rows, _info = _sample_json(path, 1, row_number)
-    return rows[0] if rows else None
-
-
-def read_original_row(input_type: str, origin: dict[str, Any]) -> dict[str, Any]:
-    """Read the one original row an `_origin` note points at, and fingerprint
-    it the way the preparing step did.
-
-    `origin` must already be shape-checked (see runs.lookup). Returns `row`
-    (what's there now, or None), `fingerprint` (None when the row isn't
-    there any more), `raw_line` (JSONL only, when the line isn't a JSON
-    object) and a `note` saying why a row is missing.
-    """
-    path = Path(origin["path"])
-    if input_type == "jsonl":
-        return _original_jsonl(path, origin["byte"])
-
-    row_number = origin["row"]
-    if input_type == "parquet":
-        row = _original_parquet_row(path, row_number)
-    elif input_type == "huggingface":
-        row = _original_arrow_row(path, origin.get("split"), row_number)
-    elif input_type == "csv":
-        row = _original_csv_row(path, row_number)
-    elif input_type == "json":
-        row = _original_json_row(path, row_number)
-    else:
-        raise ValueError(f"Unsupported input type: {input_type}")
-
-    if row is None:
-        return {
-            "row": None,
-            "fingerprint": None,
-            "raw_line": None,
-            "note": f"The file has no row {row_number}.",
-        }
-    row = clean_value(row)
-    return {"row": row, "fingerprint": row_fingerprint(row), "raw_line": None, "note": None}

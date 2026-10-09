@@ -48,6 +48,19 @@ from modelsafety.contract.run_identity import (  # noqa: E402
 )
 from modelsafety.contract.textract import extract_record_text  # noqa: E402
 
+# The lookup behind "Show original", and the helpers the preview shares with it.
+# It lives in modelsafety/trace/original.py so the trace tool uses the same code.
+from modelsafety.trace.original import (  # noqa: E402
+    HF_MARKER_FILES,
+    PARQUET_BATCH_ROWS,
+    RunError,
+    find_run_above,
+    load_json_rows,
+    lookup,
+    may_convert_differently,
+    open_run,
+)
+
 # Re-exported as plain names so callers don't need to know these are
 # "private" (leading-underscore) helpers inside prepare_rows.py.
 clean_value = prepare_rows._clean_value
@@ -97,4 +110,12 @@ __all__ = [
     "compare_run_identity",
     "RunIdentityError",
     "IDENTITY_FILENAME",
+    "HF_MARKER_FILES",
+    "PARQUET_BATCH_ROWS",
+    "RunError",
+    "find_run_above",
+    "load_json_rows",
+    "lookup",
+    "may_convert_differently",
+    "open_run",
 ]

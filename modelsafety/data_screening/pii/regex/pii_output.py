@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -136,6 +137,32 @@ def resolve_stage2_hits_dir() -> Path:
     paths = stage2_paths()
     paths["hits_dir"].mkdir(parents=True, exist_ok=True)
     return paths["hits_dir"]
+
+
+def parse_hit(line: str, path: Path, line_number: int) -> tuple[str, int, str, str]:
+    """One stage 1 or stage 2 hit row, `file|line|line fingerprint|value`, as
+    (file, line, fingerprint, value). Raises `ValueError` naming `path:line_number`."""
+    parts = line.rstrip("\r\n").split("|", 3)
+    if len(parts) != 4:
+        raise ValueError(f"{path}:{line_number}: malformed hit row")
+    source_file, source_line, source_sha256, encoded_pii_value = parts
+    try:
+        source_line_number = int(source_line)
+    except ValueError as exc:
+        raise ValueError(f"{path}:{line_number}: non-numeric source line") from exc
+    if source_line_number < 1:
+        raise ValueError(f"{path}:{line_number}: source line must be positive")
+    if len(source_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in source_sha256
+    ):
+        raise ValueError(f"{path}:{line_number}: invalid source SHA-256")
+    try:
+        pii_value = json.loads(encoded_pii_value)
+    except json.JSONDecodeError:
+        pii_value = encoded_pii_value
+    if not isinstance(pii_value, str):
+        pii_value = str(pii_value)
+    return source_file, source_line_number, source_sha256, pii_value
 
 
 def count_lines_in_hits(hits_path: Path, categories: list[str] | None = None) -> dict[str, int]:

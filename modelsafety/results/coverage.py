@@ -2,8 +2,8 @@
 """Check that every scan read exactly the files its runs wrote, read every row, and finished.
 
 The folder to check (``--root``) holds runs: output folders of ``prepare_rows.py``
-at any depth. Each finished run says which files it wrote and how many rows
-each holds. For every scanner whose results folder you give, this report
+or ``filter_rows.py`` at any depth. Each finished run says which files it wrote
+and how many rows each holds. For every scanner whose results folder you give, this report
 checks, read-only:
 
   - the scan was made on this folder, by the right kind of scanner;

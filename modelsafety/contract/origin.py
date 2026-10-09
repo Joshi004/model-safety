@@ -7,6 +7,9 @@ A skipped-rows entry (``skipped_rows.ndjson``) always starts with
 ``{"_origin"``, because the writer puts ``_origin`` first. No Prepared row
 starts that way: there the note sits inside ``metadata``. So the first few
 bytes of a line tell the two apart.
+
+A filter run's ``removed_rows.ndjson`` and line maps (``filter_rows.py``)
+work the same way: every entry starts with ``{"_parent"``.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from modelsafety.contract.fingerprints import NON_JSON_KEY
 
 ORIGIN_KEY = "_origin"
 SKIPPED_ENTRY_PREFIX = b'{"_origin"'
+FILTER_ENTRY_PREFIX = b'{"_parent"'
 
 _MAX_REPR_CHARS = 200
 
@@ -55,12 +59,22 @@ def is_skipped_entry(raw_line: bytes) -> bool:
     return raw_line.lstrip().startswith(SKIPPED_ENTRY_PREFIX)
 
 
+def is_filter_entry(raw_line: bytes) -> bool:
+    return raw_line.lstrip().startswith(FILTER_ENTRY_PREFIX)
+
+
 def check_line(path: str | Path, line_number: int, raw_line: bytes) -> None:
-    """Raise ``SkippedRowsEntryError`` if ``raw_line`` is a skipped-rows entry."""
+    """Raise ``SkippedRowsEntryError`` if ``raw_line`` is a skipped-rows entry,
+    or an entry of a filter run's removed rows or line map."""
     if is_skipped_entry(raw_line):
         raise SkippedRowsEntryError(
             f"{path} line {line_number} is a skipped-rows entry, not a Prepared row. "
             "Skipped rows must never be scanned."
+        )
+    if is_filter_entry(raw_line):
+        raise SkippedRowsEntryError(
+            f"{path} line {line_number} is an entry of a filter run's removed rows or line map, "
+            "not a Prepared row. Those files must never be scanned."
         )
 
 

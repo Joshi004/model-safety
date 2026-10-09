@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Find the runs under a folder, and say which files a scan may read.
 
-A run is the output folder of a tool that keeps its books (today only
-``prepare_rows.py``). A scan reads only the files of runs that finished: the
+A run is the output folder of a tool that keeps its books: ``prepare_rows.py``
+(a Prepared run) or ``filter_rows.py`` (a filter run, the Prepared rows that
+are left after a filter step). A scan reads only the files of runs that finished: the
 run's ``summary.json`` passed its checks, ``_SUCCESS`` exists, and
 ``output.files_written`` lists each file with its size and SHA-256. Every other
 run under the folder, and every ``.jsonl`` that isn't one of those files, is
@@ -44,6 +45,9 @@ from modelsafety.readers.progress_file import (  # noqa: E402
 PREPARE_ROWS_TOOL = "prepare_rows.py"
 # The tool name `run_identity.json` records for the same program.
 PREPARE_ROWS_IDENTITY_TOOL = "prepare_rows"
+# The same two names for `modelsafety/filter/filter_rows.py`.
+FILTER_ROWS_TOOL = "filter_rows.py"
+FILTER_ROWS_IDENTITY_TOOL = "filter_rows"
 JOBS_FOLDER = "_jobs"
 MAX_RUN_FOLDERS = 10_000
 # A run that hasn't updated its `progress.json` for this long "may have stopped".
@@ -77,8 +81,12 @@ class RunType:
     progress_tool: str
 
 
-# Adding a kind of run (Phase 4's filter runs) means adding one entry here.
-RUN_TYPES = (RunType(PREPARE_ROWS_TOOL, PREPARE_ROWS_IDENTITY_TOOL, PROGRESS_TOOL),)
+# Adding a kind of run means adding one entry here. A filter run writes no
+# `progress.json`, so its `progress_tool` is only the name a stray one would need.
+RUN_TYPES = (
+    RunType(PREPARE_ROWS_TOOL, PREPARE_ROWS_IDENTITY_TOOL, PROGRESS_TOOL),
+    RunType(FILTER_ROWS_TOOL, FILTER_ROWS_IDENTITY_TOOL, FILTER_ROWS_TOOL),
+)
 
 
 # -------------------------------------------------------------------------

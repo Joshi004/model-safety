@@ -20,8 +20,17 @@ starts SLURM conversion jobs (one `prepare_rows.py` run each, CPU only),
 /api/jobs/cancel cancels them, /api/jobs/delete deletes run folders (only
 inside the runs root, after the checks in jobs.py), and submit also writes
 batch records under <runs root>/_jobs. /api/jobs/settings, /api/jobs/check,
-/api/jobs/batches and /api/jobs/status only read. Every other route is
-read-only, and none of them ever writes to or deletes original data.
+/api/jobs/batches and /api/jobs/status only read.
+
+The dataset registry routes (registry.py) act too: POST /api/datasets and PATCH
+/api/datasets/{id} write <service root>/registry/datasets.json, and
+POST /api/datasets/{id}/unregister removes an entry and deletes that dataset's own
+folder <service root>/datasets/<id>, after checking the id and the folder's location.
+The first read of a new service root also writes datasets.json, from the catalog in
+sources.py. The service root is $VALIDATOR_SERVICE_ROOT, or <repo>/output/service.
+GET /api/teams, GET /api/datasets and GET /api/datasets/{id} only read, and only check
+that a dataset's path exists and can be read. Every other route is read-only, and none
+of them ever writes to or deletes original data.
 
 This process never writes to the data it inspects: /api/inspect and
 /api/preview only read a bounded sample and report what would happen,
@@ -65,12 +74,13 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 import chains
 import detect
 import jobs
 import preview
+import registry
 import removed
 import rows
 import runs
@@ -100,6 +110,86 @@ def sources_catalog() -> dict[str, Any]:
     listings and stat()/exists() to mark each entry available or not, it
     never opens a row."""
     return {"teams": sources.list_sources()}
+
+
+# -------------------------------------------------------------------------
+# The dataset registry (registry.py): /api/datasets (POST and PATCH) and
+# /api/datasets/{id}/unregister act; the others only read.
+# -------------------------------------------------------------------------
+
+
+class DatasetCreateRequest(BaseModel):
+    # Any: registry.py explains what's wrong in words, instead of the request
+    # failing with a generic validation error.
+    model_config = ConfigDict(extra="forbid")
+    team: Any = None
+    name: Any = None
+    path: Any = None
+    description: Any = None
+    notes: Any = None
+    conversion: Any = None
+
+
+class DatasetUpdateRequest(BaseModel):
+    # Only the fields that are sent are changed (see registry.update). The path can't be
+    # changed: register the dataset again instead.
+    model_config = ConfigDict(extra="forbid")
+    team: Any = None
+    name: Any = None
+    description: Any = None
+    notes: Any = None
+    conversion: Any = None
+
+
+def _registry_call(function: Any, *args: Any) -> Any:
+    try:
+        return function(*args)
+    except registry.DatasetNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except registry.RegistryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except registry.RegistryCorrupt as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/teams")
+def teams() -> dict[str, Any]:
+    """The fixed list of teams a dataset can belong to."""
+    return {"teams": registry.TEAMS}
+
+
+@app.get("/api/datasets")
+def datasets_list(team: str | None = None) -> dict[str, Any]:
+    """Every registered dataset (or one team's), each with whether its path can still be
+    read. The first call on a new service root creates the registry from the old catalog."""
+    return {
+        "service_root": str(registry.service_root()),
+        "datasets": _registry_call(registry.list_datasets, team),
+    }
+
+
+@app.get("/api/datasets/{dataset_id}")
+def dataset_get(dataset_id: str) -> dict[str, Any]:
+    return _registry_call(registry.get_dataset, dataset_id)
+
+
+@app.post("/api/datasets")
+def dataset_register(body: DatasetCreateRequest) -> dict[str, Any]:
+    """Register a dataset: a team, a name and the absolute path of its original data."""
+    return _registry_call(registry.register, body.model_dump(exclude_unset=True))
+
+
+@app.patch("/api/datasets/{dataset_id}")
+def dataset_update(dataset_id: str, body: DatasetUpdateRequest) -> dict[str, Any]:
+    """Change a dataset's team, name, description, notes or saved conversion settings."""
+    return _registry_call(registry.update, dataset_id, body.model_dump(exclude_unset=True))
+
+
+@app.post("/api/datasets/{dataset_id}/unregister")
+def dataset_unregister(dataset_id: str) -> dict[str, Any]:
+    """Remove a dataset's entry and its folder under the service root. The original
+    data is never touched."""
+    return _registry_call(registry.unregister, dataset_id)
 
 
 class InspectRequest(BaseModel):

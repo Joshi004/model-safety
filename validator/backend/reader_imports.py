@@ -99,6 +99,7 @@ build_parser = prepare_rows.build_parser
 discover_input_files = prepare_rows._discover_input_files
 run_identity = prepare_rows._run_identity
 SKIPPED_ROWS_FILENAME = prepare_rows.SKIPPED_ROWS_FILENAME
+SUPPORTED_INPUT_TYPES = prepare_rows.SUPPORTED_INPUT_TYPES
 PROGRESS_FILENAME = progress_file.PROGRESS_FILENAME
 PROGRESS_TOOL = progress_file.PROGRESS_TOOL
 PROGRESS_PHASES = progress_file.PHASES
@@ -109,6 +110,7 @@ __all__ = [
     "FINGERPRINT_RECIPE_VERSION",
     "ORIGIN_KEY",
     "SKIPPED_ROWS_FILENAME",
+    "SUPPORTED_INPUT_TYPES",
     "PROGRESS_FILENAME",
     "PROGRESS_TOOL",
     "PROGRESS_PHASES",

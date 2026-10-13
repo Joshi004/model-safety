@@ -30,6 +30,14 @@
 #   record and logs go under <chain>/_jobs and <chain>/_logs; the Jobs view's
 #   Cancel on a chain step runs scancel on that step's own jobs.
 #
+#   Dataset registry: registering, editing and unregistering a dataset write
+#   <service root>/registry/datasets.json, where the service root is
+#   $VALIDATOR_SERVICE_ROOT, or <repo>/output/service. The first start with no
+#   datasets.json creates it (and registry/, datasets/ and scans/) from the catalog
+#   in validator/backend/sources.py. Unregistering also deletes that dataset's own
+#   folder, <service root>/datasets/<id>, and nothing else: the original data a
+#   dataset points at is only checked for existing and being readable.
+#
 # The runs list reads more than the runs root: also the Prepared folder and
 # each filter step's output folder of every chain recorded in
 # <repo>/output/*/chain.json ($VALIDATOR_CHAINS_ROOT replaces <repo>/output).

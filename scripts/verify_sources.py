@@ -179,7 +179,7 @@ def parse_args() -> argparse.Namespace:
     repo = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--output-root", type=Path, default=repo / "output" / "tool_team_converted"
+        "--output-root", type=Path, default=repo / "output" / "prepared" / "tools_team"
     )
     parser.add_argument(
         "--sft-mix-path",

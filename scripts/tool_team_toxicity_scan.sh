@@ -3,7 +3,7 @@
 # team's converted data, sharded across SLURM array tasks.
 #
 # This is the toxicity counterpart to scripts/tool_team_data.sh (PII). It
-# does not convert anything -- point it at output/tool_team_converted (or
+# does not convert anything -- point it at output/prepared/tools_team (or
 # any other JSONL folder) after running that script's `convert` stage.
 #
 # Usage:
@@ -65,7 +65,7 @@ source "${SCRIPT_DIR}/lib/tool_team_common.sh"
 # ---------------------------------------------------------------------------
 
 # --- Paths -------------------------------------------------------------
-TOX_INPUT_ROOT="${TOX_INPUT_ROOT:-${REPO}/output/tool_team_converted}"
+TOX_INPUT_ROOT="${TOX_INPUT_ROOT:-${REPO}/output/prepared/tools_team}"
 # Empty on purpose -- the real default depends on --pilot-files, and is filled
 # in by apply_run_dir_default() once that's known.
 TOX_RUN_DIR="${TOX_RUN_DIR:-}"

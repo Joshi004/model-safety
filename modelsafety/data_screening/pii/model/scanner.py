@@ -384,6 +384,16 @@ def load_input_block(work_manifest: Path) -> dict[str, Any]:
     return input_block(manifest["input_root"], files)
 
 
+def empty_source_files(work_manifest: Path) -> list[str]:
+    """Source files of zero bytes, which have no work units, from manifest.json."""
+    manifest = json.loads(work_manifest.with_name("manifest.json").read_text(encoding="utf-8"))
+    return [
+        str(source["source_file"])
+        for source in manifest["sources"]
+        if source["size_bytes"] == 0 and source["unit_count"] == 0
+    ]
+
+
 def aggregate(args: argparse.Namespace) -> int:
     output_root = args.output_root.expanduser().resolve()
     work_manifest = args.work_manifest.expanduser().resolve()
@@ -486,6 +496,14 @@ def aggregate(args: argparse.Namespace) -> int:
         candidates_output.flush()
         os.fsync(spans_output.fileno())
         os.fsync(candidates_output.fileno())
+
+    # A zero-byte file gets no work unit, so nothing above recorded it. Its row
+    # count is 0 for certain, so give it an all-zero entry like any other file.
+    for source_file in empty_source_files(work_manifest):
+        if source_file in sources:
+            raise RuntimeError(f"{source_file} is empty in the manifest but has work units.")
+        sources[source_file] = Counter({key: 0 for key in SUMMED_COUNTS})
+        rows_expected_by_source[source_file] = 0
 
     # Every source file with no missing units must have scanned exactly as
     # many rows as the manifest says it has -- every unit reporting

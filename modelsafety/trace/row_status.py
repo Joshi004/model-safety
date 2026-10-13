@@ -13,6 +13,16 @@ row. For each Prepared file it writes:
                                            or one page of rows without reading the file
                                            (see row_status_read.py)
 
+and, for each run and each filter step,
+
+  <output-dir>/<run>/removed/step<N>.ndjson   one line for every row the step removed, with
+                                              its reasons, the NER labels, regex categories
+                                              and toxicity verdicts that removed it, and its
+                                              Original row. It lets the removed rows be
+                                              filtered and paged without reading the filter
+                                              run's removed_rows.ndjson, which can be over a
+                                              gigabyte (see row_status_read.py).
+
 and `run_identity.json`, `summary.json` and (only if every check passed)
 `_SUCCESS` for the whole chain.
 
@@ -42,6 +52,7 @@ import json
 import os
 import sys
 from collections import Counter
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import zip_longest
@@ -84,9 +95,11 @@ from modelsafety.trace.findings import (  # noqa: E402
     scanner_sources,
 )
 from modelsafety.trace.row_status_read import (  # noqa: E402
+    REMOVED_COUNTS,
     STATUS_IDENTITY_TOOL,
     STATUS_TOOL,
     offset_line,
+    removed_index_path,
     status_paths,
 )
 from modelsafety.trace.trace_findings import (  # noqa: E402
@@ -101,7 +114,9 @@ from modelsafety.trace.trace_findings import (  # noqa: E402
     _Runs,
 )
 
-SUMMARY_VERSION = 1
+# 2: each run lists its removed-rows index (`removed_index`), and the totals have
+# `removed_by_step_and_reason`.
+SUMMARY_VERSION = 2
 PARTIAL_SUFFIX = ".partial"
 PROBLEMS_SHOWN = 25
 LINE_MAP_SUFFIX = ".ndjson"
@@ -983,40 +998,152 @@ def _prefix(run: str, file: str, line: int) -> bytes:
     return f'{{"prepared":{{"run":{_dumps(run)},"file":{_dumps(file)},"line":{line},'.encode("utf-8")
 
 
-def _write_run(out: Path, run: _Run, totals: dict[str, Counter], temps: list[tuple[Path, Path]]) -> dict[str, Any]:
-    """Write the status file and the offsets file of every Prepared file of a run."""
-    files: dict[str, Any] = {}
-    for file, rows in run.rows[0].items():
-        status_rel, offsets_rel = status_paths(run.name, file)
-        status_final, offsets_final = out / status_rel, out / offsets_rel
-        if any(final in (status_final, offsets_final) for _, final in temps):
-            raise StatusError(f"{run.name}: two Prepared files would be written to {status_rel}.")
-        status_final.parent.mkdir(parents=True, exist_ok=True)
-        status_temp = status_final.with_name(status_final.name + PARTIAL_SUFFIX)
-        offsets_temp = offsets_final.with_name(offsets_final.name + PARTIAL_SUFFIX)
-        temps.extend([(status_temp, status_final), (offsets_temp, offsets_final)])
-        offset = 0
-        with status_temp.open("wb") as status, offsets_temp.open("wb") as offsets:
-            for row in rows:
-                for step in row.steps:
-                    for name, state in step["scanners"].items():
-                        totals[f"step{step['step']}:{name}"][state["state"]] += 1
-                        totals[f"step{step['step']}:{name}"]["findings"] += len(state.get("findings", ()))
-                if row.origin is None:
-                    totals["rows"]["without_origin"] += 1
-                offsets.write(offset_line(offset))
-                data = (_dumps(_entry(row)) + "\n").encode("utf-8")
-                status.write(data)
-                offset += len(data)
-            offsets.write(offset_line(offset))
-        files[file] = {
-            "rows": len(rows),
-            "status_file": status_rel,
-            "offsets_file": offsets_rel,
-            "status_bytes": offset,
-            "offsets_bytes": (len(rows) + 1) * len(offset_line(0)),
+def _removed_entry(row: _Row) -> dict[str, Any]:
+    """The removed-rows index entry of a row a step removed: where the row is,
+    why it was removed, and the names (NER labels, regex PII categories, toxicity
+    verdicts) of what removed it, each with how many findings."""
+    step = row.steps[row.removed_at - 1]
+    reasons: list[Any] = []
+    ner_labels: Counter = Counter()
+    regex_categories: Counter = Counter()
+    toxicity_verdicts: Counter = Counter()
+    for item in step["reasons"]:
+        reason = item.get("reason") if isinstance(item, dict) else None
+        reasons.append(reason)
+        findings = item.get("findings") if isinstance(item, dict) else None
+        for finding in findings if isinstance(findings, list) else ():
+            if not isinstance(finding, dict):
+                continue
+            if reason == "ner" and isinstance(finding.get("label"), str):
+                ner_labels[finding["label"]] += 1
+            elif reason == "regex_pii" and isinstance(finding.get("category"), str):
+                regex_categories[finding["category"]] += 1
+            elif isinstance(reason, str) and reason.startswith("toxicity_"):
+                # A guard error has no verdict.
+                verdict = finding.get("verdict")
+                toxicity_verdicts[verdict if isinstance(verdict, str) else "guard_error"] += 1
+    return {
+        "run": row.run,
+        "step": row.removed_at,
+        "file": row.file,
+        "line": row.line,
+        "byte_offset": row.offset,
+        "reasons": reasons,
+        "ner_labels": dict(sorted(ner_labels.items())),
+        "regex_categories": dict(sorted(regex_categories.items())),
+        "toxicity_verdicts": dict(sorted(toxicity_verdicts.items())),
+        "original": row.origin,
+    }
+
+
+class _RemovedIndex:
+    """The removed-rows index of one run and one filter step, written as the
+    rows go by, with what it holds counted for `summary.json`."""
+
+    def __init__(self, path: str, handle: Any) -> None:
+        self.path = path
+        self.handle = handle
+        self.entries = 0
+        self.bytes = 0
+        self.digest = hashlib.sha256()
+        self.counts: dict[str, Counter] = {key: Counter() for key in REMOVED_COUNTS}
+
+    def add(self, row: _Row) -> None:
+        entry = _removed_entry(row)
+        data = (_dumps(entry) + "\n").encode("utf-8")
+        self.handle.write(data)
+        self.entries += 1
+        self.bytes += len(data)
+        self.digest.update(data)
+        # A row counts once for each name it has, however many findings it has under it.
+        for key, field_name in REMOVED_COUNTS.items():
+            self.counts[key].update({str(name): 1 for name in entry[field_name]})
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "file": self.path,
+            "entries": self.entries,
+            "bytes": self.bytes,
+            "sha256": self.digest.hexdigest(),
+            **{key: dict(sorted(counter.items())) for key, counter in self.counts.items()},
         }
-    return files
+
+
+def _write_run(out: Path, run: _Run, totals: dict[str, Counter], temps: list[tuple[Path, Path]]) -> dict[str, Any]:
+    """Write the status file and the offsets file of every Prepared file of a run,
+    and the removed-rows index of each of its filter steps."""
+    files: dict[str, Any] = {}
+    with ExitStack() as stack:
+        indexes: dict[int, _RemovedIndex] = {}
+        for number in range(1, len(run.levels)):
+            index_rel = removed_index_path(run.name, number)
+            index_final = out / index_rel
+            if any(final == index_final for _, final in temps):
+                raise StatusError(f"{run.name}: two files would be written to {index_rel}.")
+            index_final.parent.mkdir(parents=True, exist_ok=True)
+            index_temp = index_final.with_name(index_final.name + PARTIAL_SUFFIX)
+            temps.append((index_temp, index_final))
+            indexes[number] = _RemovedIndex(index_rel, stack.enter_context(index_temp.open("wb")))
+
+        for file, rows in run.rows[0].items():
+            status_rel, offsets_rel = status_paths(run.name, file)
+            status_final, offsets_final = out / status_rel, out / offsets_rel
+            if any(final in (status_final, offsets_final) for _, final in temps):
+                raise StatusError(f"{run.name}: two Prepared files would be written to {status_rel}.")
+            status_final.parent.mkdir(parents=True, exist_ok=True)
+            status_temp = status_final.with_name(status_final.name + PARTIAL_SUFFIX)
+            offsets_temp = offsets_final.with_name(offsets_final.name + PARTIAL_SUFFIX)
+            temps.extend([(status_temp, status_final), (offsets_temp, offsets_final)])
+            offset = 0
+            with status_temp.open("wb") as status, offsets_temp.open("wb") as offsets:
+                for row in rows:
+                    for step in row.steps:
+                        for name, state in step["scanners"].items():
+                            totals[f"step{step['step']}:{name}"][state["state"]] += 1
+                            totals[f"step{step['step']}:{name}"]["findings"] += len(state.get("findings", ()))
+                    if row.origin is None:
+                        totals["rows"]["without_origin"] += 1
+                    if row.removed_at is not None:
+                        indexes[row.removed_at].add(row)
+                    offsets.write(offset_line(offset))
+                    data = (_dumps(_entry(row)) + "\n").encode("utf-8")
+                    status.write(data)
+                    offset += len(data)
+                offsets.write(offset_line(offset))
+            files[file] = {
+                "rows": len(rows),
+                "status_file": status_rel,
+                "offsets_file": offsets_rel,
+                "status_bytes": offset,
+                "offsets_bytes": (len(rows) + 1) * len(offset_line(0)),
+            }
+    return {"files": files, "removed_index": {str(number): index.summary() for number, index in indexes.items()}}
+
+
+def _verify_removed_index(out: Path, run: _Run, number: int, item: dict[str, Any]) -> list[str]:
+    """Read a written removed-rows index back: the file on disk is the bytes that
+    were written, it has as many entries as the step removed rows, and its counts
+    by reason are the filter run's own."""
+    label = f"{run.name}, step {number}"
+    path = out / item["file"]
+    digest = hashlib.sha256()
+    lines = 0
+    with path.open("rb") as handle:
+        for raw in handle:
+            digest.update(raw)
+            lines += 1
+    problems = []
+    if (lines, path.stat().st_size, digest.hexdigest()) != (item["entries"], item["bytes"], item["sha256"]):
+        problems.append(f"{label}: the removed-rows index on disk isn't what was written.")
+    counted = run.step_counts[number - 1]
+    if item["entries"] != counted["removed"]:
+        problems.append(
+            f"{label}: the removed-rows index has {item['entries']:,} entries, "
+            f"but the step removed {counted['removed']:,} rows."
+        )
+    if item["by_reason"] != counted["removed_by_reason"]:
+        problems.append(f"{label}: the removed-rows index counts rows by reason differently from the filter run.")
+    return problems
 
 
 def _verify_written(out: Path, run: str, file: str, item: dict[str, Any]) -> list[str]:
@@ -1119,7 +1246,7 @@ def build_row_status(filter_root: str | Path, output_dir: str | Path) -> dict[st
     try:
         for run in runs.values():
             print(f"Writing {run.name} ...", flush=True)
-            run_summaries[run.name] = {"files": _write_run(out, run, totals, temps)}
+            run_summaries[run.name] = _write_run(out, run, totals, temps)
         for temp, final in temps:
             os.replace(temp, final)
     except BaseException:
@@ -1133,6 +1260,8 @@ def build_row_status(filter_root: str | Path, output_dir: str | Path) -> dict[st
             failures.extend(_verify_written(out, run.name, file, item))
             if item["rows"] != len(run.rows[0][file]):
                 failures.append(f"{run.name}/{file}: {item['rows']:,} entries for {len(run.rows[0][file]):,} Prepared rows.")
+        for number, item in run_summaries[run.name]["removed_index"].items():
+            failures.extend(_verify_removed_index(out, run, int(number), item))
         kept = sum(len(rows) for rows in run.rows[-1].values())
         removed = sum(step["removed"] for step in run.step_counts)
         prepared = sum(len(rows) for rows in run.rows[0].values())
@@ -1156,6 +1285,11 @@ def build_row_status(filter_root: str | Path, output_dir: str | Path) -> dict[st
     removed_by_step = {
         str(step.number): sum(run.step_counts[step.number - 1]["removed"] for run in runs.values()) for step in plan.steps
     }
+    # The same totals for each reason, added up over every run, so a page doesn't have to.
+    removed_by_step_and_reason: dict[str, Counter] = {str(step.number): Counter() for step in plan.steps}
+    for run in runs.values():
+        for counted in run.step_counts:
+            removed_by_step_and_reason[str(counted["step"])].update(counted["removed_by_reason"])
     summary = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "tool": STATUS_TOOL,
@@ -1180,6 +1314,9 @@ def build_row_status(filter_root: str | Path, output_dir: str | Path) -> dict[st
             "kept": kept_total,
             "removed": sum(removed_by_step.values()),
             "removed_by_step": removed_by_step,
+            "removed_by_step_and_reason": {
+                number: dict(sorted(counter.items())) for number, counter in removed_by_step_and_reason.items()
+            },
             "by_step_and_scanner": {
                 key.removeprefix("step").replace(":", " ", 1): dict(sorted(value.items()))
                 for key, value in totals.items()

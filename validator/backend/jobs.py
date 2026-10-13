@@ -1,8 +1,9 @@
 """Starting, watching, cancelling and deleting `prepare_rows.py` conversions.
 
-This is the one module in the backend that acts on anything: it submits SLURM
-jobs (`sbatch`), cancels them (`scancel`), and deletes run folders. Every other
-module here stays read-only.
+This is the module that acts on conversions: it submits SLURM jobs (`sbatch`),
+cancels them (`scancel`), and deletes run folders. The steps of a chain are
+started and cancelled by steps.py and step_start.py (which reuse this module's
+SLURM helpers and its lock); every other module here stays read-only.
 
 Rules this module keeps:
 

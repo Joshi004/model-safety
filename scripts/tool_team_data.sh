@@ -67,7 +67,7 @@ MOPD_MIX_PATH="${MOPD_MIX_PATH:-/home/shared/agentic_slm/data/rl/processed/qwen3
 RL_MIX_PATH="${RL_MIX_PATH:-/home/shared/agentic_slm/data/rl/processed/qwen35-xml/decontaminated/rl_mix_v12_ifmt_0903}"
 
 # --- Output locations ------------------------------------------------------
-OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO}/output/tool_team_converted}"   # `convert` writes here, `scan` reads here
+OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO}/output/prepared/tools_team}"   # `convert` writes here, `scan` reads here
 PII_RUN_DIR="${PII_RUN_DIR:-${REPO}/output/tool_team_pii_run}"     # `scan` and `extract` write here
 
 # --- SLURM resources ---------------------------------------------------------

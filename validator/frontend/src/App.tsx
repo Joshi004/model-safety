@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { ApiError, getHealth, getJobsSettings, getSources, inspectPath, runPreview } from './api'
 import { findEntry } from './catalog'
+import ChainsView from './components/ChainsView'
 import CommandBox from './components/CommandBox'
 import DatasetHeader from './components/DatasetHeader'
 import FormatPicker from './components/FormatPicker'
@@ -12,12 +13,15 @@ import OutputPreview, { describeRowStatus } from './components/OutputPreview'
 import RecordView from './components/RecordView'
 import ReviewView from './components/ReviewView'
 import RowNavigator from './components/RowNavigator'
+import RowsView from './components/RowsView'
+import RemovedView from './components/RemovedView'
 import RunView from './components/RunView'
 import Sidebar from './components/Sidebar'
 import StartPanel from './components/StartPanel'
 import { applySuggestion, emptyMapping, toRequestFlags } from './mapping'
 import type { MappingState } from './mapping'
 import { getOrigin } from './origin'
+import { parseRowHash, rowHash, sameTarget } from './rows'
 import { EMPTY_RESOURCES, hasTypedAnything, initialResources } from './resources'
 import type { ResourceInputs } from './resources'
 import { loadJSON, saveJSON } from './storage'
@@ -28,6 +32,8 @@ import type {
   Origin,
   PlannedRun,
   PreviewResponse,
+  RemovedFilters,
+  RowTarget,
   TeamCatalog,
 } from './types'
 
@@ -53,7 +59,7 @@ interface InspectStart {
 
 export default function App() {
   const [backendOk, setBackendOk] = useState<boolean | null>(null)
-  const [view, setView] = useState<'inspect' | 'review' | 'run' | 'jobs'>('inspect')
+  const [view, setView] = useState<'inspect' | 'review' | 'run' | 'jobs' | 'chains' | 'rows' | 'removed'>('inspect')
   const [sourceTeams, setSourceTeams] = useState<TeamCatalog[]>([])
 
   // Datasets chosen in the sidebar for a batch, as paths in the order added.
@@ -69,6 +75,12 @@ export default function App() {
   // been asked to open (from "Open results"). A new object each time, so
   // asking for the same folder again opens it again.
   const [openBatchId, setOpenBatchId] = useState<string | null>(null)
+  // The Chains view's open chain (a chain folder), kept here so it survives a trip to another view.
+  const [openChainDir, setOpenChainDir] = useState<string | null>(null)
+  // The Rows view's row. It is also the link to it (the URL's #row?... part), so a row can be shared.
+  const [openRow, setOpenRow] = useState<RowTarget | null>(null)
+  // Where the Removed view starts (a chain, a dataset and a step), when it was opened from a link.
+  const [openRemoved, setOpenRemoved] = useState<RemovedFilters | null>(null)
   const [requestedRun, setRequestedRun] = useState<{ runDir: string } | null>(null)
 
   // What the Start panel needs from SLURM, and the resources typed there.
@@ -140,6 +152,31 @@ export default function App() {
     // Runs once; loadJobsSettings only uses setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // A link to a row (#row?...), on load and whenever the address changes (the back button too).
+  useEffect(() => {
+    function showRowFromAddress() {
+      const target = parseRowHash(window.location.hash)
+      if (target === null) return
+      setOpenRow((current) => (sameTarget(current, target) ? current : target))
+      setView('rows')
+    }
+    showRowFromAddress()
+    window.addEventListener('hashchange', showRowFromAddress)
+    return () => window.removeEventListener('hashchange', showRowFromAddress)
+  }, [])
+
+  function handleOpenRow(target: RowTarget) {
+    setOpenRow(target)
+    setView('rows')
+    // The address names the row; the listener above ignores the change this makes.
+    window.location.hash = rowHash(target)
+  }
+
+  function handleOpenRemoved(filters: RemovedFilters) {
+    setOpenRemoved(filters)
+    setView('removed')
+  }
 
   function loadJobsSettings() {
     setJobsSettingsError(null)
@@ -341,9 +378,10 @@ export default function App() {
         <h1>Input validator</h1>
         <p className="muted">
           Shows what modelsafety/readers/prepare_rows.py would do to a path's data. Looking and previewing are
-          read-only. Only "Start conversion" and the batch review's "Start" (each submits SLURM jobs), cancelling
-          a job in the Jobs view, and deleting run folders inside the runs root (from "Start conversion" or the
-          batch review) change anything; your original data is never written.
+          read-only. Only "Start conversion" and the batch review's "Start" (each submits SLURM jobs), starting a
+          chain's steps (from a chain's page; a step that uses GPUs asks again first) and making a new chain,
+          cancelling a job in the Jobs view, and deleting run folders inside the runs root (from "Start
+          conversion" or the batch review) change anything; your original data is never written.
         </p>
         <div className="row-tabs view-switch">
           <button
@@ -367,7 +405,28 @@ export default function App() {
             className={view === 'run' ? 'row-tab selected' : 'row-tab'}
             onClick={() => setView('run')}
           >
-            Prepared run
+            Run
+          </button>
+          <button
+            type="button"
+            className={view === 'chains' ? 'row-tab selected' : 'row-tab'}
+            onClick={() => setView('chains')}
+          >
+            Chains
+          </button>
+          <button
+            type="button"
+            className={view === 'rows' ? 'row-tab selected' : 'row-tab'}
+            onClick={() => setView('rows')}
+          >
+            Rows
+          </button>
+          <button
+            type="button"
+            className={view === 'removed' ? 'row-tab selected' : 'row-tab'}
+            onClick={() => setView('removed')}
+          >
+            Removed
           </button>
           <button
             type="button"
@@ -570,9 +629,34 @@ export default function App() {
         <RunView onOpenInPreview={handleOpenInPreview} requestedRun={requestedRun} />
       </div>
 
+      {/* Only mounted while shown, so it isn't reading chain files in the background. */}
+      {view === 'chains' && (
+        <ChainsView
+          chainDir={openChainDir}
+          onSelectChain={setOpenChainDir}
+          onOpenRun={handleOpenResults}
+          onOpenRemoved={handleOpenRemoved}
+          onOpenJobs={() => setView('jobs')}
+        />
+      )}
+
+      {view === 'rows' && <RowsView target={openRow} onOpenRow={handleOpenRow} />}
+
+      {view === 'removed' && (
+        <RemovedView initial={openRemoved} onOpenRow={handleOpenRow} onOpenRun={handleOpenResults} />
+      )}
+
       {/* Only mounted while shown, so it isn't asking SLURM for news in the background. */}
       {view === 'jobs' && (
-        <JobsView batchId={openBatchId} onSelectBatch={setOpenBatchId} onOpenResults={handleOpenResults} />
+        <JobsView
+          batchId={openBatchId}
+          onSelectBatch={setOpenBatchId}
+          onOpenResults={handleOpenResults}
+          onOpenChain={(chainDir) => {
+            setOpenChainDir(chainDir)
+            setView('chains')
+          }}
+        />
       )}
     </div>
   )

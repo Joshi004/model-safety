@@ -31,15 +31,27 @@ from modelsafety.contract.fingerprints import (  # noqa: E402
     line_fingerprint,
     row_fingerprint,
 )
+from modelsafety.contract.chain import (  # noqa: E402
+    LAYOUT as CHAIN_LAYOUT,
+    ChainError,
+    chain_folders,
+    create_planned_chain,
+    list_chains,
+    read_chain,
+)
 from modelsafety.contract.origin import ORIGIN_KEY, json_safe  # noqa: E402
 from modelsafety.contract.run_finder import (  # noqa: E402
+    FILTER_ROWS_TOOL,
     JOBS_FOLDER,
     MAX_RUN_FOLDERS,
     PREPARE_ROWS_TOOL,
     STALE_AFTER_SECONDS,
+    RunFinderError,
     list_runs,
     may_have_stopped,
+    read_json_or_none,
     read_progress,
+    select_scan_files,
 )
 from modelsafety.contract.run_identity import (  # noqa: E402
     IDENTITY_FILENAME,
@@ -48,8 +60,22 @@ from modelsafety.contract.run_identity import (  # noqa: E402
 )
 from modelsafety.contract.textract import extract_record_text  # noqa: E402
 
+# The values the filter's rule flags accept, so the UI offers exactly those.
+from modelsafety.data_screening.pii.regex.pii_output import PII_CATEGORIES  # noqa: E402
+from modelsafety.filter.rules import GUARD_ERROR_CHOICES, TOXICITY_REMOVABLE_VERDICTS  # noqa: E402
+
+# The text of one message as the NER scan cut it: its spans' start and end are positions in it.
+from modelsafety.data_screening.pii.model.common import content_text  # noqa: E402
+
 # The lookup behind "Show original", and the helpers the preview shares with it.
 # It lives in modelsafety/trace/original.py so the trace tool uses the same code.
+from modelsafety.trace.find_prepared import find_prepared_row, run_reads_path  # noqa: E402
+from modelsafety.trace.row_status_read import (  # noqa: E402
+    RowStatusReadError,
+    read_removed_page,
+    read_row,
+    read_summary as read_row_status_summary,
+)
 from modelsafety.trace.original import (  # noqa: E402
     HF_MARKER_FILES,
     PARQUET_BATCH_ROWS,
@@ -90,11 +116,31 @@ __all__ = [
     "JOBS_FOLDER",
     "MAX_RUN_FOLDERS",
     "PREPARE_ROWS_TOOL",
+    "FILTER_ROWS_TOOL",
     "STALE_AFTER_SECONDS",
+    "RunFinderError",
+    "select_scan_files",
+    "PII_CATEGORIES",
+    "GUARD_ERROR_CHOICES",
+    "TOXICITY_REMOVABLE_VERDICTS",
+    "CHAIN_LAYOUT",
+    "ChainError",
+    "chain_folders",
+    "create_planned_chain",
+    "find_prepared_row",
+    "list_chains",
+    "read_chain",
+    "RowStatusReadError",
+    "read_removed_page",
+    "read_row",
+    "read_row_status_summary",
     "list_runs",
     "may_have_stopped",
+    "read_json_or_none",
     "read_progress",
+    "run_reads_path",
     "extract_record_text",
+    "content_text",
     "json_safe",
     "line_fingerprint",
     "row_fingerprint",

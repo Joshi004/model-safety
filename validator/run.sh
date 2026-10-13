@@ -10,14 +10,32 @@
 # can't read one of the source picker's preset folders, it just shows up
 # disabled in the picker; nothing fails.
 #
-# Looking at data is read-only. Only the Start panel's "Start" and "Delete
-# and start fresh", the batch review's "Start" and "Delete N folders and
-# start fresh", and the Jobs view's Cancel, act on anything, and they act as
-# you: Start submits CPU-only SLURM jobs (one per dataset; sbatch, squeue,
-# sacct, sinfo and scancel must be on your PATH), Cancel runs scancel, and
-# Delete removes run folders -- only inside the runs root, which is
-# $VALIDATOR_RUNS_ROOT or <repo>/output/prepared. Job logs and batch records
-# go under <runs root>/_jobs.
+# Looking at data is read-only. Only these act on anything, and they act as
+# you (sbatch, squeue, sacct, sinfo and scancel must be on your PATH):
+#
+#   Conversions: the Start panel's "Start" and "Delete and start fresh", the
+#   batch review's "Start" and "Delete N folders and start fresh", and the Jobs
+#   view's Cancel. Start submits CPU-only SLURM jobs (one per dataset), Cancel
+#   runs scancel, and Delete removes run folders -- only inside the runs root,
+#   which is $VALIDATOR_RUNS_ROOT or <repo>/output/prepared. Job logs and batch
+#   records go under <runs root>/_jobs.
+#
+#   Chains: the Chains view's "New chain" makes one new folder under the chains
+#   root ($VALIDATOR_CHAINS_ROOT, or <repo>/output) with its chain.json, and a
+#   chain page's "Run next step" starts one step of it: the scans through the
+#   wrappers in scripts/ (CPU, and GPU after an extra confirmation), the filter,
+#   the trace and the row status through sbatch, and a coverage report as a short
+#   command run here. A step only writes inside its chain's folder, never into
+#   a place that already has something in it, and never deletes anything. Its
+#   record and logs go under <chain>/_jobs and <chain>/_logs; the Jobs view's
+#   Cancel on a chain step runs scancel on that step's own jobs.
+#
+# The runs list reads more than the runs root: also the Prepared folder and
+# each filter step's output folder of every chain recorded in
+# <repo>/output/*/chain.json ($VALIDATOR_CHAINS_ROOT replaces <repo>/output).
+# Set $VALIDATOR_READ_ROOTS to a list of folders, separated like PATH, to read
+# exactly those instead. Reading never writes; only the runs root can be
+# deleted from or started into.
 #
 #   ./validator/run.sh
 #

@@ -1109,6 +1109,10 @@ button.secondary {
   margin: 0;
 }
 
+.runs-root {
+  margin-top: 12px;
+}
+
 .runs-list-header button.secondary {
   margin-bottom: 0;
 }
@@ -1295,4 +1299,400 @@ button.secondary {
 
 .review-expanded-columns h4 {
   margin: 0 0 6px;
+}
+
+/* ---- Chains: the funnel, the stage graph, results and the datasets table ---- */
+
+.chain-funnel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.funnel-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.funnel-arrow {
+  color: var(--text);
+  opacity: 0.6;
+  font-size: 1.4em;
+}
+
+.funnel-box {
+  min-width: 150px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  padding: 10px 14px;
+}
+
+.funnel-count {
+  color: var(--text-h);
+  font-size: 1.5em;
+  font-weight: 600;
+  font-family: var(--mono);
+}
+
+.funnel-line {
+  max-width: 260px;
+  word-break: break-word;
+}
+
+.stage-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.stage-column h4 {
+  margin-bottom: 6px;
+}
+
+.stage-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  margin-bottom: 8px;
+  text-align: left;
+  color: var(--text);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.stage-box:hover {
+  border-color: var(--accent);
+}
+
+.stage-box.selected {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.stage-box-label {
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+.stage-box-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.state-chip {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 9px;
+  font-size: 0.78em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.state-finished {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: transparent;
+}
+
+.state-unfinished {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: transparent;
+}
+
+.state-not_started {
+  opacity: 0.7;
+}
+
+.state-failed {
+  color: var(--error);
+  background: var(--error-bg);
+  border-color: transparent;
+}
+
+.chain-extras {
+  margin-bottom: 16px;
+}
+
+.step-results {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.step-results h4 {
+  margin: 14px 0 6px;
+}
+
+.step-results details {
+  margin: 10px 0;
+}
+
+.step-results summary {
+  cursor: pointer;
+}
+
+.key-figures th {
+  font-weight: normal;
+}
+
+.chain-datasets {
+  margin-top: 8px;
+}
+
+.skipped-table tbody tr.no-click {
+  cursor: default;
+}
+
+.job-actions-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  white-space: nowrap;
+}
+
+.skipped-table th button.link-button {
+  font-weight: 600;
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ---- Rows: the finder, the timeline, marked text and findings ---- */
+
+.row-finder {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  padding: 14px 16px;
+  margin-bottom: 20px;
+}
+
+.row-finder .row-tabs {
+  margin-bottom: 12px;
+}
+
+.row-finder select,
+.row-finder input[type='text'],
+.row-finder input[type='number'] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.start-field.wide-field {
+  grid-column: 1 / -1;
+}
+
+.row-page h2 {
+  margin: 0;
+  font-size: 1.15em;
+  word-break: break-all;
+}
+
+.copy-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.copy-link button.secondary {
+  margin-bottom: 0;
+}
+
+.copy-link input {
+  width: 320px;
+  font-family: var(--mono);
+  font-size: 0.8em;
+}
+
+.row-timeline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.timeline-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline-box {
+  min-width: 120px;
+  max-width: 260px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  padding: 8px 12px;
+  word-break: break-word;
+}
+
+.timeline-line {
+  color: var(--text-h);
+  font-size: 0.9em;
+}
+
+.timeline-ok {
+  border-color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.timeline-removed {
+  border-color: var(--error);
+  background: var(--error-bg);
+}
+
+.timeline-muted {
+  opacity: 0.65;
+}
+
+.row-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 20px;
+}
+
+.row-column {
+  min-width: 0;
+}
+
+.segment-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  margin: 0;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.hl {
+  border-radius: 3px;
+  padding: 0 1px;
+  color: inherit;
+}
+
+.hl-ner {
+  background: rgba(122, 59, 220, 0.2);
+  border-bottom: 2px solid var(--accent);
+}
+
+.hl-regex_pii {
+  background: rgba(214, 137, 16, 0.25);
+  border-bottom: 2px solid #d68910;
+}
+
+.hl.hl-caused {
+  background: rgba(179, 38, 30, 0.28);
+  border-bottom-color: var(--error);
+  font-weight: 600;
+}
+
+.row-step {
+  margin-bottom: 14px;
+}
+
+.row-step h4 {
+  margin: 10px 0 4px;
+}
+
+.scanner-findings {
+  margin: 4px 0;
+  font-size: 0.9em;
+}
+
+.finding-list {
+  margin: 4px 0 4px 18px;
+  padding: 0;
+}
+
+.finding-caused {
+  color: var(--error);
+}
+
+.duplicate-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+
+.duplicate-sides {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.row-original {
+  margin-bottom: 24px;
+}
+
+.state-queued {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: transparent;
+}
+
+.state-running {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: var(--ok);
+}
+
+/* ---- Starting a step of a chain, and making a chain ---- */
+
+.start-step {
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  padding: 14px 16px;
+  margin: 0 0 16px;
+}
+
+.start-step h3 {
+  margin: 0 0 8px;
+}
+
+.start-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.start-gpu-confirm {
+  display: flex;
+  margin-top: 8px;
+  font-weight: 600;
+}
+
+.start-cost {
+  margin: 8px 0;
+}
+
+.start-plan details {
+  margin-top: 4px;
+}
+
+.run-next {
+  margin: 0 0 16px;
+}
+
+.new-chain {
+  margin-bottom: 16px;
 }

@@ -1,21 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ApiError, getRunProgress, getSkippedPage, openRun } from '../api'
-import { formatBytes } from '../format'
+import { formatBytes, formatSetting } from '../format'
 import { basename, describePosition, describeSkipReason, fileLabels } from '../origin'
-import type { Origin, RunProgressResponse, RunResponse, SkippedItem, SkippedPageResponse } from '../types'
+import type { OpenedRun, Origin, RunProgressResponse, RunResponse, SkippedItem, SkippedPageResponse } from '../types'
+import FilterRunView from './FilterRunView'
 import PreparedRows from './PreparedRows'
 import RunFilesTable from './RunFilesTable'
 import RunProgressPanel from './RunProgressPanel'
 import RunsList from './RunsList'
 import SkippedEntryDetails from './SkippedEntryDetails'
 
-// The "Prepared run" view: pick a run from the runs root (or type the path
-// of its output folder). A run that hasn't finished shows its progress; a
-// finished one shows its totals, its original files, warnings, settings and
+// The "Run" view: pick a run from the runs list (or type the path of its
+// output folder). A run that hasn't finished shows its progress; a finished
+// Prepared run shows its totals, its original files, warnings, settings and
 // output, then lets you page through the rows it skipped or the Prepared
-// rows it wrote. Read-only -- it only reads the run's own progress.json,
-// summary.json, run_identity.json, skipped_rows.ndjson and written files
-// (through the backend).
+// rows it wrote. A filter run shows what it removed and why, and the rows it
+// kept (FilterRunView). Read-only -- it only reads the run's own
+// progress.json, summary.json, run_identity.json, skipped_rows.ndjson and
+// written files (through the backend).
 //
 // Safety: every value shown here comes from files on disk and renders as
 // plain React text, never as markup.
@@ -30,16 +32,6 @@ interface PageOutcome {
   key: string
   data: SkippedPageResponse | null
   error: string | null
-}
-
-function formatSetting(value: unknown): string {
-  if (value === null || value === undefined) return '(not set)'
-  if (Array.isArray(value)) {
-    if (value.length === 0) return '(none)'
-    return value.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).join(', ')
-  }
-  if (typeof value === 'string') return value === '' ? '(empty)' : value
-  return JSON.stringify(value)
 }
 
 function RunSettings({ run }: { run: RunResponse }) {
@@ -141,12 +133,19 @@ export default function RunView({
   requestedRun: { runDir: string } | null
 }) {
   const [pathInput, setPathInput] = useState('')
-  const [run, setRun] = useState<RunResponse | null>(null)
+  const [openedRun, setOpenedRun] = useState<OpenedRun | null>(null)
   const [runError, setRunError] = useState<string | null>(null)
   const [runLoading, setRunLoading] = useState(false)
-  // Set instead of `run` while the opened folder holds a run that hasn't
+  // Set instead of `openedRun` while the opened folder holds a run that hasn't
   // finished (or has failed).
   const [watching, setWatching] = useState<RunProgressResponse | null>(null)
+  // The opened run, by kind: the skipped rows below are a Prepared run's, and a
+  // filter run has none.
+  const run = openedRun?.kind === 'prepared' ? openedRun : null
+  const filterRun = openedRun?.kind === 'filter' ? openedRun : null
+  // Where the opened run starts. The runs list above it can be hundreds of rows
+  // long, so a run opened from it is scrolled into view.
+  const detailsTop = useRef<HTMLDivElement>(null)
 
   const [reason, setReason] = useState<string | null>(null)
   const [file, setFile] = useState<string | null>(null)
@@ -170,7 +169,7 @@ export default function RunView({
       // it, which is from an earlier run in the same folder.
       const progress = await getRunProgress(path)
       if (progress.progress !== null && progress.progress.phase !== 'done') {
-        setRun(null)
+        setOpenedRun(null)
         setPageOutcome(null)
         setSelected(null)
         setWatching(progress)
@@ -178,7 +177,7 @@ export default function RunView({
       }
       const opened = await openRun(path)
       setWatching(null)
-      setRun(opened)
+      setOpenedRun(opened)
       setReason(null)
       setFile(null)
       setPage(1)
@@ -187,7 +186,7 @@ export default function RunView({
       setTab('skipped')
     } catch (caught) {
       setWatching(null)
-      setRun(null)
+      setOpenedRun(null)
       setPageOutcome(null)
       setSelected(null)
       setRunError(caught instanceof ApiError ? caught.message : String(caught))
@@ -210,6 +209,10 @@ export default function RunView({
     // Only a new request opens a folder; handleOpen is a new function on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestedRun])
+
+  useEffect(() => {
+    if (openedRun !== null) detailsTop.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [openedRun])
 
   useEffect(() => {
     if (!run || pageKey === null) return
@@ -265,7 +268,7 @@ export default function RunView({
         }}
       >
         <label htmlFor="run-path-input">
-          Prepared output folder (the one with summary.json, or progress.json while it runs)
+          Run output folder (the one with summary.json, or progress.json while it runs)
         </label>
         <div className="path-form-row">
           <input
@@ -282,11 +285,13 @@ export default function RunView({
           </button>
         </div>
         <p className="muted small">
-          The output folder of a <code>prepare_rows.py</code> run. Read-only: this only reads its{' '}
-          <code>progress.json</code>, <code>summary.json</code>, <code>run_identity.json</code>,{' '}
-          <code>skipped_rows.ndjson</code> and the Prepared files it wrote.
+          The output folder of a <code>prepare_rows.py</code> or <code>filter_rows.py</code> run. Read-only: this
+          only reads its <code>progress.json</code>, <code>summary.json</code>, <code>run_identity.json</code>,{' '}
+          <code>skipped_rows.ndjson</code> and the files it wrote.
         </p>
       </form>
+
+      <div ref={detailsTop} />
 
       {runError && <p className="error">{runError}</p>}
 
@@ -297,6 +302,8 @@ export default function RunView({
           onDone={(runDir) => void handleOpen(runDir)}
         />
       )}
+
+      {filterRun && <FilterRunView key={filterRun.run_dir} run={filterRun} onOpenRun={handleOpenFromList} />}
 
       {run && skippedFile && (
         <>

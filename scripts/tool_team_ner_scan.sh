@@ -47,7 +47,7 @@ source "${SCRIPT_DIR}/lib/tool_team_common.sh"
 # (confirmed with `sinfo`), so changing this is safe -- it's a scheduling
 # choice, not a resource-compatibility one.
 # ---------------------------------------------------------------------------
-PRIVACY_FILTER_INPUT_ROOT="${PRIVACY_FILTER_INPUT_ROOT:-${REPO}/output/tool_team_converted}"
+PRIVACY_FILTER_INPUT_ROOT="${PRIVACY_FILTER_INPUT_ROOT:-${REPO}/output/prepared/tools_team}"
 # Empty on purpose -- the real default depends on the action, and is filled in
 # by apply_action_defaults() once that's known.
 PRIVACY_FILTER_RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT:-}"

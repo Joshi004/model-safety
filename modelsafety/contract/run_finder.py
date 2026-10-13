@@ -79,13 +79,18 @@ class RunType:
     summary_tool: str
     identity_tool: str
     progress_tool: str
+    # What the runs list calls this kind of run.
+    kind: str
 
+
+RUN_KIND_PREPARED = "prepared"
+RUN_KIND_FILTER = "filter"
 
 # Adding a kind of run means adding one entry here. A filter run writes no
 # `progress.json`, so its `progress_tool` is only the name a stray one would need.
 RUN_TYPES = (
-    RunType(PREPARE_ROWS_TOOL, PREPARE_ROWS_IDENTITY_TOOL, PROGRESS_TOOL),
-    RunType(FILTER_ROWS_TOOL, FILTER_ROWS_IDENTITY_TOOL, FILTER_ROWS_TOOL),
+    RunType(PREPARE_ROWS_TOOL, PREPARE_ROWS_IDENTITY_TOOL, PROGRESS_TOOL, RUN_KIND_PREPARED),
+    RunType(FILTER_ROWS_TOOL, FILTER_ROWS_IDENTITY_TOOL, FILTER_ROWS_TOOL, RUN_KIND_FILTER),
 )
 
 
@@ -207,11 +212,14 @@ def run_entry(root: Path, folder: Path, file_names: list[str]) -> dict[str, Any]
     return {
         "path": folder.relative_to(root).as_posix(),
         "run_dir": str(folder),
+        "kind": run_type.kind,
         "created_at": created_at if isinstance(created_at, str) else None,
         "status": status,
         "rows_read": _count(summary, "source", "rows_read"),
         "written": _count(summary, "rows", "written"),
+        # A Prepared run skips rows; a filter run removes them. Each is None for the other kind.
         "skipped": _count(summary, "rows", "skipped"),
+        "removed": _count(summary, "rows", "removed"),
     }
 
 

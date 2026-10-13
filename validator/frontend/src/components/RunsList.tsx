@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { ApiError, listRuns } from '../api'
 import { formatTimestamp } from '../format'
-import type { RunStatus, RunsListResponse } from '../types'
+import type { RunKind, RunStatus, RunsListResponse } from '../types'
 
-// The runs under the runs root (GET /api/runs): click one to open it.
+// The runs under every folder the validator reads (GET /api/runs): the runs
+// root, and the folders of each chain. Click one to open it.
 //
 // Safety: every value shown here comes from files on disk and renders as
 // plain React text, never as markup.
@@ -24,6 +25,11 @@ const STATUS_CLASSES: Record<RunStatus, string | undefined> = {
   in_progress: undefined,
   may_have_stopped: 'run-status-failed',
   failed: 'run-status-failed',
+}
+
+const KIND_LABELS: Record<RunKind, string> = {
+  prepared: 'Prepared',
+  filter: 'Filter',
 }
 
 function formatCount(value: number | null): string {
@@ -73,34 +79,38 @@ export default function RunsList({ onOpen }: { onOpen: (runDir: string) => void 
 
       {error && <p className="error">{error}</p>}
 
-      {data && (
-        <>
+      {data && data.roots.length === 0 && <p className="muted">No folders to read runs from.</p>}
+
+      {data?.roots.map((root) => (
+        <div key={root.root} className="runs-root">
           <p className="muted small">
-            Runs root: <span className="mono location-text">{data.root}</span>
+            <strong>{root.label}:</strong> <span className="mono location-text">{root.root}</span>
           </p>
-          {data.runs.length === 0 && (
-            <p className="muted">No runs yet.{!data.exists && " The runs root folder doesn't exist yet."}</p>
+          {root.runs.length === 0 && (
+            <p className="muted">No runs yet.{!root.exists && " This folder doesn't exist yet."}</p>
           )}
-          {data.truncated && (
+          {root.truncated && (
             <p className="banner banner-warning small">
-              The list was cut short: only the first folders under the runs root were looked at.
+              The list was cut short: only the first folders under this folder were looked at.
             </p>
           )}
-          {data.runs.length > 0 && (
+          {root.runs.length > 0 && (
             <div className="skipped-table-wrap">
               <table className="skipped-table">
                 <thead>
                   <tr>
                     <th>Run</th>
+                    <th>Kind</th>
                     <th>Created</th>
                     <th>Status</th>
                     <th className="number">Read</th>
                     <th className="number">Written</th>
                     <th className="number">Skipped</th>
+                    <th className="number">Removed</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.runs.map((run) => (
+                  {root.runs.map((run) => (
                     <tr key={run.run_dir} onClick={() => onOpen(run.run_dir)}>
                       <td title={run.run_dir}>
                         {/* A click on the button reaches the row's own onClick. */}
@@ -108,6 +118,7 @@ export default function RunsList({ onOpen }: { onOpen: (runDir: string) => void 
                           {run.path}
                         </button>
                       </td>
+                      <td>{KIND_LABELS[run.kind]}</td>
                       <td title={run.created_at ?? undefined}>
                         {run.created_at ? formatTimestamp(run.created_at) : '—'}
                       </td>
@@ -115,14 +126,15 @@ export default function RunsList({ onOpen }: { onOpen: (runDir: string) => void 
                       <td className="number">{formatCount(run.rows_read)}</td>
                       <td className="number">{formatCount(run.written)}</td>
                       <td className="number">{formatCount(run.skipped)}</td>
+                      <td className="number">{formatCount(run.removed)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
-        </>
-      )}
+        </div>
+      ))}
     </div>
   )
 }

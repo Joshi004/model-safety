@@ -234,11 +234,51 @@ export interface RunIdentity {
   created_at?: string
 }
 
+// POST /api/run for a Prepared run.
 export interface RunResponse {
+  kind: 'prepared'
   run_dir: string
   summary: RunSummary
   run_identity: RunIdentity | null
 }
+
+// ---- Filter runs (modelsafety/filter/filter_rows.py) ----
+
+// The parts of a filter_rows.py summary.json the filter run view shows.
+export interface FilterRunSummary {
+  created_at: string
+  // The run this one filtered: a Prepared run, or the filter run before it.
+  parent: { run: string; run_dir: string; tool: string; scan_root: string; files: number }
+  // The scanner results the filter read, by scanner (regex_pii, ner, toxicity, dedup).
+  scanner_results: Record<string, { results_dir: string; tool: string; mode: string | null }>
+  // What counts as a reason to remove a row.
+  rules: Record<string, unknown>
+  source: { rows_read: number }
+  rows: { written: number; removed: number }
+  // Rows removed, by reason (duplicate, ner, regex_pii, toxicity_unsafe, ...).
+  removed_by_reason: Record<string, number>
+  output: {
+    files: number
+    rows_on_disk: number
+    bytes_on_disk: number
+    files_written?: WrittenFile[]
+  }
+  checks: { passed: boolean; failures: string[]; warnings: string[] }
+}
+
+// POST /api/run for a filter run. `prepared_run_dir` is the Prepared run at the
+// end of its parent runs, or null (with `prepared_run_problem`) when that can't
+// be found.
+export interface FilterRunResponse {
+  kind: 'filter'
+  run_dir: string
+  summary: FilterRunSummary
+  run_identity: RunIdentity | null
+  prepared_run_dir: string | null
+  prepared_run_problem: string | null
+}
+
+export type OpenedRun = RunResponse | FilterRunResponse
 
 // progress.json (modelsafety/readers/progress_file.py), written by
 // prepare_rows.py while it runs. The first eight phases are in the order a
@@ -283,7 +323,10 @@ export interface RunProgressResponse {
   may_have_stopped: boolean
 }
 
-// GET /api/runs: every prepare_rows.py run folder under the runs root.
+// GET /api/runs: every prepare_rows.py and filter_rows.py run folder under each
+// folder the validator reads.
+export type RunKind = 'prepared' | 'filter'
+
 export type RunStatus =
   | 'checks_passed'
   | 'checks_failed'
@@ -293,23 +336,33 @@ export type RunStatus =
   | 'failed'
 
 export interface RunListItem {
-  // Relative to the runs root.
+  // Relative to the root it was found under.
   path: string
   run_dir: string
+  kind: RunKind
   created_at: string | null
   status: RunStatus
   // null when the run has no summary.json yet.
   rows_read: number | null
   written: number | null
+  // A Prepared run skips rows and a filter run removes them: each is null for the other kind.
   skipped: number | null
+  removed: number | null
 }
 
-export interface RunsListResponse {
+// One folder the validator reads, and the runs found under it.
+export interface RunRoot {
+  // What the UI calls it: "Runs root", or a chain's name and step.
+  label: string
   root: string
   exists: boolean
   // True when the walk stopped early, so the list is incomplete.
   truncated: boolean
   runs: RunListItem[]
+}
+
+export interface RunsListResponse {
+  roots: RunRoot[]
 }
 
 // One line of skipped_rows.ndjson. `row` is the original row as the reader
@@ -556,4 +609,791 @@ export interface BatchesResponse {
 export interface CancelResponse {
   cancelled: string[]
   not_active: string[]
+}
+
+// ---- Chains (GET /api/chains, POST /api/chain, POST /api/chain/step) ----
+
+// Read from the files a stage leaves behind: nothing there, started but not
+// marked finished (queued, running or stopped; the files can't say which), or
+// finished. Where a step record says which, `unfinished` and `not_started` become
+// queued, running or failed (SLURM's word for the stage's jobs).
+export type StageState = 'not_started' | 'unfinished' | 'queued' | 'running' | 'failed' | 'finished'
+
+export type StageKind = 'scan' | 'coverage' | 'filter' | 'trace' | 'row_status'
+
+export interface StageProgress {
+  done: number
+  total: number
+  // What done and total count: stages, pieces, shards or runs.
+  unit: string
+}
+
+export interface ChainStage {
+  key: string
+  label: string
+  kind: StageKind
+  // The filter step the stage belongs to; null for the trace and the row status.
+  step: number | null
+  needs: string[]
+  path: string | null
+  state: StageState
+  progress: StageProgress | null
+  // A coverage report's, trace's or row status's verdict (pass or fail).
+  verdict: string | null
+  created_at?: string | null
+  // Filter stages only: runs whose own checks failed.
+  runs_failed?: string[]
+  runs_failed_count?: number
+  // Why the stage can't be started yet (empty when everything it needs is finished).
+  blocked_by: string[]
+  // Not started, everything it needs is finished, and the chain was made by the validator.
+  ready: boolean
+  // The newest step record for the stage, when it has one.
+  job?: { record_id: string; outcome: StepOutcome; job_ids: string[] }
+}
+
+export interface ChainStepInfo {
+  number: number
+  output_root: string
+  scan_root: string
+  // null for a step that hasn't produced a run yet.
+  rules: Record<string, unknown> | null
+  scanners: Record<string, { results_dir: string; tool: string; mode: string | null }>
+  coverage: { file: string; verdict: string | null; created_at: string | null } | null
+}
+
+export interface FunnelStep {
+  step: number
+  state: StageState
+  kept: number | null
+  removed: number | null
+  removed_by_reason: Record<string, number> | null
+}
+
+export interface ChainFunnel {
+  prepared: number
+  prepared_runs: number
+  steps: FunnelStep[]
+  clean: number | null
+}
+
+export interface DatasetStep {
+  step: number
+  state: StageState
+  rows_in: number | null
+  kept: number | null
+  removed: number | null
+  // From the row status, so null until it is built.
+  removed_by_reason: Record<string, number> | null
+}
+
+export interface ChainDataset {
+  run: string
+  run_dir: string
+  prepared: number | null
+  prepared_state: StageState
+  steps: DatasetStep[]
+}
+
+export interface ChainTrace {
+  dir: string
+  finished: boolean
+  verdict: string | null
+  totals: { findings: number | null; by_status: Record<string, number> | null } | null
+}
+
+export interface ChainRowStatusTotals {
+  prepared_rows: number | null
+  kept: number | null
+  removed: number | null
+  removed_by_step: Record<string, number> | null
+  removed_by_step_and_reason: Record<string, Record<string, number>> | null
+  rows_without_origin: number | null
+}
+
+export interface ChainRowStatus {
+  dir: string
+  finished: boolean
+  verdict: string | null
+  report_version: number | null
+  // Whether it has the index of removed rows the Removed page pages through.
+  has_removed_index: boolean
+  totals: ChainRowStatusTotals | null
+}
+
+export interface ChainResponse {
+  chain_dir: string
+  name: string
+  version: number
+  created_at: string | null
+  // True for a chain the validator made, which can start its own steps.
+  startable: boolean
+  prepared_root: string
+  last_filter_root: string
+  problems: string[]
+  steps: ChainStepInfo[]
+  stages: ChainStage[]
+  funnel: ChainFunnel
+  datasets: ChainDataset[]
+  trace: ChainTrace | null
+  row_status: ChainRowStatus | null
+}
+
+export interface ChainListItem {
+  chain_dir: string
+  // A record that can't be used has only `problem`.
+  problem?: string
+  version?: number
+  name?: string
+  created_at?: string | null
+  prepared_root?: string
+  last_filter_root?: string
+  startable?: boolean
+  problems?: string[]
+  funnel?: ChainFunnel
+  stages?: Pick<ChainStage, 'key' | 'label' | 'state' | 'progress' | 'verdict'>[]
+  trace?: { finished: boolean; verdict: string | null } | null
+  row_status?: { finished: boolean; verdict: string | null } | null
+}
+
+export interface ChainsListResponse {
+  root: string
+  exists: boolean
+  chains: ChainListItem[]
+}
+
+export interface ChainStepRequest {
+  chain_dir: string
+  stage: string
+}
+
+// What a coverage report says about one scanner.
+export interface CoverageSection {
+  file: string
+  status: string | null
+  reason?: string | null
+  parts: { name: string; status: string; reason: string | null; files_affected: number }[]
+  files: {
+    expected: number | null
+    read: number | null
+    missing: ShortList<string>
+    extra: ShortList<string>
+    different: ShortList<string>
+    not_finished: ShortList<string>
+  }
+  rows: { read: number | null; with_text: number | null; without_text: number | null; findings: number | null } | null
+  details: Record<string, unknown> | null
+  problems: ShortList<{ scanner: string | null; run: string | null; path: string | null; message: string }>
+}
+
+// The first items of a long list, and how many more there were.
+export interface ShortList<T> {
+  items: T[]
+  more: number
+}
+
+export type Counts = Record<string, number>
+
+export interface DedupDetails {
+  mode: string | null
+  input_mode: string | null
+  files: number | null
+  rows_total: number | null
+  rows_hashed: number | null
+  rows_without_text: number | null
+  candidate_pairs: number | null
+  duplicate_rows: number | null
+  configuration: Record<string, unknown> | null
+}
+
+export interface RegexPiiDetails {
+  stages_finished: number
+  stages: number
+  // Rows the filter removed for each category (null until the row status is built).
+  removed_by_category: Counts | null
+}
+
+export interface NerDetails {
+  created_at?: string | null
+  expected_units: number | null
+  completed_units: number | null
+  rows_read: number | null
+  rows_with_text: number | null
+  rows_without_text: number | null
+  messages: number | null
+  findings: number | null
+  spans: number | null
+  policy_eligible_spans: number | null
+  llm_candidates: number | null
+  tiers: Counts | null
+  policy_exclusions: Counts | null
+  labels?: Counts | null
+  missing_units?: number | null
+}
+
+export interface ToxicityDetails {
+  shards: number | null
+  shards_finished?: number
+  shards_judged?: number
+  rows_read?: number
+  messages_scored?: number
+  messages_flagged?: number
+  guard_records?: number
+  guard_errors?: number
+  guard_unknown?: number
+  verdicts?: Counts
+  categories?: Counts
+}
+
+export interface CoverageStageDetails {
+  report: string | null
+  created_at?: string | null
+  root?: string | null
+  verdict?: string | null
+  runs?: { found: number | null; checked: number | null; files: number | null; rows: number | null } | null
+  scanners_checked?: string[]
+  scanners_not_run?: string[]
+  scanner_status?: Record<string, string | null>
+  problems?: ShortList<{ scanner: string | null; run: string | null; path: string | null; message: string }>
+}
+
+export interface RowStatusCounts {
+  by_reason: Counts
+  by_ner_label: Counts
+  by_regex_category: Counts
+  by_toxicity_verdict: Counts
+}
+
+export interface FilterStageDetails {
+  input_root: string
+  output_root: string
+  runs: number
+  rows_read: number
+  kept: number
+  removed: number
+  removed_by_reason: Counts
+  rules: Record<string, unknown> | null
+  // True if some run of the step used other rules from the first.
+  rules_differ: boolean
+  scanner_results: Record<string, { results_dir: string; tool: string; mode: string | null }> | null
+  failed_runs: ShortList<{ run: string; failures: string[] }>
+  row_status_counts: RowStatusCounts | null
+}
+
+export interface TraceStageDetails {
+  // Only set (to null) when the trace isn't finished.
+  summary?: null
+  created_at?: string | null
+  verdict?: string | null
+  totals?: {
+    findings: number | null
+    distinct_lines_walked: number | null
+    prepared_rows_looked_up: number | null
+    by_status: Counts | null
+  } | null
+  sources?: Record<string, { findings: number | null; by_status: Counts | null }>
+  checks?: { passed: boolean; failures: string[] } | null
+}
+
+export interface RowStatusStageDetails {
+  // Only set (to null) when the row status isn't finished.
+  summary?: null
+  created_at?: string | null
+  verdict?: string | null
+  report_version?: number | null
+  totals?: {
+    prepared_rows: number | null
+    kept: number | null
+    removed: number | null
+    removed_by_step: Counts | null
+    removed_by_step_and_reason: Record<string, Counts> | null
+    rows_without_origin: number | null
+  } | null
+  checks?: { passed: boolean; failures: string[] } | null
+}
+
+export interface ChainStepResponse {
+  chain_dir: string
+  stage: Pick<ChainStage, 'key' | 'label' | 'kind' | 'step' | 'path' | 'state' | 'progress' | 'verdict'>
+  // For a scan: what the step's coverage report says about it.
+  coverage: CoverageSection | null
+  // Depends on the stage: see the interfaces above.
+  details: unknown
+}
+
+// ---- Rows (POST /api/row, /api/row/from-clean, /api/row/from-original) ----
+
+// Where a Prepared row is: its run (a path under the chain's Prepared folder),
+// the file in the run, and the line (from 1).
+export interface RowLocation {
+  run: string
+  file: string
+  line: number
+}
+
+// One text a scanner reads from a row: its `text`, or one message's text.
+// `message_index` is null for `text`.
+export interface RowSegment {
+  message_index: number | null
+  role: string
+  text: string
+  // The full length; `text` is cut at a maximum size.
+  length: number
+  truncated: boolean
+}
+
+export type RowOutcome = 'kept' | 'removed' | 'not_reached'
+
+export interface RowReason {
+  reason: string
+  scanner: string
+  findings: Record<string, unknown>[]
+}
+
+export interface RowScannerEntry {
+  // scanned: the scanner read the row. no_text: it found no text to read.
+  // not_reached: an earlier step removed the row first.
+  state: 'scanned' | 'no_text' | 'not_reached'
+  findings?: Record<string, unknown>[]
+  duplicated_by?: { row: RowPlace }[]
+}
+
+export interface RowStep {
+  step: number
+  outcome: RowOutcome
+  // Where the row is in this step's output, when it was kept.
+  at?: { file: string; line: number; byte_offset: number }
+  reasons?: RowReason[]
+  scanners: Record<string, RowScannerEntry>
+}
+
+// An entry of the chain's row status: everything known about one Prepared row.
+export interface RowStatusEntry {
+  prepared: { run: string; file: string; line: number; byte_offset: number; source_sha256: string }
+  origin: { path: string; row?: number; line?: number; byte?: number } | null
+  steps: RowStep[]
+  final: { status: 'kept' | 'removed'; step?: number; run?: string; file?: string; line?: number; byte_offset?: number }
+  not_scanned: { step: number; scanner: string; why: string }[]
+}
+
+export interface RowPlace {
+  step?: number
+  run: string
+  file: string
+  line: number
+}
+
+// A row's fate in a few fields.
+export interface RowSummary {
+  status: 'kept' | 'removed' | null
+  removed_at_step: number | null
+  reasons: string[]
+  clean: { run: string; file: string; line: number; byte_offset: number } | null
+  step_outcomes: { step: number; outcome: RowOutcome }[]
+}
+
+// A finding placed in the text as a character range of one message.
+export interface RowHighlight {
+  step: number
+  scanner: 'ner' | 'regex_pii'
+  message_index: number | null
+  start: number
+  end: number
+  // True for a finding the filter named as a reason for removing the row.
+  caused_removal: boolean
+  // NER:
+  label?: string
+  tier?: string
+  eligible?: boolean | null
+  confidence?: number | null
+  matched?: string
+  // Regex PII:
+  category?: string
+  value?: string
+}
+
+// A toxicity finding: it marks a whole message.
+export interface RowMessageFlag {
+  step: number
+  scanner: 'toxicity'
+  message_index: number | null
+  role: string | null
+  verdict: string | null
+  outcome: string | null
+  error: string | null
+  categories: string[] | null
+  detoxify_score: number | null
+  caused_removal: boolean
+}
+
+// A finding that couldn't be placed in the text, and why.
+export interface RowUnplaced {
+  step: number
+  scanner: 'ner' | 'regex_pii' | 'toxicity'
+  why: string
+  message_index?: number | null
+  label?: string
+  start?: number
+  end?: number
+  category?: string
+  value?: string
+  verdict?: string | null
+  caused_removal: boolean
+}
+
+// What became of the kept copy a duplicate was removed in favour of.
+export interface DuplicateCopy {
+  place: RowPlace
+  story: RowSummary | null
+  origin?: RowStatusEntry['origin']
+  segments: RowSegment[] | null
+  run_dir?: string | null
+  problem: string | null
+}
+
+export interface RowStory {
+  chain_dir: string
+  location: RowLocation
+  summary: RowSummary
+  entry: RowStatusEntry
+  prepared: { run_dir: string | null; fingerprint_ok: boolean | null; problem: string | null }
+  // The full `_origin` note of the Prepared line; null when the line isn't shown.
+  origin: Origin | null
+  metadata: Record<string, unknown> | null
+  // Null when the Prepared line couldn't be read (see prepared.problem).
+  segments: RowSegment[] | null
+  highlights: RowHighlight[]
+  message_flags: RowMessageFlag[]
+  unplaced: RowUnplaced[]
+  findings_cut: boolean
+  duplicate_of: DuplicateCopy[]
+  duplicated_by: { items: RowPlace[]; more: number }
+  // Only from /api/row/from-clean: the clean line and each hop back to the Prepared line.
+  from_clean?: {
+    clean: RowLocation
+    hops: { step: number; file: string; line: number; parent: { file: string; line: number } }[]
+    fingerprint_matches: boolean
+  }
+}
+
+export interface RowRequest {
+  chain_dir: string
+  run: string
+  file: string
+  line: number
+}
+
+export interface OriginalRowRequest {
+  chain_dir: string
+  original_path: string
+  row?: number | null
+  line?: number | null
+  split?: string | null
+}
+
+export interface OriginalRowMatch {
+  status: 'found' | 'skipped' | 'left_out' | 'not_in_file' | 'not_found'
+  method?: 'computed' | 'searched'
+  // The Prepared run's path under the chain's Prepared folder.
+  run: string
+  run_dir: string
+  prepared: { run_dir: string; file: string; line: number } | null
+  note?: string | null
+  error?: string
+}
+
+export interface OriginalRowResponse {
+  path: string
+  runs_checked: number
+  matches: OriginalRowMatch[]
+  row: RowStory | null
+}
+
+// A row to show: the chain, and the row's place, in the Prepared data or in the clean data.
+export interface RowTarget extends RowLocation {
+  chainDir: string
+  from: 'prepared' | 'clean'
+}
+
+// ---- Removed rows (POST /api/removed/options, POST /api/removed) ----
+
+// What the removed-rows index holds for one dataset and one filter step.
+export interface RemovedCounts {
+  entries: number | null
+  by_reason: Counts
+  by_ner_label: Counts
+  by_regex_category: Counts
+  by_toxicity_verdict: Counts
+}
+
+export interface RemovedRunOption {
+  run: string
+  rows: { prepared: number; kept: number; removed: number } | null
+  // By filter step (as a string: "1", "2").
+  steps: Record<string, RemovedCounts>
+}
+
+export interface RemovedOptionsResponse {
+  chain_dir: string
+  steps: number[]
+  // The last filter step's output folder: the clean data, one run per dataset.
+  clean_root: string | null
+  has_removed_index: boolean
+  runs: RemovedRunOption[]
+}
+
+export interface RemovedRequest {
+  chain_dir: string
+  run: string
+  step: number
+  reason?: string | null
+  ner_label?: string | null
+  regex_category?: string | null
+  toxicity_verdict?: string | null
+  page?: number
+  page_size?: number
+}
+
+// One removed row: where it is in the Prepared data, why it was removed, what was found.
+export interface RemovedEntry {
+  run: string
+  step: number
+  file: string
+  line: number
+  byte_offset: number
+  reasons: string[]
+  ner_labels: Counts
+  regex_categories: Counts
+  toxicity_verdicts: Counts
+  original: { path: string; row?: number; line?: number; byte?: number } | null
+}
+
+export interface RemovedPageResponse {
+  run: string
+  step: number
+  page: number
+  page_size: number
+  // The rows that match the filters.
+  total: number
+  has_next: boolean
+  entries: RemovedEntry[]
+}
+
+// Where the Removed page starts: a chain, a dataset and a filter step.
+export interface RemovedFilters {
+  chainDir: string
+  run: string
+  step: number
+}
+
+// ---- The steps of a chain as jobs (GET /api/steps/jobs, POST /api/steps/status, POST /api/steps/cancel) ----
+
+export type StepOutcome = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown'
+
+export interface StepResources {
+  partition: string
+  // A step whose job scripts fix these says them too; a record may lack any of them.
+  cpus?: number
+  mem?: string
+  time?: string
+}
+
+// One SLURM job a step started.
+export interface StepJobView {
+  job_id: string | null
+  role: string | null
+  depends_on: string[]
+  outcome: StepOutcome
+  reason: string | null
+  slurm_state: string | null
+  exit_code: string | null
+  elapsed: string | null
+  max_rss_bytes: number | null
+  out_log: string | null
+  err_log: string | null
+  // Only in the full view.
+  out_tail?: string | null
+  err_tail?: string | null
+}
+
+export interface StepRecordView {
+  id: string
+  chain_dir: string
+  chain: string
+  stage: string
+  label: string
+  submitted_at: string | null
+  resources: StepResources | null
+  gpus: number
+  inputs: string[] | null
+  output: string | null
+  outcome: StepOutcome
+  reason: string | null
+  // A step the backend ran itself (a coverage report): how its command ended.
+  inline: { exit_code: number | null; [key: string]: unknown } | null
+  warnings: string[]
+  jobs: StepJobView[]
+  has_active: boolean
+  // Where the stage stands, from its own files.
+  stage_state: StageState | null
+  progress: StageProgress | null
+  stage_verdict: string | null
+  // Only in the full view.
+  command_text?: string | null
+  settings?: Record<string, unknown> | null
+  wrapper_output?: string | null
+  slurm_error?: string | null
+}
+
+export interface StepJobsResponse {
+  root: string
+  slurm_error: string | null
+  problems: string[]
+  records: StepRecordView[]
+}
+
+export interface StepCancelResponse {
+  cancelled: string[]
+  not_active: string[]
+}
+
+// ---- Making a chain and starting its steps (GET /api/steps/spec, POST /api/steps/check,
+// POST /api/steps/submit, GET /api/chains/prepared-roots, POST /api/chains/create) ----
+
+export interface StepFieldBase {
+  name: string
+  label: string
+  help: string
+}
+
+export interface StepChoiceField extends StepFieldBase {
+  type: 'choice'
+  choices: string[]
+  default: string
+}
+
+export interface StepIntegerField extends StepFieldBase {
+  type: 'integer'
+  min: number
+  max: number
+  default: number | null
+}
+
+// Names separated by commas.
+export interface StepListField extends StepFieldBase {
+  type: 'list'
+  default: string[]
+}
+
+// Any of a fixed set of choices.
+export interface StepMultiField extends StepFieldBase {
+  type: 'multi'
+  choices: string[]
+  default: string[]
+}
+
+export type StepField = StepChoiceField | StepIntegerField | StepListField | StepMultiField
+
+// What a job script asks for, from its #SBATCH lines.
+export interface FixedResources {
+  cpus: number | null
+  mem: string | null
+  time: string | null
+  gpus: number
+}
+
+export interface StepStageSpec {
+  label: string
+  // wrapper: a script in scripts/; sbatch: a job script submitted directly; inline: run by the backend.
+  mode: 'wrapper' | 'sbatch' | 'inline'
+  // The default CPUs, memory and time; null where the job scripts fix them (or there is no job).
+  resources: { cpus: number; mem: string; time: string } | null
+  fixed_resources: Record<string, FixedResources> | null
+  fields: StepField[]
+}
+
+export interface StepSpecResponse {
+  partitions: string[]
+  default_partition: string
+  max_cpus: number
+  slurm_error: string | null
+  chains_root: string
+  stages: Record<string, StepStageSpec>
+}
+
+export interface StepInputSummary {
+  root: string
+  runs_found: number
+  runs_read: number
+  runs_skipped: number
+  files: number
+  rows: number
+  skipped: { kind: string; path: string; status: string | null; reason: string }[]
+  skipped_more: number
+}
+
+export interface StepCost {
+  gpus: number
+  cpus: number | null
+  mem: string | null
+  time: string | null
+  summary: string
+}
+
+// What a step would do, and what stops it: the answer of the check.
+export interface StepPlan {
+  chain_dir: string
+  chain: string
+  stage: string
+  label: string
+  mode: 'wrapper' | 'sbatch' | 'inline'
+  state: StageState
+  inputs: string[]
+  input_summaries: StepInputSummary[]
+  output: string
+  // new: not there yet. empty: a folder with nothing in it. has_files: something is there already.
+  output_state: 'new' | 'empty' | 'has_files'
+  settings: Record<string, unknown>
+  resources: { partition: string; cpus?: number; mem?: string; time?: string } | null
+  cost: StepCost | null
+  needs_gpu_confirmation: boolean
+  // Jobs the step waits for before it starts.
+  dependency: string[]
+  command: string[] | null
+  command_text: string | null
+  blocked: string[]
+  warnings: string[]
+  can_start: boolean
+}
+
+export interface StepCheckRequest {
+  chain_dir: string
+  stage: string
+  settings: Record<string, unknown>
+  resources: Record<string, unknown>
+}
+
+export interface StepSubmitRequest extends StepCheckRequest {
+  confirm_gpu: boolean
+}
+
+export interface PreparedRootCandidate {
+  path: string
+  label: string
+  runs: number
+  unfinished: number
+  rows: number
+}
+
+export interface PreparedRootsResponse {
+  root: string
+  chains_root: string
+  candidates: PreparedRootCandidate[]
+}
+
+export interface CreateChainResponse {
+  chain_dir: string
+  name: string
+  prepared_root: string
+  runs: number
 }

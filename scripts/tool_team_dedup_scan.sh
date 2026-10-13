@@ -4,7 +4,7 @@
 #
 # This is the dedup counterpart to scripts/tool_team_data.sh (PII) and
 # scripts/tool_team_toxicity_scan.sh (toxicity). It does not convert
-# anything -- point it at output/tool_team_converted (or any other JSONL
+# anything -- point it at output/prepared/tools_team (or any other JSONL
 # folder) after running tool_team_data.sh's `convert` stage.
 #
 # Only global mode is exposed here (find duplicates within the given data).
@@ -82,7 +82,7 @@ source "${SCRIPT_DIR}/lib/tool_team_common.sh"
 # ---------------------------------------------------------------------------
 
 # --- Paths -------------------------------------------------------------
-DEDUP_INPUT_ROOT="${DEDUP_INPUT_ROOT:-${REPO}/output/tool_team_converted}"
+DEDUP_INPUT_ROOT="${DEDUP_INPUT_ROOT:-${REPO}/output/prepared/tools_team}"
 DEDUP_RUN_DIR="${DEDUP_RUN_DIR:-}"
 
 # --- SLURM resources, filled in per-action by apply_action_defaults -------
@@ -122,7 +122,7 @@ Actions (exactly one per call):
           at any time, including while a job is still on the cluster.
 
 Flags (each overrides the matching setting for this run only):
-  --input-root PATH      Folder to scan (default: output/tool_team_converted)
+  --input-root PATH      Folder to scan (default: output/prepared/tools_team)
   --input-mode runs|folder
                           runs (default): read only the files of finished
                           conversions under --input-root, and list what was
@@ -142,7 +142,7 @@ Flags (each overrides the matching setting for this run only):
                           this file for why this wrapper's default differs).
   --write-filtered 0|1   Write filtered/ + filtered_out/ copies of every
                           row (default: 1). A full run over all of
-                          output/tool_team_converted writes about 8.7 GB
+                          output/prepared/tools_team writes about 8.7 GB
                           combined -- roughly the size of the input, since
                           every row lands in exactly one of the two
                           folders. Set to 0 to only get the reports.

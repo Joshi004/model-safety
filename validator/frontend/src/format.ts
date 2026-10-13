@@ -5,6 +5,17 @@ export function formatTimestamp(value: string): string {
   return Number.isNaN(time.getTime()) ? value : time.toLocaleString()
 }
 
+// A count with thousands separators, or a dash for a number that isn't known yet.
+export function formatCount(value: number | null | undefined): string {
+  return value === null || value === undefined ? '—' : value.toLocaleString()
+}
+
+// "47.6%": `part` as a share of `whole`, or a dash when there is no whole.
+export function formatPercent(part: number | null | undefined, whole: number | null | undefined): string {
+  if (part === null || part === undefined || !whole) return '—'
+  return `${((part / whole) * 100).toFixed(1)}%`
+}
+
 // "1.5 MB", "12 KB", "0 B": a byte count in the biggest unit that keeps the
 // number small.
 export function formatBytes(bytes: number): string {
@@ -17,4 +28,15 @@ export function formatBytes(bytes: number): string {
     unitIndex += 1
   }
   return `${value.toFixed(unitIndex === 0 || value >= 10 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+// A setting or rule value from a run_identity.json or summary.json, as text.
+export function formatSetting(value: unknown): string {
+  if (value === null || value === undefined) return '(not set)'
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '(none)'
+    return value.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).join(', ')
+  }
+  if (typeof value === 'string') return value === '' ? '(empty)' : value
+  return JSON.stringify(value)
 }

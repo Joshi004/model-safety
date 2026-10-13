@@ -3,9 +3,11 @@ import { formatTimestamp } from '../format'
 import { describeOutcomes, describeResources } from '../jobs'
 import { useRefreshing } from '../useRefreshing'
 import BatchPage from './BatchPage'
+import StepJobsList from './StepJobsList'
 
-// The "Jobs" view: the batches started from the Start panel (newest first),
-// and one batch's page once it's opened. Reading a batch never changes it;
+// The "Jobs" view: the conversion batches started from the Start panel (newest first),
+// and one batch's page once it's opened; below the batches, the steps of the chains
+// (StepJobsList). Reading a batch never changes it;
 // only Cancel on a batch's page does anything.
 //
 // Safety: every value shown here comes from batch records on disk or from
@@ -110,15 +112,22 @@ export default function JobsView({
   batchId,
   onSelectBatch,
   onOpenResults,
+  onOpenChain,
 }: {
   batchId: string | null
   onSelectBatch: (batchId: string | null) => void
   onOpenResults: (runDir: string) => void
+  onOpenChain: (chainDir: string) => void
 }) {
   if (batchId !== null) {
     return (
       <BatchPage key={batchId} batchId={batchId} onBack={() => onSelectBatch(null)} onOpenResults={onOpenResults} />
     )
   }
-  return <BatchesList onOpen={onSelectBatch} />
+  return (
+    <>
+      <BatchesList onOpen={onSelectBatch} />
+      <StepJobsList onOpenChain={onOpenChain} />
+    </>
+  )
 }

@@ -22,6 +22,14 @@
 #   folder. When a conversion has finished and passed its checks, it is saved as the
 #   dataset's current Prepared version in datasets.json.
 #
+#   Scans: "Find duplicates" (and Cancel). A scan first converts the datasets that need it
+#   (as above), then submits one CPU-only SLURM job that reads the datasets' Prepared
+#   versions and writes into <service root>/scans/<scan id>/. A scan waiting for a
+#   conversion is started by this service itself, within 30 seconds of the conversion
+#   finishing. A finished scan is saved in datasets.json as its datasets' current result,
+#   and the scan it replaces is deleted -- only a folder under <service root>/scans, and
+#   never one that is going, failed or was cancelled.
+#
 #   Dataset registry: registering, editing and unregistering a dataset write
 #   <service root>/registry/datasets.json, where the service root is
 #   $VALIDATOR_SERVICE_ROOT, or <repo>/output/service. The first start with no

@@ -14,6 +14,9 @@ Rules this module keeps:
 * `prepared` (the current Prepared version) and `kept_versions` (versions kept on disk
   after a re-conversion) are only changed by `set_prepared` and `clear_prepared`, which
   conversions.py calls. They are not part of `update`.
+* `results` (the scan that is the dataset's current result, for each scanner) is only
+  changed by `set_result`, which scans.py calls, and emptied by `clear_prepared`: every
+  result was made from the version that is being replaced. It is not part of `update`.
 * One lock covers every read and write of the file, because FastAPI runs these
   handlers in a thread pool. A write goes to a temp file first and is then moved
   into place with `os.replace`, so the file is never half written.
@@ -189,8 +192,8 @@ def make_record(
     conversion: dict[str, Any] | None,
     created_at: str,
 ) -> dict[str, Any]:
-    """One registry entry. `prepared` is set when a conversion finishes (Phase 3) and
-    `parent` by Phase 10."""
+    """One registry entry. `prepared` is set when a conversion finishes (Phase 3), `results`
+    when a scan finishes (Phase 4) and `parent` by Phase 10."""
     return {
         "id": dataset_id,
         "team": team,
@@ -202,6 +205,7 @@ def make_record(
         "conversion": conversion,
         "prepared": None,
         "kept_versions": [],
+        "results": {},
         "parent": None,
     }
 
@@ -419,8 +423,9 @@ def _with_availability(record: dict[str, Any]) -> dict[str, Any]:
     reason = unavailable_reason(Path(record["path"]))
     return {
         **record,
-        # Entries saved before Phase 3 have no such list.
+        # Entries saved before Phase 3 have no such list, and before Phase 4 no results.
         "kept_versions": record.get("kept_versions") or [],
+        "results": record.get("results") or {},
         "available": reason is None,
         "unavailable_reason": reason,
     }
@@ -440,6 +445,13 @@ def get_dataset(dataset_id: str) -> dict[str, Any]:
         records = _read_registry()["datasets"]
         record = records[_index_of(records, dataset_id)]
     return _with_availability(record)
+
+
+def dataset_names() -> dict[str, str]:
+    """The name of every dataset by id, without looking at any dataset's path."""
+    with _LOCK:
+        records = _read_registry()["datasets"]
+    return {record["id"]: record["name"] for record in records}
 
 
 # -------------------------------------------------------------------------
@@ -542,7 +554,10 @@ def clear_prepared(dataset_id: str, version_id: str) -> bool:
     """Forget the current Prepared version when it is `version_id`, because it is being
     replaced. A version marked `kept` (a filtered dataset was made from it) is added to
     `kept_versions` so its folder is never deleted. Returns whether anything changed.
-    This only changes the registry; conversions.py deletes the folder."""
+    Every scan result was made from the version being forgotten, so the dataset's `results`
+    are emptied with it (D6: "not scanned" until the new jobs finish); scans.py deletes the
+    scan folders nothing points at any more. This only changes the registry;
+    conversions.py deletes the folder."""
     with _LOCK:
         data = _read_registry()
         records = data["datasets"]
@@ -551,10 +566,53 @@ def clear_prepared(dataset_id: str, version_id: str) -> bool:
         if not isinstance(current, dict) or current.get("version_id") != version_id:
             return False
         record["prepared"] = None
+        record["results"] = {}
         if current.get("kept"):
             record["kept_versions"] = [*(record.get("kept_versions") or []), current]
         _save(data)
     return True
+
+
+def set_result(dataset_id: str, scanner: str, result: dict[str, Any], version_id: str) -> str | None:
+    """Make `result` (`scan_id`, `finished_at`, `mode`, `count`) the dataset's current result
+    for `scanner`, but only while the dataset's current Prepared version is `version_id`, the
+    one the scan read: a conversion that replaced it in the meantime has already emptied the
+    results, and the scan no longer describes the dataset. Returns the scan ID this replaced,
+    or None when nothing was replaced (nothing was there, it is the same scan, or the
+    version had changed). Called by scans.py when a scan has finished. Not reachable from a
+    request: `update` refuses the field."""
+    with _LOCK:
+        data = _read_registry()
+        records = data["datasets"]
+        record = records[_index_of(records, dataset_id)]
+        prepared = record.get("prepared")
+        if not isinstance(prepared, dict) or prepared.get("version_id") != version_id:
+            return None
+        results = dict(record.get("results") or {})
+        previous = results.get(scanner)
+        previous_id = previous.get("scan_id") if isinstance(previous, dict) else None
+        if previous_id == result["scan_id"]:
+            return None
+        results[scanner] = result
+        record["results"] = results
+        _save(data)
+    return previous_id
+
+
+def result_pointers() -> dict[str, list[str]]:
+    """Every scan that is some dataset's current result, with the datasets it is the result
+    of. A scan ID is unique across scanners, so it is the key. scans.py deletes a scan folder
+    that was a result once nothing points at it."""
+    with _LOCK:
+        records = _read_registry()["datasets"]
+    pointers: dict[str, list[str]] = {}
+    for record in records:
+        results = record.get("results")
+        for result in results.values() if isinstance(results, dict) else []:
+            scan_id = result.get("scan_id") if isinstance(result, dict) else None
+            if isinstance(scan_id, str):
+                pointers.setdefault(scan_id, []).append(record["id"])
+    return pointers
 
 
 def unregister(dataset_id: str) -> dict[str, Any]:
@@ -564,8 +622,9 @@ def unregister(dataset_id: str) -> dict[str, Any]:
     The folder is deleted first and the entry afterwards, so a folder that can't be
     deleted leaves the dataset registered and the request can be repeated. The
     folder holds the dataset's Prepared versions and conversion records. A running
-    conversion is checked by conversions.unregister, which the route calls; later
-    phases add scans."""
+    conversion is checked by conversions.unregister, and a running scan by
+    scans.unregister, which the route calls; the scan folders that were this dataset's
+    results are deleted by scans.py afterwards, unless another dataset still uses them."""
     with _LOCK:
         data = _read_registry()
         records = data["datasets"]

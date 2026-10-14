@@ -215,7 +215,10 @@ def folder_contents(folder: Path) -> dict[str, Any]:
 # -------------------------------------------------------------------------
 
 
-def _run(argv: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def _run(
+    argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """`env` replaces the environment the command starts with (None keeps ours)."""
     try:
         return subprocess.run(
             argv,
@@ -224,6 +227,7 @@ def _run(argv: list[str], cwd: Path | None = None) -> subprocess.CompletedProces
             capture_output=True,
             text=True,
             cwd=cwd,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         raise SlurmUnavailable(

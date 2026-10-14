@@ -7,14 +7,15 @@ and anyone who can already reach this machine's localhost (e.g. another
 user logged into the same login node) can reach this too. That's a
 deliberate choice for a trusted-network deployment.
 
-Only these routes act on anything: the dataset registry ones (registry.py) and the
-conversion ones (conversions.py).
+Only these routes act on anything: the dataset registry ones (registry.py), the
+conversion ones (conversions.py) and the scan ones (scans.py).
 
 The dataset registry routes: POST /api/datasets and PATCH /api/datasets/{id} write
 <service root>/registry/datasets.json, and POST /api/datasets/{id}/unregister removes an
 entry and deletes that dataset's own folder <service root>/datasets/<id>, after checking
-the id and the folder's location (it is refused while a conversion of the dataset is
-queued or running). The first read of a new service root also writes datasets.json, from
+the id and the folder's location (it is refused while a conversion or a scan of the
+dataset is going; the scan results only that dataset used are deleted afterwards, see
+the scan routes below). The first read of a new service root also writes datasets.json, from
 the catalog in registry_seed.py. The service root is $VALIDATOR_SERVICE_ROOT, or
 <repo>/output/service. GET /api/teams, GET /api/datasets and GET /api/datasets/{id} only
 check that a dataset's path exists and can be read.
@@ -28,7 +29,24 @@ folder (conversions.py). POST /api/datasets/{id}/conversions/{job_id}/cancel run
 on the one SLURM job the record lists. When a conversion has finished and passed its
 checks, reading a dataset or a conversion saves it as the dataset's current Prepared
 version in datasets.json. GET /api/conversions/settings, POST /api/conversions/check and
-GET /api/datasets/{id}/conversions[/{job_id}] only read, apart from that. Every other
+GET /api/datasets/{id}/conversions[/{job_id}] only read, apart from that.
+
+The scan routes: POST /api/scans/submit first starts the conversions the chosen datasets need
+(as above, one job each), then one SLURM job per scan (`sbatch` on
+launchers/slurm/run_dedup_scan.sbatch, CPU only), writing into <service root>/scans/<scan id>/
+(its `scan.json`, `inputs/`, `results/` and `_logs/`). A scan that has to wait for a
+conversion is saved without a job and started by the service itself, within 30 seconds of the
+conversion finishing (a background task, and whenever scans or datasets are read); one whose
+conversion failed is never started. POST /api/scans/{id}/cancel runs `scancel` on the one job
+the scan's record lists, or stops a waiting scan from ever starting. When a scan has
+finished, reading scans or datasets saves it in datasets.json as the current result of each
+of its datasets for that scanner, replacing the earlier one. A scan folder is deleted only
+when it was a result and nothing points at it any more (replaced, or its dataset converted
+again or unregistered), only inside <service root>/scans, and never one that is going, failed
+or was cancelled. A scan only reads Prepared versions; it never writes to them or to original
+data. A conversion that replaces a Prepared version (convert again) is refused while a scan
+that reads or waits for the dataset is going. GET /api/scanners, POST /api/scans/check, GET
+/api/scans[/{id}] only read, apart from starting and finishing scans as above. Every other
 route is read-only, and none of them ever writes to or deletes original data.
 
 This process never writes to the data it inspects: /api/inspect and
@@ -51,6 +69,7 @@ files of the runs that read that file. (The Prepared rows tab reuses
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +83,7 @@ import jobs
 import preview
 import registry
 import runs
+import scans
 from reader_imports import json_safe
 
 DEFAULT_SAMPLE_ROWS = 2
@@ -71,7 +91,15 @@ MAX_SAMPLE_ROWS = 200
 DEFAULT_SKIPPED_PAGE_SIZE = 50
 MAX_SKIPPED_PAGE_SIZE = 200
 
-app = FastAPI(title="Input validator UI")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Starts scans that were left waiting for a conversion, and keeps looking every 30 seconds.
+    scans.start_background_refresh()
+    yield
+
+
+app = FastAPI(title="Input validator UI", lifespan=lifespan)
 
 
 @app.get("/api/health")
@@ -129,6 +157,14 @@ def _conversions_call(function: Any, *args: Any) -> Any:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+def _scans_call(function: Any, *args: Any) -> Any:
+    """`_conversions_call`, plus the errors of scans.py."""
+    try:
+        return _conversions_call(function, *args)
+    except scans.ScanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/teams")
 def teams() -> dict[str, Any]:
     """The fixed list of teams a dataset can belong to."""
@@ -138,12 +174,17 @@ def teams() -> dict[str, Any]:
 @app.get("/api/datasets")
 def datasets_list(team: str | None = None) -> dict[str, Any]:
     """Every registered dataset (or one team's), each with whether its path can still be
-    read. The first call on a new service root creates the registry from the old catalog.
-    A conversion that has finished is made the dataset's current Prepared version first."""
+    read, and, under `scans`, the state of each scanner on it. The first call on a new
+    service root creates the registry from the old catalog. A conversion that has finished
+    is made the dataset's current Prepared version first, and a scan that can start or has
+    finished is started or made the dataset's result."""
     _conversions_call(conversions.refresh_all)
+    _scans_call(scans.refresh)
+    datasets = _registry_call(registry.list_datasets, team)
+    summaries = _scans_call(scans.dataset_summaries, datasets)
     return {
         "service_root": str(registry.service_root()),
-        "datasets": _registry_call(registry.list_datasets, team),
+        "datasets": [{**dataset, "scans": summaries[dataset["id"]]} for dataset in datasets],
     }
 
 
@@ -152,7 +193,9 @@ def dataset_get(dataset_id: str) -> dict[str, Any]:
     # An id that isn't one is refused by get_dataset below, with its own message.
     if registry.DATASET_ID.fullmatch(dataset_id) is not None:
         _conversions_call(conversions.refresh, dataset_id)
-    return _registry_call(registry.get_dataset, dataset_id)
+        _scans_call(scans.refresh)
+    dataset = _registry_call(registry.get_dataset, dataset_id)
+    return {**dataset, "scans": _scans_call(scans.dataset_summaries, [dataset])[dataset["id"]]}
 
 
 @app.post("/api/datasets")
@@ -169,9 +212,10 @@ def dataset_update(dataset_id: str, body: DatasetUpdateRequest) -> dict[str, Any
 
 @app.post("/api/datasets/{dataset_id}/unregister")
 def dataset_unregister(dataset_id: str) -> dict[str, Any]:
-    """Remove a dataset's entry and its folder under the service root. Refused while a
-    conversion of the dataset is queued or running. The original data is never touched."""
-    return _conversions_call(conversions.unregister, dataset_id)
+    """Remove a dataset's entry and its folder under the service root, and the scan results
+    only it used. Refused while a conversion or a scan of the dataset is going. The original
+    data is never touched."""
+    return _scans_call(scans.unregister, dataset_id)
 
 
 class InspectRequest(BaseModel):
@@ -423,8 +467,9 @@ def conversions_check(body: ConversionsRequest) -> dict[str, Any]:
 @app.post("/api/conversions/submit")
 def conversions_submit(body: ConversionsRequest) -> dict[str, Any]:
     """Start one SLURM job per dataset. The whole request is refused if any dataset
-    can't be started."""
+    can't be started, or if it converts a dataset again while a scan is going on it."""
     items, resources = _items_and_resources(body)
+    _scans_call(scans.refuse_if_scanning, items)
     return _conversions_call(conversions.submit, items, resources)
 
 
@@ -444,6 +489,82 @@ def dataset_conversion(dataset_id: str, job_id: str) -> dict[str, Any]:
 def dataset_conversion_cancel(dataset_id: str, job_id: str) -> dict[str, Any]:
     """`scancel` the one SLURM job this conversion's record lists."""
     return _conversions_call(conversions.cancel, dataset_id, job_id)
+
+
+# -------------------------------------------------------------------------
+# Starting, watching and cancelling scans (scans.py, scanners.py) -- the submit and
+# cancel routes act on things. A scan reads the Prepared versions of the datasets it
+# covers, so the datasets that need it are converted first (a separate job each).
+# -------------------------------------------------------------------------
+
+
+class ScanDatasetItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    # Delete the dataset's current Prepared version and convert it again first (D6).
+    reconvert: bool = False
+
+
+class ScansRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Any for these: scans.py explains what's wrong in words, instead of the request
+    # failing with a generic validation error.
+    scanner: Any = None
+    datasets: list[ScanDatasetItem]
+    # "across" or "within" for the scanners that have modes (D4); null for the others.
+    mode: Any = None
+    settings: Any = None
+    # Null means the scanner's own default resources (scans.settings).
+    resources: JobResources | None = None
+    confirm_gpu: bool = False
+
+
+def _scan_arguments(body: ScansRequest) -> tuple[Any, ...]:
+    items = [item.model_dump() for item in body.datasets]
+    resources = body.resources.model_dump() if body.resources is not None else None
+    return body.scanner, items, body.mode, body.settings, resources
+
+
+@app.get("/api/scanners")
+def scanners_list() -> dict[str, Any]:
+    """The scanners with their settings, modes and default resources, and the partitions
+    `sinfo` lists."""
+    return _scans_call(scans.settings)
+
+
+@app.post("/api/scans/check")
+def scans_check(body: ScansRequest) -> dict[str, Any]:
+    """For each scan the request would make: what each dataset needs first (use the converted
+    data, convert, or convert again), the command, the cost and everything that stops it.
+    Starts and deletes nothing."""
+    return _scans_call(scans.check, *_scan_arguments(body))
+
+
+@app.post("/api/scans/submit")
+def scans_submit(body: ScansRequest) -> dict[str, Any]:
+    """Start the conversions the datasets need and the scans: a scan whose datasets are all
+    converted starts now, any other waits for its conversions. The whole request is refused
+    if any scan can't be started."""
+    return _scans_call(scans.submit, *_scan_arguments(body), body.confirm_gpu)
+
+
+@app.get("/api/scans")
+def scans_list() -> dict[str, Any]:
+    """Every scan, newest first, with its state read live."""
+    return _scans_call(scans.list_scans)
+
+
+@app.get("/api/scans/{scan_id}")
+def scans_get(scan_id: str) -> dict[str, Any]:
+    """One scan in full: its command, the versions it read, what it found, and its log tails."""
+    return _scans_call(scans.get_scan, scan_id)
+
+
+@app.post("/api/scans/{scan_id}/cancel")
+def scans_cancel(scan_id: str) -> dict[str, Any]:
+    """Stop a scan: `scancel` on the one job its record lists, or, for a scan still waiting
+    for its conversions, stop it from ever starting. The conversions keep running."""
+    return _scans_call(scans.cancel, scan_id)
 
 
 # Serves the built frontend (validator/frontend/dist, built by run.sh) at

@@ -11,6 +11,8 @@
   --error-bg: rgba(179, 38, 30, 0.08);
   --ok: #1b7a3d;
   --ok-bg: rgba(27, 122, 61, 0.1);
+  --warn: #8a5300;
+  --warn-bg: rgba(138, 83, 0, 0.1);
 
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
@@ -38,6 +40,8 @@
     --error-bg: rgba(255, 138, 128, 0.12);
     --ok: #7cd99a;
     --ok-bg: rgba(124, 217, 154, 0.12);
+    --warn: #f0c27a;
+    --warn-bg: rgba(240, 194, 122, 0.12);
   }
 }
 

@@ -7,8 +7,8 @@
 # inspect). It reads files with your own permissions and never writes
 # anything to the data it looks at. Any absolute path your account can
 # read can be inspected -- there's no folder allowlist. If your account
-# can't read one of the source picker's preset folders, it just shows up
-# disabled in the picker; nothing fails.
+# can't read the folder of a registered dataset, it just shows up as
+# unavailable in the Datasets list; nothing fails.
 #
 # Looking at data is read-only. Only these act on anything, and they act as
 # you (sbatch, squeue, sacct, sinfo and scancel must be on your PATH):
@@ -20,21 +20,11 @@
 #   which is $VALIDATOR_RUNS_ROOT or <repo>/output/prepared. Job logs and batch
 #   records go under <runs root>/_jobs.
 #
-#   Chains: the Chains view's "New chain" makes one new folder under the chains
-#   root ($VALIDATOR_CHAINS_ROOT, or <repo>/output) with its chain.json, and a
-#   chain page's "Run next step" starts one step of it: the scans through the
-#   wrappers in scripts/ (CPU, and GPU after an extra confirmation), the filter,
-#   the trace and the row status through sbatch, and a coverage report as a short
-#   command run here. A step only writes inside its chain's folder, never into
-#   a place that already has something in it, and never deletes anything. Its
-#   record and logs go under <chain>/_jobs and <chain>/_logs; the Jobs view's
-#   Cancel on a chain step runs scancel on that step's own jobs.
-#
 #   Dataset registry: registering, editing and unregistering a dataset write
 #   <service root>/registry/datasets.json, where the service root is
 #   $VALIDATOR_SERVICE_ROOT, or <repo>/output/service. The first start with no
 #   datasets.json creates it (and registry/, datasets/ and scans/) from the catalog
-#   in validator/backend/sources.py. Unregistering also deletes that dataset's own
+#   in validator/backend/registry_seed.py. Unregistering also deletes that dataset's own
 #   folder, <service root>/datasets/<id>, and nothing else: the original data a
 #   dataset points at is only checked for existing and being readable.
 #

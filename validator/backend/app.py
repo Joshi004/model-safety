@@ -7,37 +7,26 @@ and anyone who can already reach this machine's localhost (e.g. another
 user logged into the same login node) can reach this too. That's a
 deliberate choice for a trusted-network deployment.
 
-Only these routes act on anything: the /api/jobs/* ones (jobs.py), /api/steps/cancel
-and /api/steps/submit (steps.py, step_start.py), and /api/chains/create (step_start.py).
-/api/steps/cancel runs `scancel` on job IDs a chain step's own record lists, and nothing
-else. /api/steps/submit starts one step of a chain made here (the scans through the
-wrappers in scripts/, the filter, the trace and the row status through `sbatch`, a
-coverage report as a short command run here), writing only inside that chain's folder,
-and never into a place that already has something in it; a step that uses GPUs needs its
-own confirmation. /api/chains/create makes one new folder under the chains root, with its
-chain.json. The /api/jobs/* routes: /api/jobs/submit
-starts SLURM conversion jobs (one `prepare_rows.py` run each, CPU only),
-/api/jobs/cancel cancels them, /api/jobs/delete deletes run folders (only
-inside the runs root, after the checks in jobs.py), and submit also writes
-batch records under <runs root>/_jobs. /api/jobs/settings, /api/jobs/check,
-/api/jobs/batches and /api/jobs/status only read.
+Only these routes act on anything: the /api/jobs/* ones (jobs.py) and the dataset
+registry ones (registry.py). /api/jobs/submit starts SLURM conversion jobs (one
+`prepare_rows.py` run each, CPU only), /api/jobs/cancel cancels them,
+/api/jobs/delete deletes run folders (only inside the runs root, after the checks in
+jobs.py), and submit also writes batch records under <runs root>/_jobs.
+/api/jobs/settings, /api/jobs/check, /api/jobs/batches and /api/jobs/status only read.
 
-The dataset registry routes (registry.py) act too: POST /api/datasets and PATCH
-/api/datasets/{id} write <service root>/registry/datasets.json, and
-POST /api/datasets/{id}/unregister removes an entry and deletes that dataset's own
-folder <service root>/datasets/<id>, after checking the id and the folder's location.
-The first read of a new service root also writes datasets.json, from the catalog in
-sources.py. The service root is $VALIDATOR_SERVICE_ROOT, or <repo>/output/service.
-GET /api/teams, GET /api/datasets and GET /api/datasets/{id} only read, and only check
-that a dataset's path exists and can be read. Every other route is read-only, and none
-of them ever writes to or deletes original data.
+The dataset registry routes: POST /api/datasets and PATCH /api/datasets/{id} write
+<service root>/registry/datasets.json, and POST /api/datasets/{id}/unregister removes an
+entry and deletes that dataset's own folder <service root>/datasets/<id>, after checking
+the id and the folder's location. The first read of a new service root also writes
+datasets.json, from the catalog in registry_seed.py. The service root is
+$VALIDATOR_SERVICE_ROOT, or <repo>/output/service. GET /api/teams, GET /api/datasets and
+GET /api/datasets/{id} only read, and only check that a dataset's path exists and can be
+read. Every other route is read-only, and none of them ever writes to or deletes
+original data.
 
 This process never writes to the data it inspects: /api/inspect and
 /api/preview only read a bounded sample and report what would happen,
-they never run prepare_rows.py's actual write step. /api/sources (the
-training-data catalog in sources.py, for the UI's sidebar dataset picker)
-is the same: it only reads directory listings and stat()/exists() to
-mark each entry available or not, never a row. The Prepared-run routes
+they never run prepare_rows.py's actual write step. The Prepared-run routes
 (/api/runs, /api/run, /api/run/progress, /api/run/skipped, /api/origin)
 are read-only too: /api/runs lists the run folders (Prepared and filter runs)
 under the runs root and the folders of each chain (runs.read_roots), reading
@@ -50,20 +39,6 @@ the run's own summary.json says it read. /api/prepared-row goes the other way
 runs under the folders the validator reads, and the Prepared and skipped-rows
 files of the runs that read that file. (The Prepared rows tab reuses
 /api/preview on a run's own written files.)
-
-The chain routes (/api/chains, /api/chain, /api/chain/step; chains.py) are
-read-only too: they read the chain.json of each folder directly under the chains
-root, and the small summary files (`summary.json`, `_SUCCESS` markers, coverage
-reports) of the runs and scans it names, never a data file.
-
-The row routes (/api/row, /api/row/from-clean, /api/row/from-original; rows.py) are
-read-only as well: they read one entry of a chain's row status, the one Prepared
-line it points at (only from a file its run's summary.json lists, checked against
-the fingerprint the status holds), and the line maps of its filter steps.
-
-The removed-rows routes (/api/removed/options, /api/removed; removed.py) are
-read-only too: they page the removed-rows index inside a chain's row status, never
-the filter run's own removed_rows.ndjson.
 """
 
 from __future__ import annotations
@@ -76,17 +51,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-import chains
 import detect
 import jobs
 import preview
 import registry
-import removed
-import rows
 import runs
-import sources
-import step_start
-import steps
 from reader_imports import json_safe
 
 DEFAULT_SAMPLE_ROWS = 2
@@ -100,16 +69,6 @@ app = FastAPI(title="Input validator UI")
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {"ok": True}
-
-
-@app.get("/api/sources")
-def sources_catalog() -> dict[str, Any]:
-    """The curated Tools-team / medpsy training-data catalog (sources.py),
-    for the sidebar's dataset picker. Read-only, like every route here
-    except the /api/jobs/* ones that act -- this only reads directory
-    listings and stat()/exists() to mark each entry available or not, it
-    never opens a row."""
-    return {"teams": sources.list_sources()}
 
 
 # -------------------------------------------------------------------------
@@ -390,276 +349,8 @@ def prepared_row(body: PreparedRowRequest) -> dict[str, Any]:
 
 
 # -------------------------------------------------------------------------
-# Chains (chains.py): read-only.
-# -------------------------------------------------------------------------
-
-
-class ChainRequest(BaseModel):
-    chain_dir: str
-
-
-class ChainStageRequest(BaseModel):
-    chain_dir: str
-    stage: str
-
-
-@app.get("/api/chains")
-def list_chains() -> dict[str, Any]:
-    """The chains under the chains root, each with its funnel and the state of
-    each stage."""
-    return chains.list_all_chains(steps.refine_stages)
-
-
-@app.post("/api/chain")
-def chain_page(body: ChainRequest) -> dict[str, Any]:
-    """One chain: its stages and their states, the funnel, the table of datasets,
-    and the trace and row status."""
-    try:
-        return chains.chain_view(chains.resolve_chain_dir(body.chain_dir), steps.refine_stages)
-    except chains.ChainsError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/chain/step")
-def chain_step(body: ChainStageRequest) -> dict[str, Any]:
-    """What one stage of a chain found: counts, coverage verdict, rules."""
-    try:
-        return chains.step_results(chains.resolve_chain_dir(body.chain_dir), body.stage, steps.refine_stages)
-    except chains.ChainsError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-# -------------------------------------------------------------------------
-# One row of a chain (rows.py): read-only.
-# -------------------------------------------------------------------------
-
-
-class RowRequest(BaseModel):
-    chain_dir: str
-    # The run's path under the chain's Prepared folder (for `from-clean`, the same
-    # path under the last filter step's output folder), the file in the run, and the line.
-    run: str
-    file: str
-    line: int
-
-
-class OriginalRowRequest(BaseModel):
-    chain_dir: str
-    original_path: str
-    # A JSONL file's rows are named by `line` (from 1), every other kind's by `row` (from 0).
-    row: int | None = None
-    line: int | None = None
-    split: str | None = None
-
-
-def _rows_call(function: Any, *args: Any) -> dict[str, Any]:
-    try:
-        return function(*args)
-    except (chains.ChainsError, rows.RowsError, detect.InvalidPath, runs.RunError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/row")
-def row_page(body: RowRequest) -> dict[str, Any]:
-    """The story of one Prepared row: its status entry, the Prepared text with the
-    findings placed in it, and the kept copy if it was removed as a duplicate."""
-    return _rows_call(
-        lambda: rows.row_story(chains.resolve_chain_dir(body.chain_dir), body.run, body.file, body.line)
-    )
-
-
-@app.post("/api/row/from-clean")
-def row_from_clean(body: RowRequest) -> dict[str, Any]:
-    """The same story, from a line of the clean data: its line maps are followed
-    back to the Prepared row."""
-    return _rows_call(
-        lambda: rows.row_from_clean(chains.resolve_chain_dir(body.chain_dir), body.run, body.file, body.line)
-    )
-
-
-@app.post("/api/row/from-original")
-def row_from_original(body: OriginalRowRequest) -> dict[str, Any]:
-    """Where an Original row went, in this chain's Prepared runs, and the story of the
-    row if it was found."""
-    return _rows_call(
-        lambda: rows.row_from_original(
-            chains.resolve_chain_dir(body.chain_dir),
-            detect.resolve_input_path(body.original_path),
-            body.row,
-            body.line,
-            body.split,
-        )
-    )
-
-
-# -------------------------------------------------------------------------
-# The rows a filter step removed (removed.py): read-only.
-# -------------------------------------------------------------------------
-
-
-class RemovedOptionsRequest(BaseModel):
-    chain_dir: str
-
-
-class RemovedRequest(BaseModel):
-    chain_dir: str
-    run: str
-    step: int
-    reason: str | None = None
-    ner_label: str | None = None
-    regex_category: str | None = None
-    toxicity_verdict: str | None = None
-    page: int = 1
-    page_size: int = removed.DEFAULT_PAGE_SIZE
-
-
-@app.post("/api/removed/options")
-def removed_options(body: RemovedOptionsRequest) -> dict[str, Any]:
-    """What the Removed page can filter by: each dataset's removed rows per step,
-    with the counts by reason, NER label, regex category and toxicity verdict."""
-    try:
-        return removed.removed_options(chains.resolve_chain_dir(body.chain_dir))
-    except (chains.ChainsError, removed.RemovedError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/removed")
-def removed_page(body: RemovedRequest) -> dict[str, Any]:
-    """One page of the rows a filter step removed from one dataset, filtered."""
-    try:
-        return removed.removed_page(
-            chains.resolve_chain_dir(body.chain_dir),
-            body.run,
-            body.step,
-            body.reason,
-            body.ner_label,
-            body.regex_category,
-            body.toxicity_verdict,
-            body.page,
-            body.page_size,
-        )
-    except (chains.ChainsError, removed.RemovedError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-# -------------------------------------------------------------------------
-# The steps of a chain as jobs (steps.py): reading them is read-only; only
-# /api/steps/cancel acts (scancel, on job IDs a step record lists).
-# -------------------------------------------------------------------------
-
-
-class StepRecordRequest(BaseModel):
-    chain_dir: str
-    record_id: str
-
-
-class StepCancelRequest(BaseModel):
-    chain_dir: str
-    record_id: str
-    job_ids: list[str] | None = None
-
-
-def _steps_call(function: Any) -> dict[str, Any]:
-    try:
-        return function()
-    except (chains.ChainsError, steps.StepsError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/api/steps/jobs")
-def steps_jobs() -> dict[str, Any]:
-    """Every step record of every chain, newest first, with the state of its jobs."""
-    return steps.list_all()
-
-
-@app.post("/api/steps/status")
-def steps_status(body: StepRecordRequest) -> dict[str, Any]:
-    """One step record in full: the command, what it printed, each job and its log tails."""
-    return _steps_call(lambda: steps.record_status(chains.resolve_chain_dir(body.chain_dir), body.record_id))
-
-
-@app.post("/api/steps/cancel")
-def steps_cancel(body: StepCancelRequest) -> dict[str, Any]:
-    """`scancel` the queued or running jobs of a step record (all, or the IDs given)."""
-    return _steps_call(
-        lambda: steps.cancel(chains.resolve_chain_dir(body.chain_dir), body.record_id, body.job_ids)
-    )
-
-
-# -------------------------------------------------------------------------
-# Making a chain and starting its steps (step_start.py) -- these routes act:
-# /api/chains/create makes a folder under the chains root, /api/steps/submit starts
-# a step (SLURM jobs, or a coverage report run here). /api/steps/spec,
-# /api/steps/check and /api/chains/prepared-roots only read.
-# -------------------------------------------------------------------------
-
-
-class StepCheckRequest(BaseModel):
-    chain_dir: str
-    stage: str
-    # Checked by step_start, which explains what's wrong in words, instead of the
-    # request failing with a generic validation error.
-    settings: Any = None
-    resources: Any = None
-
-
-class StepSubmitRequest(StepCheckRequest):
-    # A step that asks for GPUs is refused without this.
-    confirm_gpu: bool = False
-
-
-class CreateChainRequest(BaseModel):
-    name: str
-    prepared_root: str
-
-
-def _start_call(function: Any) -> dict[str, Any]:
-    try:
-        return function()
-    except (chains.ChainsError, steps.StepsError, step_start.StartError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/api/steps/spec")
-def steps_spec() -> dict[str, Any]:
-    """What the start form needs: partitions, and each stage's resources and settings."""
-    return step_start.spec()
-
-
-@app.post("/api/steps/check")
-def steps_check(body: StepCheckRequest) -> dict[str, Any]:
-    """The plan for a step: what it reads and skips, the exact command, its cost, and
-    whatever stops it from starting. Read-only."""
-    return _start_call(
-        lambda: step_start.check(chains.resolve_chain_dir(body.chain_dir), body.stage, body.settings, body.resources)
-    )
-
-
-@app.post("/api/steps/submit")
-def steps_submit(body: StepSubmitRequest) -> dict[str, Any]:
-    """Check the step again and start it (step_start.submit)."""
-    return _start_call(
-        lambda: step_start.submit(
-            chains.resolve_chain_dir(body.chain_dir), body.stage, body.settings, body.resources, body.confirm_gpu
-        )
-    )
-
-
-@app.get("/api/chains/prepared-roots")
-def chains_prepared_roots() -> dict[str, Any]:
-    """The folders under the runs root that hold Prepared runs, for the New chain form."""
-    return step_start.prepared_root_candidates()
-
-
-@app.post("/api/chains/create")
-def chains_create(body: CreateChainRequest) -> dict[str, Any]:
-    """Make a new chain folder under the chains root (step_start.create_chain)."""
-    return _start_call(lambda: step_start.create_chain(body.name, body.prepared_root))
-
-
-# -------------------------------------------------------------------------
-# Starting, watching, cancelling and deleting conversions (jobs.py) -- the
-# routes that act on anything, with /api/steps/cancel and the routes above.
+# Starting, watching, cancelling and deleting conversions (jobs.py) -- these
+# routes act on things, with the dataset registry routes above.
 # -------------------------------------------------------------------------
 
 

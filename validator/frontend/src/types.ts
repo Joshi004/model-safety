@@ -58,6 +58,9 @@ export interface Dataset {
   // Whether the original path exists and can be read right now.
   available: boolean
   unavailable_reason: string | null
+  // The state of each scanner on this dataset, by scanner key (Phase 4). Only
+  // GET /api/datasets and GET /api/datasets/{id} send it; register and PATCH don't.
+  scans?: Record<string, ScanSummary>
 }
 
 export interface DatasetsResponse {
@@ -500,4 +503,222 @@ export interface ConversionListResponse {
 export interface CancelResponse {
   cancelled: string[]
   not_active: string[]
+}
+
+// GET /api/conversions: every conversion of every dataset, for the Activity page. Each has
+// what a dataset's own list has (the log tails are always null here), plus the dataset's name.
+export interface ActivityConversion extends ConversionJob {
+  dataset_name: string
+}
+
+export interface AllConversionsResponse {
+  slurm_error: string | null
+  problems: string[]
+  has_active: boolean
+  conversions: ActivityConversion[]
+}
+
+// ---- Scanners and scans (backend/scanners.py, scans.py) ----
+
+// One setting of a scanner. Only choices exist so far; a value is always one of `choices`.
+export interface ScannerField {
+  name: string
+  label: string
+  type: 'choice'
+  choices: string[]
+  default: string
+  help: string
+}
+
+export interface ScannerInfo {
+  key: string
+  label: string
+  description: string
+  stages: string[]
+  gpu: boolean
+  fields: ScannerField[]
+  default_resources: JobResources
+  // How a scan over several datasets can be made, by mode; null when every dataset gets its own scan.
+  modes: Record<string, string> | null
+  default_mode: string | null
+  // What the headline count of a finished scan counts ("duplicate rows").
+  count_label: string
+}
+
+// GET /api/scanners.
+export interface ScannersResponse {
+  service_root: string
+  scanners: Record<string, ScannerInfo>
+  partitions: string[]
+  default_partition: string
+  max_cpus: number
+  // Set when sinfo couldn't be read (then `partitions` is empty).
+  slurm_error: string | null
+}
+
+export type ScanState =
+  | 'not_scanned'
+  | 'waiting_for_conversion'
+  | 'starting'
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'conversion_failed'
+  | 'unknown'
+
+// One scanner's state on one dataset: a dataset's `scans[scanner]`.
+export interface ScanSummary {
+  state: ScanState
+  scan_id: string | null
+  finished_at: string | null
+  // The headline number of a finished scan for this dataset (duplicate rows for dedup).
+  count: number | null
+  mode: string | null
+  reason: string | null
+}
+
+export interface ScanDatasetRequest {
+  id: string
+  reconvert: boolean
+}
+
+// The body of POST /api/scans/check and /api/scans/submit. `settings` holds a value for each
+// setting the user can change; one that is left out gets its default. Null resources mean the
+// scanner's own defaults. Scans use the default resources for any conversion they start.
+export interface ScansRequest {
+  scanner: string
+  datasets: ScanDatasetRequest[]
+  mode: string | null
+  settings: Record<string, string>
+  resources: JobResources | null
+  confirm_gpu: boolean
+}
+
+export type ScanAction = 'use_existing' | 'convert' | 'convert_again'
+
+export interface ScanCost {
+  gpus: number
+  cpus: number
+  mem: string
+  time: string
+  summary: string
+}
+
+// One dataset of one scan in POST /api/scans/check. `action` is null when the dataset can't
+// be made ready (`reason` says why).
+export interface ScanUnitDataset {
+  id: string
+  name: string
+  team: string
+  action: ScanAction | null
+  status: ConversionStatus
+  reason: string | null
+  prepared: { version_id: string; rows: number | null; finished_at: string | null } | null
+  will_delete: ConversionWillDelete | null
+  leftovers: string[]
+  // The folder name in the conversion commands is "<version-id>" until the job starts.
+  conversion_command: string | null
+  conversion_sbatch_command: string | null
+}
+
+// One scan the request would make. Datasets are in the order the scan reads them.
+export interface ScanUnit {
+  mode: string | null
+  datasets: ScanUnitDataset[]
+  blocked: string[]
+  warnings: string[]
+  cost: ScanCost | null
+  needs_gpu_confirmation: boolean
+  // "<version-id>" and "<scan-id>" stand for what isn't known until the jobs start.
+  command_text: string | null
+}
+
+export interface ScanCheckResponse {
+  scanner: string
+  label: string
+  mode: string | null
+  service_root: string
+  slurm_error: string | null
+  settings: Record<string, string>
+  resources: JobResources | null
+  // What is wrong with the request as a whole; what is wrong with one scan is in its unit.
+  blocked: string[]
+  units: ScanUnit[]
+  can_start: boolean
+}
+
+// A conversion a scan waits for.
+export interface ScanWaitingFor {
+  dataset_id: string
+  name: string
+  job_id: string
+  outcome: JobOutcome
+}
+
+// One scan, as GET /api/scans lists it.
+export interface ScanView {
+  id: string
+  scanner: string
+  label: string
+  mode: string | null
+  datasets: { id: string; name: string | null }[]
+  state: ScanState
+  reason: string | null
+  waiting_for: ScanWaitingFor[]
+  // SLURM's run time of the job ("1-02:03:04"). Null without a job, and once the scan has
+  // become a result.
+  elapsed: string | null
+  created_at: string | null
+  submitted_at: string | null
+  finished_at: string | null
+  cancelled_at: string | null
+  job_id: string | null
+  settings: Record<string, string>
+  resources: JobResources
+  // The conversions this scan started or waits for, by dataset id.
+  conversions: Record<string, { reconvert: boolean; job_id: string }>
+  folder: string
+  // Whether this scan is the current result of its datasets.
+  is_result: boolean
+}
+
+export interface ScansResponse {
+  service_root: string
+  slurm_error: string | null
+  problems: string[]
+  scans: ScanView[]
+}
+
+export interface ScanLog {
+  name: string
+  path: string
+  tail: string | null
+}
+
+// GET /api/scans/{id}: a scan in full.
+export interface ScanDetail extends ScanView {
+  slurm_error: string | null
+  // The Prepared version read for each dataset, once the scan has started.
+  versions: Record<string, { version_id: string; folder: string; rows: number | null }> | null
+  command_text: string | null
+  wrapper_output: string | null
+  // What a finished scan found (the scanner decides the keys); null until then.
+  details: Record<string, unknown> | null
+  logs: ScanLog[]
+}
+
+export interface ScanSubmitResponse {
+  slurm_error: string | null
+  scans: ScanView[]
+  conversions: { dataset_id: string; name: string; job_id: string; slurm_job_id: string | null }[]
+  errors: string[]
+}
+
+export interface ScanCancelResponse {
+  scan_id: string
+  cancelled: string[]
+  not_active: string[]
+  stopped_waiting: boolean
 }

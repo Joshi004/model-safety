@@ -230,8 +230,13 @@ def _modified_at(path: Path) -> str | None:
 # -------------------------------------------------------------------------
 
 
-def _state(state: str, reason: str | None = None, waiting_for: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    return {"state": state, "reason": reason, "waiting_for": waiting_for or []}
+def _state(
+    state: str,
+    reason: str | None = None,
+    waiting_for: list[dict[str, Any]] | None = None,
+    elapsed: str | None = None,
+) -> dict[str, Any]:
+    return {"state": state, "reason": reason, "waiting_for": waiting_for or [], "elapsed": elapsed}
 
 
 def _slurm_outcome(
@@ -262,6 +267,20 @@ def _slurm_outcome(
     if state in jobs.STILL_GOING_STATES:
         return jobs.STILL_GOING_STATES[state], f"SLURM accounting says {state}."
     return STATE_FAILED, f"SLURM state {record['state_text'] or 'unknown'}, exit code {record['exit_code']}."
+
+
+def _slurm_elapsed(
+    job_id: str,
+    active: dict[str, dict[str, Any]] | None,
+    accounted: dict[str, dict[str, Any]] | None,
+) -> str | None:
+    """How long SLURM says one job has run ("1-02:03:04" or "0:42"): from squeue while it is
+    listed, from sacct once it has left the queue. None when SLURM doesn't know."""
+    listed = (active or {}).get(job_id)
+    if listed is not None:
+        return listed["elapsed"]
+    record = (accounted or {}).get(job_id)
+    return record["elapsed"] if record is not None else None
 
 
 def _dataset(dataset_id: str, cache: dict[Any, Any]) -> dict[str, Any] | None:
@@ -343,8 +362,12 @@ def _state_of(
     if state == STATE_SUCCEEDED:
         # SLURM no longer lists the job, so it is safe to look for the marker.
         if not (_scan_folder(scan["id"]) / scanners.RESULTS_FOLDER / scanners.SUCCESS_MARKER).is_file():
-            return _state(STATE_FAILED, f"The job ended, but its results folder has no {scanners.SUCCESS_MARKER} marker.")
-    return _state(state, reason)
+            return _state(
+                STATE_FAILED,
+                f"The job ended, but its results folder has no {scanners.SUCCESS_MARKER} marker.",
+                elapsed=_slurm_elapsed(job_id, active, accounted),
+            )
+    return _state(state, reason, elapsed=_slurm_elapsed(job_id, active, accounted))
 
 
 def _states_of(scans: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], str | None]:
@@ -875,6 +898,9 @@ def _view(
         "state": state["state"],
         "reason": state["reason"],
         "waiting_for": state["waiting_for"],
+        # SLURM's run time of the job. None for a scan without a job, and for one that already
+        # became a result (SLURM isn't asked about those).
+        "elapsed": state["elapsed"],
         "created_at": scan.get("created_at"),
         "submitted_at": scan.get("submitted_at"),
         "finished_at": scan.get("finished_at"),

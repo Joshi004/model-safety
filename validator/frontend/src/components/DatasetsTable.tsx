@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { formatCount } from '../format'
 import { hrefFor } from '../route'
+import { STATE_TONES, chipLabel, chipTitle, scannerLabel } from '../scans'
 import type { Dataset } from '../types'
 import Chip from './Chip'
 import Menu from './Menu'
@@ -86,7 +87,16 @@ export default function DatasetsTable({
                 <Chip label="Unavailable" tone="error" title={dataset.unavailable_reason ?? undefined} />
               )}
             </td>
-            <td className="scans-cell" />
+            <td className="scans-cell">
+              {Object.entries(dataset.scans ?? {}).map(([scannerKey, summary]) => (
+                <Chip
+                  key={scannerKey}
+                  label={`${scannerLabel(scannerKey)}: ${chipLabel(summary)}`}
+                  tone={STATE_TONES[summary.state]}
+                  title={chipTitle(scannerKey, summary)}
+                />
+              ))}
+            </td>
             <td className="menu-cell">
               <Menu label="⋯" ariaLabel={`Actions for ${dataset.name}`} align="right">
                 <a role="menuitem" className="menu-item" href={hrefFor({ page: 'dataset', id: dataset.id })}>

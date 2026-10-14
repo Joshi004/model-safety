@@ -28,8 +28,8 @@ folders of failed or cancelled attempts, both only inside that dataset's `prepar
 folder (conversions.py). POST /api/datasets/{id}/conversions/{job_id}/cancel runs `scancel`
 on the one SLURM job the record lists. When a conversion has finished and passed its
 checks, reading a dataset or a conversion saves it as the dataset's current Prepared
-version in datasets.json. GET /api/conversions/settings, POST /api/conversions/check and
-GET /api/datasets/{id}/conversions[/{job_id}] only read, apart from that.
+version in datasets.json. GET /api/conversions/settings, POST /api/conversions/check, GET
+/api/conversions and GET /api/datasets/{id}/conversions[/{job_id}] only read, apart from that.
 
 The scan routes: POST /api/scans/submit first starts the conversions the chosen datasets need
 (as above, one job each), then one SLURM job per scan (`sbatch` on
@@ -471,6 +471,12 @@ def conversions_submit(body: ConversionsRequest) -> dict[str, Any]:
     items, resources = _items_and_resources(body)
     _scans_call(scans.refuse_if_scanning, items)
     return _conversions_call(conversions.submit, items, resources)
+
+
+@app.get("/api/conversions")
+def conversions_list() -> dict[str, Any]:
+    """Every conversion of every dataset, newest first (the Activity page)."""
+    return _conversions_call(conversions.list_all)
 
 
 @app.get("/api/datasets/{dataset_id}/conversions")

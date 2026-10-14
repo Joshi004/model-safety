@@ -1,15 +1,34 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { ApiError, errorMessage, getDataset } from '../api'
-import { formatTimestamp } from '../format'
-import { hrefFor } from '../route'
+import { formatCount, formatTimestamp } from '../format'
+import { DATASET_TABS, hrefFor } from '../route'
+import type { DatasetTab } from '../route'
 import type { Dataset } from '../types'
 import Chip from './Chip'
+import ConversionTab from './ConversionTab'
+import DataTab from './DataTab'
+import HistoryTab from './HistoryTab'
+import OverviewTab from './OverviewTab'
+import ResultsTab from './ResultsTab'
 
 type Loaded = { status: 'loading' } | { status: 'ready'; dataset: Dataset } | { status: 'error'; message: string }
 
-// A placeholder: the dataset's overview, data, conversion, results and history come later.
-export default function DatasetPage({ datasetId }: { datasetId: string }) {
+const TAB_LABELS: Record<DatasetTab, string> = {
+  overview: 'Overview',
+  data: 'Data',
+  conversion: 'Conversion',
+  results: 'Results',
+  history: 'History',
+}
+
+// One dataset: a header with what it is and its current Prepared version, and a tab for
+// each thing to do or look at. Everything shown is plain text.
+export default function DatasetPage({ datasetId, tab }: { datasetId: string; tab: DatasetTab }) {
   const [loaded, setLoaded] = useState<Loaded>({ status: 'loading' })
+  // The Conversion tab holds edits that aren't saved yet, so once it has been opened it
+  // stays mounted (hidden) while another tab is shown.
+  const [conversionOpened, setConversionOpened] = useState(tab === 'conversion')
+  if (tab === 'conversion' && !conversionOpened) setConversionOpened(true)
 
   useEffect(() => {
     let cancelled = false
@@ -22,15 +41,23 @@ export default function DatasetPage({ datasetId }: { datasetId: string }) {
         const notFound = error instanceof ApiError && error.status === 404
         setLoaded({
           status: 'error',
-          message: notFound
-            ? 'No dataset has this id. It may have been unregistered.'
-            : errorMessage(error),
+          message: notFound ? 'No dataset has this id. It may have been unregistered.' : errorMessage(error),
         })
       })
     return () => {
       cancelled = true
     }
   }, [datasetId])
+
+  // Reads the dataset again (a conversion started or finished) without going back to "Loading".
+  // A failure leaves what is shown as it is.
+  const reload = useCallback(() => {
+    getDataset(datasetId)
+      .then((dataset) => setLoaded({ status: 'ready', dataset }))
+      .catch(() => undefined)
+  }, [datasetId])
+
+  const setDataset = useCallback((dataset: Dataset) => setLoaded({ status: 'ready', dataset }), [])
 
   return (
     <>
@@ -57,6 +84,7 @@ export default function DatasetPage({ datasetId }: { datasetId: string }) {
               <Chip label="Unavailable" tone="error" title={loaded.dataset.unavailable_reason ?? undefined} />
             )}
           </div>
+
           <div className="card">
             <dl className="facts">
               <dt>Path</dt>
@@ -69,11 +97,47 @@ export default function DatasetPage({ datasetId }: { datasetId: string }) {
                   <dd>{loaded.dataset.unavailable_reason}</dd>
                 </>
               )}
+              <dt>Converted data</dt>
+              <dd>
+                {loaded.dataset.prepared !== null ? (
+                  <>
+                    {formatCount(loaded.dataset.prepared.rows)} rows
+                    {loaded.dataset.prepared.finished_at !== null &&
+                      `, converted ${formatTimestamp(loaded.dataset.prepared.finished_at)}`}{' '}
+                    <span className="muted">(version {loaded.dataset.prepared.version_id})</span>
+                  </>
+                ) : (
+                  <span className="muted">Not converted</span>
+                )}
+              </dd>
               <dt>Registered</dt>
               <dd>{formatTimestamp(loaded.dataset.created_at)}</dd>
             </dl>
-            <p className="muted">More about this dataset is coming.</p>
           </div>
+
+          <div className="tabs" role="tablist" aria-label="Dataset">
+            {DATASET_TABS.map((name) => (
+              <a
+                key={name}
+                role="tab"
+                aria-selected={tab === name}
+                className={tab === name ? 'tab selected' : 'tab'}
+                href={hrefFor({ page: 'dataset', id: datasetId, tab: name })}
+              >
+                {TAB_LABELS[name]}
+              </a>
+            ))}
+          </div>
+
+          {tab === 'overview' && <OverviewTab dataset={loaded.dataset} />}
+          {tab === 'data' && <DataTab dataset={loaded.dataset} />}
+          {conversionOpened && (
+            <div hidden={tab !== 'conversion'}>
+              <ConversionTab dataset={loaded.dataset} onDatasetChanged={setDataset} onReload={reload} />
+            </div>
+          )}
+          {tab === 'results' && <ResultsTab />}
+          {tab === 'history' && <HistoryTab dataset={loaded.dataset} onChanged={reload} />}
         </>
       )}
     </>

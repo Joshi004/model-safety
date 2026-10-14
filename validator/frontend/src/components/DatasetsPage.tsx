@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { errorMessage, getTeams, listDatasets } from '../api'
 import { loadString, saveString } from '../storage'
-import type { Dataset, Team, UnregisterResponse } from '../types'
+import type { ConversionSubmitResponse, Dataset, Team, UnregisterResponse } from '../types'
 import ActionBar from './ActionBar'
+import ConvertDialog from './ConvertDialog'
 import DatasetsTable from './DatasetsTable'
 import RegisterDatasetDialog from './RegisterDatasetDialog'
 import UnregisterDialog from './UnregisterDialog'
@@ -22,6 +23,7 @@ export default function DatasetsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const [registering, setRegistering] = useState(false)
+  const [converting, setConverting] = useState(false)
   const [unregistering, setUnregistering] = useState<Dataset | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -117,6 +119,21 @@ export default function DatasetsPage() {
       next.delete(result.id)
       return next
     })
+    reload()
+  }
+
+  function handleConverting() {
+    setNotice(null)
+    setConverting(true)
+  }
+
+  function handleConversionsStarted(result: ConversionSubmitResponse) {
+    setConverting(false)
+    const count = result.started.length
+    const problems = result.errors.length > 0 ? ` Problems: ${result.errors.join(' ')}` : ''
+    setNotice(
+      `Started ${count} ${count === 1 ? 'conversion' : 'conversions'}. Open a dataset's Conversion tab to watch one.${problems}`,
+    )
     reload()
   }
 
@@ -217,7 +234,13 @@ export default function DatasetsPage() {
             </span>
           </div>
 
-          {selected.size > 0 && <ActionBar count={selected.size} onClear={() => setSelected(new Set())} />}
+          {selected.size > 0 && (
+            <ActionBar
+              count={selected.size}
+              onClear={() => setSelected(new Set())}
+              onConvertOnly={handleConverting}
+            />
+          )}
 
           {visible.length === 0 ? (
             <p className="empty-state muted">{emptyMessage()}</p>
@@ -239,6 +262,14 @@ export default function DatasetsPage() {
           defaultTeam={activeTeam}
           onClose={() => setRegistering(false)}
           onRegistered={handleRegistered}
+        />
+      )}
+
+      {converting && datasets !== null && (
+        <ConvertDialog
+          datasets={datasets.filter((dataset) => selected.has(dataset.id))}
+          onClose={() => setConverting(false)}
+          onStarted={handleConversionsStarted}
         />
       )}
 

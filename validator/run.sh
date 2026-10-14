@@ -13,12 +13,14 @@
 # Looking at data is read-only. Only these act on anything, and they act as
 # you (sbatch, squeue, sacct, sinfo and scancel must be on your PATH):
 #
-#   Conversions: the Start panel's "Start" and "Delete and start fresh", the
-#   batch review's "Start" and "Delete N folders and start fresh", and the Jobs
-#   view's Cancel. Start submits CPU-only SLURM jobs (one per dataset), Cancel
-#   runs scancel, and Delete removes run folders -- only inside the runs root,
-#   which is $VALIDATOR_RUNS_ROOT or <repo>/output/prepared. Job logs and batch
-#   records go under <runs root>/_jobs.
+#   Conversions: a dataset's "Convert" and "Convert again", "More -> Convert only",
+#   and Cancel. Convert submits a CPU-only SLURM job per dataset, which writes into
+#   <service root>/datasets/<id>/prepared/<version id>/ (job records in .../_jobs,
+#   logs in .../_logs). Cancel runs scancel on that job. "Convert again" deletes the
+#   dataset's current Prepared version first, and every start deletes the folders of
+#   that dataset's failed or cancelled attempts -- only inside its own prepared/
+#   folder. When a conversion has finished and passed its checks, it is saved as the
+#   dataset's current Prepared version in datasets.json.
 #
 #   Dataset registry: registering, editing and unregistering a dataset write
 #   <service root>/registry/datasets.json, where the service root is

@@ -8,8 +8,12 @@ Rules this module keeps:
 
 * The original data a record points at is only looked at (`stat`, `os.access`),
   never opened, written to, moved or deleted.
-* The only thing ever deleted is `<service root>/datasets/<id>`, when a dataset is
+* The only thing this module deletes is `<service root>/datasets/<id>`, when a dataset is
   unregistered, after checking the id and that the folder really is that path.
+  (conversions.py deletes the Prepared version folders inside it, with its own checks.)
+* `prepared` (the current Prepared version) and `kept_versions` (versions kept on disk
+  after a re-conversion) are only changed by `set_prepared` and `clear_prepared`, which
+  conversions.py calls. They are not part of `update`.
 * One lock covers every read and write of the file, because FastAPI runs these
   handlers in a thread pool. A write goes to a temp file first and is then moved
   into place with `os.replace`, so the file is never half written.
@@ -185,7 +189,8 @@ def make_record(
     conversion: dict[str, Any] | None,
     created_at: str,
 ) -> dict[str, Any]:
-    """One registry entry. `prepared` and `parent` are set by later phases."""
+    """One registry entry. `prepared` is set when a conversion finishes (Phase 3) and
+    `parent` by Phase 10."""
     return {
         "id": dataset_id,
         "team": team,
@@ -196,6 +201,7 @@ def make_record(
         "created_at": created_at,
         "conversion": conversion,
         "prepared": None,
+        "kept_versions": [],
         "parent": None,
     }
 
@@ -411,7 +417,13 @@ def _index_of(records: list[dict[str, Any]], dataset_id: Any) -> int:
 
 def _with_availability(record: dict[str, Any]) -> dict[str, Any]:
     reason = unavailable_reason(Path(record["path"]))
-    return {**record, "available": reason is None, "unavailable_reason": reason}
+    return {
+        **record,
+        # Entries saved before Phase 3 have no such list.
+        "kept_versions": record.get("kept_versions") or [],
+        "available": reason is None,
+        "unavailable_reason": reason,
+    }
 
 
 def list_datasets(team: str | None = None) -> list[dict[str, Any]]:
@@ -504,13 +516,56 @@ def update(dataset_id: str, fields: dict[str, Any]) -> dict[str, Any]:
     return _with_availability(changed)
 
 
+def unconverted_ids() -> list[str]:
+    """The ids of the datasets that have no current Prepared version."""
+    with _LOCK:
+        records = _read_registry()["datasets"]
+    return [record["id"] for record in records if record.get("prepared") is None]
+
+
+def set_prepared(dataset_id: str, prepared: dict[str, Any]) -> bool:
+    """Make `prepared` the dataset's current Prepared version, but only while it has none.
+    Returns whether it was set. Called by conversions.py when a conversion has finished and
+    its checks passed. Not reachable from a request: `update` refuses the field."""
+    with _LOCK:
+        data = _read_registry()
+        records = data["datasets"]
+        record = records[_index_of(records, dataset_id)]
+        if record.get("prepared") is not None:
+            return False
+        record["prepared"] = prepared
+        _save(data)
+    return True
+
+
+def clear_prepared(dataset_id: str, version_id: str) -> bool:
+    """Forget the current Prepared version when it is `version_id`, because it is being
+    replaced. A version marked `kept` (a filtered dataset was made from it) is added to
+    `kept_versions` so its folder is never deleted. Returns whether anything changed.
+    This only changes the registry; conversions.py deletes the folder."""
+    with _LOCK:
+        data = _read_registry()
+        records = data["datasets"]
+        record = records[_index_of(records, dataset_id)]
+        current = record.get("prepared")
+        if not isinstance(current, dict) or current.get("version_id") != version_id:
+            return False
+        record["prepared"] = None
+        if current.get("kept"):
+            record["kept_versions"] = [*(record.get("kept_versions") or []), current]
+        _save(data)
+    return True
+
+
 def unregister(dataset_id: str) -> dict[str, Any]:
     """Remove a dataset's entry and its folder under `<service root>/datasets`.
     The original data is never touched.
 
     The folder is deleted first and the entry afterwards, so a folder that can't be
-    deleted leaves the dataset registered and the request can be repeated. Later
-    phases add what else belongs to a dataset (running conversions, scans)."""
+    deleted leaves the dataset registered and the request can be repeated. The
+    folder holds the dataset's Prepared versions and conversion records. A running
+    conversion is checked by conversions.unregister, which the route calls; later
+    phases add scans."""
     with _LOCK:
         data = _read_registry()
         records = data["datasets"]

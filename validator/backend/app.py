@@ -7,22 +7,29 @@ and anyone who can already reach this machine's localhost (e.g. another
 user logged into the same login node) can reach this too. That's a
 deliberate choice for a trusted-network deployment.
 
-Only these routes act on anything: the /api/jobs/* ones (jobs.py) and the dataset
-registry ones (registry.py). /api/jobs/submit starts SLURM conversion jobs (one
-`prepare_rows.py` run each, CPU only), /api/jobs/cancel cancels them,
-/api/jobs/delete deletes run folders (only inside the runs root, after the checks in
-jobs.py), and submit also writes batch records under <runs root>/_jobs.
-/api/jobs/settings, /api/jobs/check, /api/jobs/batches and /api/jobs/status only read.
+Only these routes act on anything: the dataset registry ones (registry.py) and the
+conversion ones (conversions.py).
 
 The dataset registry routes: POST /api/datasets and PATCH /api/datasets/{id} write
 <service root>/registry/datasets.json, and POST /api/datasets/{id}/unregister removes an
 entry and deletes that dataset's own folder <service root>/datasets/<id>, after checking
-the id and the folder's location. The first read of a new service root also writes
-datasets.json, from the catalog in registry_seed.py. The service root is
-$VALIDATOR_SERVICE_ROOT, or <repo>/output/service. GET /api/teams, GET /api/datasets and
-GET /api/datasets/{id} only read, and only check that a dataset's path exists and can be
-read. Every other route is read-only, and none of them ever writes to or deletes
-original data.
+the id and the folder's location (it is refused while a conversion of the dataset is
+queued or running). The first read of a new service root also writes datasets.json, from
+the catalog in registry_seed.py. The service root is $VALIDATOR_SERVICE_ROOT, or
+<repo>/output/service. GET /api/teams, GET /api/datasets and GET /api/datasets/{id} only
+check that a dataset's path exists and can be read.
+
+The conversion routes: POST /api/conversions/submit starts one SLURM job per dataset (one
+`prepare_rows.py` run each, CPU only), writing into <service root>/datasets/<id>/prepared/
+<version id>/, with the job's record in .../_jobs and its logs in .../_logs. With "convert
+again" it first deletes the dataset's current Prepared version, and it always deletes the
+folders of failed or cancelled attempts, both only inside that dataset's `prepared`
+folder (conversions.py). POST /api/datasets/{id}/conversions/{job_id}/cancel runs `scancel`
+on the one SLURM job the record lists. When a conversion has finished and passed its
+checks, reading a dataset or a conversion saves it as the dataset's current Prepared
+version in datasets.json. GET /api/conversions/settings, POST /api/conversions/check and
+GET /api/datasets/{id}/conversions[/{job_id}] only read, apart from that. Every other
+route is read-only, and none of them ever writes to or deletes original data.
 
 This process never writes to the data it inspects: /api/inspect and
 /api/preview only read a bounded sample and report what would happen,
@@ -51,6 +58,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+import conversions
 import detect
 import jobs
 import preview
@@ -111,6 +119,16 @@ def _registry_call(function: Any, *args: Any) -> Any:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+def _conversions_call(function: Any, *args: Any) -> Any:
+    """`_registry_call`, plus the errors of conversions.py and jobs.py."""
+    try:
+        return _registry_call(function, *args)
+    except jobs.JobsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except jobs.SlurmUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/api/teams")
 def teams() -> dict[str, Any]:
     """The fixed list of teams a dataset can belong to."""
@@ -120,7 +138,9 @@ def teams() -> dict[str, Any]:
 @app.get("/api/datasets")
 def datasets_list(team: str | None = None) -> dict[str, Any]:
     """Every registered dataset (or one team's), each with whether its path can still be
-    read. The first call on a new service root creates the registry from the old catalog."""
+    read. The first call on a new service root creates the registry from the old catalog.
+    A conversion that has finished is made the dataset's current Prepared version first."""
+    _conversions_call(conversions.refresh_all)
     return {
         "service_root": str(registry.service_root()),
         "datasets": _registry_call(registry.list_datasets, team),
@@ -129,6 +149,9 @@ def datasets_list(team: str | None = None) -> dict[str, Any]:
 
 @app.get("/api/datasets/{dataset_id}")
 def dataset_get(dataset_id: str) -> dict[str, Any]:
+    # An id that isn't one is refused by get_dataset below, with its own message.
+    if registry.DATASET_ID.fullmatch(dataset_id) is not None:
+        _conversions_call(conversions.refresh, dataset_id)
     return _registry_call(registry.get_dataset, dataset_id)
 
 
@@ -146,9 +169,9 @@ def dataset_update(dataset_id: str, body: DatasetUpdateRequest) -> dict[str, Any
 
 @app.post("/api/datasets/{dataset_id}/unregister")
 def dataset_unregister(dataset_id: str) -> dict[str, Any]:
-    """Remove a dataset's entry and its folder under the service root. The original
-    data is never touched."""
-    return _registry_call(registry.unregister, dataset_id)
+    """Remove a dataset's entry and its folder under the service root. Refused while a
+    conversion of the dataset is queued or running. The original data is never touched."""
+    return _conversions_call(conversions.unregister, dataset_id)
 
 
 class InspectRequest(BaseModel):
@@ -349,29 +372,10 @@ def prepared_row(body: PreparedRowRequest) -> dict[str, Any]:
 
 
 # -------------------------------------------------------------------------
-# Starting, watching, cancelling and deleting conversions (jobs.py) -- these
-# routes act on things, with the dataset registry routes above.
+# Starting, watching and cancelling the conversion of a dataset (conversions.py)
+# -- the submit and cancel routes act on things, with the dataset registry routes
+# above. A conversion uses the settings saved on the dataset, so none are sent here.
 # -------------------------------------------------------------------------
-
-
-class PlannedRun(BaseModel):
-    # Catalog entries send team, group and label (they decide the suggested
-    # folder name); a custom path sends none of them.
-    label: str | None = None
-    team: str | None = None
-    group: str | None = None
-    input_path: str
-    input_type: str
-    file: str | None = None
-    split: str = "train"
-    hf_config: str = ""
-    map: dict[str, str] = Field(default_factory=dict)
-    require: list[str] = Field(default_factory=list)
-    exclude_metadata: list[str] = Field(default_factory=list)
-    # Relative to the runs root; null means the suggested folder name.
-    run_folder: str | None = None
-    # Only read by /api/jobs/submit: run it again even if it's already done.
-    run_again: bool = False
 
 
 class JobResources(BaseModel):
@@ -383,82 +387,63 @@ class JobResources(BaseModel):
     time: Any = None
 
 
-class CheckRequest(BaseModel):
-    runs: list[PlannedRun]
+class ConversionItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    # Delete the current Prepared version and convert again (D6).
+    reconvert: bool = False
+
+
+class ConversionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[ConversionItem]
+    # Null means the default resources (conversions.settings).
     resources: JobResources | None = None
 
 
-class SubmitRequest(BaseModel):
-    runs: list[PlannedRun]
-    resources: JobResources
+def _items_and_resources(body: ConversionsRequest) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    items = [item.model_dump() for item in body.items]
+    return items, body.resources.model_dump() if body.resources is not None else None
 
 
-class DeleteRequest(BaseModel):
-    run_dirs: list[str]
+@app.get("/api/conversions/settings")
+def conversions_settings() -> dict[str, Any]:
+    """The partitions `sinfo` lists, and the default resources of a conversion."""
+    return _conversions_call(conversions.settings)
 
 
-class BatchRequest(BaseModel):
-    batch_id: str
+@app.post("/api/conversions/check")
+def conversions_check(body: ConversionsRequest) -> dict[str, Any]:
+    """For each dataset: whether a conversion can start, what it would delete, and the
+    commands. Starts and deletes nothing."""
+    items, resources = _items_and_resources(body)
+    return _conversions_call(conversions.check, items, resources)
 
 
-class CancelRequest(BaseModel):
-    batch_id: str
-    job_ids: list[str] | None = None
+@app.post("/api/conversions/submit")
+def conversions_submit(body: ConversionsRequest) -> dict[str, Any]:
+    """Start one SLURM job per dataset. The whole request is refused if any dataset
+    can't be started."""
+    items, resources = _items_and_resources(body)
+    return _conversions_call(conversions.submit, items, resources)
 
 
-def _jobs_call(function: Any, *args: Any) -> Any:
-    try:
-        return function(*args)
-    except jobs.JobsError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except jobs.SlurmUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+@app.get("/api/datasets/{dataset_id}/conversions")
+def dataset_conversions(dataset_id: str) -> dict[str, Any]:
+    """Every conversion of one dataset, newest first."""
+    return _conversions_call(conversions.list_conversions, dataset_id)
 
 
-@app.get("/api/jobs/settings")
-def jobs_settings() -> dict[str, Any]:
-    """The runs root, the partitions `sinfo` lists, and the default resources."""
-    return _jobs_call(jobs.settings)
+@app.get("/api/datasets/{dataset_id}/conversions/{job_id}")
+def dataset_conversion(dataset_id: str, job_id: str) -> dict[str, Any]:
+    """One conversion: its outcome, progress, summary and log tails."""
+    return _conversions_call(conversions.conversion_status, dataset_id, job_id)
 
 
-@app.post("/api/jobs/check")
-def jobs_check(body: CheckRequest) -> dict[str, Any]:
-    """For each planned run: its folder, what's already in it, and the exact
-    commands. Read-only."""
-    planned = [run.model_dump() for run in body.runs]
-    resources = body.resources.model_dump() if body.resources is not None else None
-    return _jobs_call(jobs.check, planned, resources)
-
-
-@app.post("/api/jobs/delete")
-def jobs_delete(body: DeleteRequest) -> dict[str, Any]:
-    """Delete run folders inside the runs root (jobs.delete_folders)."""
-    return _jobs_call(jobs.delete_folders, body.run_dirs)
-
-
-@app.post("/api/jobs/submit")
-def jobs_submit(body: SubmitRequest) -> dict[str, Any]:
-    """Start one SLURM job per planned run, as one batch (jobs.submit)."""
-    planned = [run.model_dump() for run in body.runs]
-    return _jobs_call(jobs.submit, planned, body.resources.model_dump())
-
-
-@app.get("/api/jobs/batches")
-def jobs_batches() -> dict[str, Any]:
-    """Every batch, newest first, with its count of jobs per outcome."""
-    return _jobs_call(jobs.list_batches)
-
-
-@app.post("/api/jobs/status")
-def jobs_status(body: BatchRequest) -> dict[str, Any]:
-    """Each job of one batch: its outcome, progress, summary and log tails."""
-    return _jobs_call(jobs.batch_status, body.batch_id)
-
-
-@app.post("/api/jobs/cancel")
-def jobs_cancel(body: CancelRequest) -> dict[str, Any]:
-    """`scancel` a batch's queued or running jobs (all, or the IDs given)."""
-    return _jobs_call(jobs.cancel, body.batch_id, body.job_ids)
+@app.post("/api/datasets/{dataset_id}/conversions/{job_id}/cancel")
+def dataset_conversion_cancel(dataset_id: str, job_id: str) -> dict[str, Any]:
+    """`scancel` the one SLURM job this conversion's record lists."""
+    return _conversions_call(conversions.cancel, dataset_id, job_id)
 
 
 # Serves the built frontend (validator/frontend/dist, built by run.sh) at

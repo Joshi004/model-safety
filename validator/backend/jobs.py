@@ -376,9 +376,9 @@ def validate_resources(raw: dict[str, Any] | None) -> dict[str, Any]:
     return {"partition": partition, "cpus": cpus, "mem": mem, "time": time_limit}
 
 
-def sbatch_args(resources: dict[str, Any], job_name: str, args: list[str], root: Path) -> list[str]:
-    """The exact `sbatch` call (run from the repo root) for one run."""
-    logs = root / runs.JOBS_FOLDER / "logs"
+def sbatch_args(resources: dict[str, Any], job_name: str, args: list[str], logs: Path) -> list[str]:
+    """The exact `sbatch` call (run from the repo root) for one run. The job's output and
+    error files go in the folder `logs`, named by the SLURM job ID."""
     return [
         "sbatch",
         "--parsable",
@@ -646,7 +646,7 @@ def _plan_one(
         )
         if resources is not None:
             job_name = f"prepare_{slug(label)[:JOB_NAME_SLUG_CHARS]}"
-            result["sbatch_command"] = shlex.join(sbatch_args(resources, job_name, args, root))
+            result["sbatch_command"] = shlex.join(sbatch_args(resources, job_name, args, _logs_folder(root)))
 
     problem = _check_location(run_dir, root)
     if problem is not None:
@@ -842,10 +842,10 @@ def _new_batch_id() -> str:
     return f"{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
 
 
-def _submit_one(root: Path, resources: dict[str, Any], job: dict[str, Any]) -> None:
+def _submit_one(logs: Path, resources: dict[str, Any], job: dict[str, Any]) -> None:
     """Run `sbatch` for one job record and note the result in it."""
     job_name = f"prepare_{slug(job['label'])[:JOB_NAME_SLUG_CHARS]}"
-    argv = sbatch_args(resources, job_name, job["prepare_args"], root)
+    argv = sbatch_args(resources, job_name, job["prepare_args"], logs)
     # Stamped first: the job can start writing before sbatch returns.
     job["submitted_at"] = _now_iso()
     try:
@@ -860,7 +860,6 @@ def _submit_one(root: Path, resources: dict[str, Any], job: dict[str, Any]) -> N
     if not job_id.isdigit():
         job["submit_error"] = f"sbatch printed something unexpected: {result.stdout.strip()!r}"
         return
-    logs = _logs_folder(root)
     job["slurm_job_id"] = job_id
     job["out_log"] = str(logs / f"{job_id}.out")
     job["err_log"] = str(logs / f"{job_id}.err")
@@ -919,7 +918,7 @@ def submit(planned_runs: list[dict[str, Any]], resources_in: dict[str, Any] | No
         _write_json_atomic(record_path, batch)
         for job in jobs:
             if job["skipped"] is None:
-                _submit_one(root, resources, job)
+                _submit_one(_logs_folder(root), resources, job)
                 _write_json_atomic(record_path, batch)
 
         return {

@@ -54,7 +54,7 @@ VERSION_PLACEHOLDER = "<version-id>"
 MAX_ITEMS = 200
 
 # A dataset in one of these statuses can't be started as it is.
-BLOCKING_STATUSES = ("converted", "unavailable", "no_settings", "invalid", "slurm_error", "active")
+BLOCKING_STATUSES = ("converted", "filtered", "unavailable", "no_settings", "invalid", "slurm_error", "active")
 
 _LOCK = threading.Lock()
 
@@ -368,6 +368,15 @@ def _plan_item(
     # comes before the availability check.
     if prepared is not None and not reconvert:
         return refuse("converted", 'Already converted. Choose "Convert again" to replace it.')
+    # A filtered version is made by dropping rows from another dataset's converted data (its
+    # filter job writes the Prepared version), never by converting the original data again.
+    # This one gate covers check, submit, start_conversion and the scan dialog.
+    if dataset.get("parent"):
+        return refuse(
+            "filtered",
+            "This is a filtered version: it is made by dropping rows from another dataset's converted "
+            "data, so it can't be converted. If its filter job failed, unregister it and drop the rows again.",
+        )
     if not dataset["available"]:
         return refuse("unavailable", dataset["unavailable_reason"] or "The original data can't be read.")
     if dataset["conversion"] is None:

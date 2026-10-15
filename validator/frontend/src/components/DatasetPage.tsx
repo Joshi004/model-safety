@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import { ApiError, errorMessage, getDataset } from '../api'
+import { EMPTY_SELECTION, clearAll } from '../drop'
+import type { DropSelection } from '../drop'
 import { formatCount, formatTimestamp } from '../format'
 import { DATASET_TABS, hrefFor } from '../route'
 import type { DatasetTab } from '../route'
-import type { Dataset } from '../types'
+import type { Dataset, DropSubmitResponse } from '../types'
 import Chip from './Chip'
 import ConversionTab from './ConversionTab'
 import DataTab from './DataTab'
+import { DropBar } from './DropDialog'
 import HistoryTab from './HistoryTab'
 import OverviewTab from './OverviewTab'
 import ResultPage from './ResultPage'
@@ -70,6 +74,53 @@ export default function DatasetPage({
 
   const setDataset = useCallback((dataset: Dataset) => setLoaded({ status: 'ready', dataset }), [])
 
+  // The rows chosen to drop, from every result page of this dataset. They belong to one version of
+  // its converted data: when that changes (it is converted again) they are forgotten, which is
+  // worked out here instead of being reset by an effect.
+  const version = loaded.status === 'ready' ? (loaded.dataset.prepared?.version_id ?? null) : null
+  const [chosen, setChosen] = useState<{ version: string | null; selection: DropSelection }>({
+    version: null,
+    selection: EMPTY_SELECTION,
+  })
+  const selection = chosen.version === version ? chosen.selection : EMPTY_SELECTION
+  const changeSelection = useCallback(
+    (change: (current: DropSelection) => DropSelection) =>
+      setChosen((current) => ({
+        version,
+        selection: change(current.version === version ? current.selection : EMPTY_SELECTION),
+      })),
+    [version],
+  )
+  // What to say after rows were dropped: where the new dataset is, or why it didn't start.
+  const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; content: ReactNode } | null>(null)
+
+  function dropped(response: DropSubmitResponse, parentName: string) {
+    changeSelection(clearAll)
+    const rows = `${formatCount(response.rows)} ${response.rows === 1 ? 'row' : 'rows'}`
+    const link = <a href={hrefFor({ page: 'dataset', id: response.dataset_id })}>{response.name}</a>
+    setNotice(
+      response.submit_error === null
+        ? {
+            tone: 'ok',
+            content: (
+              <>
+                Dropping {rows} from {parentName}: {link} is being made. Watch it on the{' '}
+                <a href={hrefFor({ page: 'activity' })}>Activity page</a>. {parentName} itself isn't changed.
+              </>
+            ),
+          }
+        : {
+            tone: 'error',
+            content: (
+              <>
+                {link} was made, but its job didn't start: {response.submit_error} Unregister it, then try again.
+              </>
+            ),
+          },
+    )
+    reload()
+  }
+
   return (
     <>
       <p className="back-link">
@@ -130,6 +181,15 @@ export default function DatasetPage({
             </dl>
           </div>
 
+          {notice !== null && (
+            <div className={notice.tone === 'ok' ? 'banner banner-ok' : 'banner banner-error'} role="status">
+              <span>{notice.content}</span>
+              <button type="button" className="link-button" onClick={() => setNotice(null)}>
+                Dismiss
+              </button>
+            </div>
+          )}
+
           <div className="tabs" role="tablist" aria-label="Dataset">
             {DATASET_TABS.map((name) => (
               <a
@@ -155,9 +215,24 @@ export default function DatasetPage({
             (scanner === null ? (
               <ResultsTab dataset={loaded.dataset} onChanged={reload} />
             ) : (
-              <ResultPage key={scanner} dataset={loaded.dataset} scanner={scanner} onChanged={reload} />
+              <ResultPage
+                key={scanner}
+                dataset={loaded.dataset}
+                scanner={scanner}
+                selection={selection}
+                onSelectionChange={changeSelection}
+                onChanged={reload}
+              />
             ))}
           {tab === 'history' && <HistoryTab dataset={loaded.dataset} onChanged={reload} />}
+          {tab === 'results' && (
+            <DropBar
+              dataset={loaded.dataset}
+              selection={selection}
+              onClear={() => changeSelection(clearAll)}
+              onDropped={(response) => dropped(response, loaded.dataset.name)}
+            />
+          )}
         </>
       )}
     </>

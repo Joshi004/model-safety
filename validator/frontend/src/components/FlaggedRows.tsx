@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { errorMessage, getFlaggedPage } from '../api'
+import { isChosen } from '../drop'
+import type { ScannerSelection } from '../drop'
 import { describeFound, findingName, nameFilterLabel, reasonLabel } from '../flagged'
 import { formatCount } from '../format'
 import { basename } from '../origin'
-import type { FlaggedOption, FlaggedPage } from '../types'
+import type { DropRow, FlaggedOption, FlaggedPage } from '../types'
 import FlaggedRowPanel from './FlaggedRowPanel'
 
 // The flagged rows of one result, a page at a time, from the findings index (so a page never
@@ -11,18 +13,14 @@ import FlaggedRowPanel from './FlaggedRowPanel'
 // category, or the dataset a duplicate's kept copy is in) for most scanners, and for toxicity
 // by the categories and verdicts chosen above this table. A row opens below the table.
 //
-// Rows can be ticked, and the ticks are kept while paging. Nothing is done with them yet: dropping
-// the rows comes later.
+// Rows can be ticked, or every row matching the filters chosen at once ("select all matching",
+// not only the rows on this page). What is chosen belongs to the dataset page above, which keeps
+// it while paging and while moving between result pages, and drops it from there.
 //
 // Safety: every value shown here comes from files on disk and renders as plain React text,
 // never as markup.
 
 const PAGE_SIZE = 50
-
-// A row is told apart by its place in the dataset's Prepared version.
-function rowKey(file: string, line: number): string {
-  return `${line}|${file}`
-}
 
 function FilterSelect({
   id,
@@ -69,17 +67,25 @@ export default function FlaggedRows({
   scanner,
   categories,
   verdicts,
+  chosen,
+  onRows,
+  onSelectAll,
+  onClear,
 }: {
   datasetId: string
   scanner: string
   // Toxicity's choice of what counts as flagged (null: the scan's own). Other scanners have none.
   categories: string[] | null
   verdicts: string[] | null
+  // What is chosen from this result so far, or null.
+  chosen: ScannerSelection | null
+  onRows: (rows: DropRow[], checked: boolean) => void
+  onSelectAll: (filters: { reason: string | null; name: string | null }, total: number) => void
+  onClear: () => void
 }) {
   const [reason, setReason] = useState('')
   const [name, setName] = useState('')
   const [page, setPage] = useState(1)
-  const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [open, setOpen] = useState<OpenRow | null>(null)
 
   // What was asked for, so an answer for an earlier request is never taken for this one. The
@@ -120,37 +126,26 @@ export default function FlaggedRows({
   const pages = shown === null ? 1 : Math.max(1, Math.ceil(shown.total / shown.page_size))
 
   // A filter changes the rows that match, so the list starts again from its first page, and
-  // the ticks and the open row are forgotten.
+  // what was chosen from this result and the open row are forgotten.
   function changed(setter: (value: string) => void) {
     return (value: string) => {
       setter(value)
       setPage(1)
-      setSelected(new Set())
+      onClear()
       setOpen(null)
     }
   }
 
-  function toggle(key: string, checked: boolean) {
-    setSelected((previous) => {
-      const next = new Set(previous)
-      if (checked) next.add(key)
-      else next.delete(key)
-      return next
-    })
-  }
-
   const entries = shown?.entries ?? []
-  const allOnPage = entries.length > 0 && entries.every((entry) => selected.has(rowKey(entry.file, entry.line)))
+  // With every matching row chosen, rows can't be ticked or unticked one by one.
+  const everythingChosen = chosen?.all != null
+  const allOnPage = entries.length > 0 && entries.every((entry) => isChosen(chosen, entry.file, entry.line))
 
   function togglePage(checked: boolean) {
-    setSelected((previous) => {
-      const next = new Set(previous)
-      for (const entry of entries) {
-        if (checked) next.add(rowKey(entry.file, entry.line))
-        else next.delete(rowKey(entry.file, entry.line))
-      }
-      return next
-    })
+    onRows(
+      entries.map((entry) => ({ file: entry.file, line: entry.line })),
+      checked,
+    )
   }
 
   const reasonOptions = shown?.options.reasons ?? []
@@ -209,13 +204,32 @@ export default function FlaggedRows({
             </div>
           </div>
 
-          {selected.size > 0 && (
+          {chosen !== null && (
             <p className="small">
-              {formatCount(selected.size)} selected.{' '}
-              <button type="button" className="link-button" onClick={() => setSelected(new Set())}>
+              {chosen.all !== null
+                ? `All ${formatCount(chosen.all.total)} matching rows are chosen.`
+                : `${formatCount(chosen.rows.size)} chosen.`}{' '}
+              <button type="button" className="link-button" onClick={onClear}>
                 Clear
               </button>{' '}
-              <span className="muted">They are kept while you page. Dropping them isn't available yet.</span>
+              <span className="muted">
+                They are kept while you page and while you look at the other results of this dataset.
+              </span>
+            </p>
+          )}
+          {shown.total > 0 && !everythingChosen && (
+            <p className="small">
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => onSelectAll({ reason: reason === '' ? null : reason, name: name === '' ? null : name }, shown.total)}
+              >
+                Choose all {formatCount(shown.total)} matching {shown.total === 1 ? 'row' : 'rows'}
+              </button>{' '}
+              <span className="muted">
+                {shown.total > entries.length ? 'Not only the ones on this page. ' : ''}
+                The server counts them again when you review the drop.
+              </span>
             </p>
           )}
 
@@ -229,6 +243,7 @@ export default function FlaggedRows({
                       <input
                         type="checkbox"
                         checked={allOnPage}
+                        disabled={everythingChosen}
                         onChange={(event) => togglePage(event.target.checked)}
                         aria-label="Select every row on this page"
                       />
@@ -241,7 +256,7 @@ export default function FlaggedRows({
                 </thead>
                 <tbody>
                   {entries.map((entry) => {
-                    const key = rowKey(entry.file, entry.line)
+                    const key = `${entry.line}|${entry.file}`
                     const openThis = () => setOpen({ file: entry.file, line: entry.line })
                     return (
                       <tr
@@ -253,8 +268,12 @@ export default function FlaggedRows({
                         <td onClick={(event) => event.stopPropagation()}>
                           <input
                             type="checkbox"
-                            checked={selected.has(key)}
-                            onChange={(event) => toggle(key, event.target.checked)}
+                            checked={isChosen(chosen, entry.file, entry.line)}
+                            disabled={everythingChosen}
+                            title={everythingChosen ? 'Every matching row is chosen. Clear the choice to pick rows one by one.' : undefined}
+                            onChange={(event) =>
+                              onRows([{ file: entry.file, line: entry.line }], event.target.checked)
+                            }
                             aria-label={`Select ${entry.file} line ${entry.line}`}
                           />
                         </td>

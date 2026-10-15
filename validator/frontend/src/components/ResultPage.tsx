@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { checkResult, errorMessage, getDatasetResult, listDatasets } from '../api'
+import { clearScanner, partFor, selectAllMatching, setRows } from '../drop'
+import type { DropSelection, SelectionSource } from '../drop'
 import { formatCount, formatSetting, formatTimestamp } from '../format'
 import { hrefFor } from '../route'
 import {
@@ -62,10 +64,15 @@ function settingText(scannerKey: string, name: string, value: unknown): string {
 export default function ResultPage({
   dataset,
   scanner,
+  selection,
+  onSelectionChange,
   onChanged,
 }: {
   dataset: Dataset
   scanner: string
+  // The rows chosen to drop from this dataset, from every result page (kept by the dataset page).
+  selection: DropSelection
+  onSelectionChange: (change: (current: DropSelection) => DropSelection) => void
   // Called when something that the dataset's header shows may have changed.
   onChanged: () => void
 }) {
@@ -90,6 +97,13 @@ export default function ResultPage({
     if (wasGoing.current && !analysisGoing) onChanged()
     wasGoing.current = analysisGoing
   }, [analysisGoing, onChanged])
+
+  // Rows chosen from a scan that a newer scan has replaced are no longer rows of this result.
+  const chosenScan = selection[scanner]?.scanId
+  const replaced = data?.result != null && chosenScan !== undefined && chosenScan !== data.result.scan_id
+  useEffect(() => {
+    if (replaced) onSelectionChange((current) => clearScanner(current, scanner))
+  }, [replaced, scanner, onSelectionChange])
 
   async function checkAgain() {
     setChecking(true)
@@ -145,6 +159,13 @@ export default function ResultPage({
   const filter = result?.filter
   const selectedCategories = choice.categories ?? filter?.saved_categories ?? []
   const selectedVerdicts = choice.verdicts ?? filter?.saved_verdicts ?? []
+  // Where the rows chosen on this page come from: this scan, under this choice (toxicity only).
+  const source = (scanId: string): SelectionSource => ({
+    scanner,
+    scanId,
+    categories: choice.categories,
+    verdicts: choice.verdicts,
+  })
 
   return (
     <>
@@ -335,7 +356,11 @@ export default function ResultPage({
               filter={filter}
               categories={selectedCategories}
               verdicts={selectedVerdicts}
-              onChange={(next) => setChoice(next)}
+              onChange={(next) => {
+                // Rows chosen under the earlier choice might not be flagged under this one.
+                onSelectionChange((current) => clearScanner(current, scanner))
+                setChoice(next)
+              }}
             />
           )}
 
@@ -378,6 +403,14 @@ export default function ResultPage({
               scanner={scanner}
               categories={choice.categories}
               verdicts={choice.verdicts}
+              chosen={partFor(selection, source(result.scan_id))}
+              onRows={(rows, checked) =>
+                onSelectionChange((current) => setRows(current, source(result.scan_id), rows, checked))
+              }
+              onSelectAll={(filters, total) =>
+                onSelectionChange((current) => selectAllMatching(current, source(result.scan_id), filters, total))
+              }
+              onClear={() => onSelectionChange((current) => clearScanner(current, scanner))}
             />
           ) : (
             <div className="card">

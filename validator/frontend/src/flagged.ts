@@ -12,6 +12,8 @@ const REASON_LABELS: Record<string, string> = {
   toxicity_unsafe: 'Unsafe',
   toxicity_controversial: 'Controversial',
   toxicity_guard_error: 'Guard error',
+  // A row someone chose to drop (a filtered dataset's removed rows).
+  manual: 'Chosen to drop',
 }
 
 export function reasonLabel(reason: string): string {

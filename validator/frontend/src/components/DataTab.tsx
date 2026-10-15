@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
+import { reasonLabel } from '../flagged'
 import { formatCount, formatTimestamp } from '../format'
 import { choiceFromConversion, defaultChoice } from '../source'
-import type { Dataset, DatasetPrepared } from '../types'
+import type { Dataset, DatasetPrepared, FilterRunSummary } from '../types'
 import { useInspect, usePreview, useRun } from '../usePreview'
 import PreparedRows from './PreparedRows'
 import RecordView from './RecordView'
@@ -37,6 +38,12 @@ function OriginalRows({ dataset }: { dataset: Dataset }) {
   return (
     <div className="card">
       <h2>Original rows</h2>
+      {dataset.parent !== null && (
+        <p className="muted small">
+          These are the original rows of the data this dataset was made from, all of them: the rows that were dropped
+          are still among them.
+        </p>
+      )}
       {!dataset.available && (
         <div className="banner banner-error" role="alert">
           The original data can't be read. {dataset.unavailable_reason}
@@ -80,54 +87,98 @@ function OriginalRows({ dataset }: { dataset: Dataset }) {
   )
 }
 
-// The converted rows of the current Prepared version, and the rows the conversion skipped.
-function PreparedData({ prepared }: { prepared: DatasetPrepared }) {
+// What a filtered dataset's version says about the rows its filter dropped: how many, and why.
+// The dropped rows themselves are in the version folder's `removed_rows.ndjson`.
+function DroppedRows({ summary, parentName }: { summary: FilterRunSummary; parentName: string | null }) {
+  const reasons = Object.entries(summary.removed_by_reason)
+  return (
+    <>
+      <p>
+        <strong>{formatCount(summary.rows.removed)}</strong> {summary.rows.removed === 1 ? 'row was' : 'rows were'} dropped
+        from {parentName ?? 'the dataset this one was made from'}, which had {formatCount(summary.source.rows_read)}.
+      </p>
+      {reasons.length > 0 && (
+        <p className="small">
+          {reasons.map(([reason, count]) => `${reasonLabel(reason)}: ${formatCount(count)}`).join(', ')}.
+        </p>
+      )}
+      <p className="muted small">
+        Each dropped row is kept, with where it was and why it was dropped, in <code>{summary.removed_rows.path}</code> in
+        the version's folder.
+      </p>
+    </>
+  )
+}
+
+// The converted rows of the current Prepared version, and the rows the conversion skipped. For a
+// filtered dataset the version is a filter run: it has the rows that were left, and the rows its
+// filter dropped instead of skipped rows.
+function PreparedData({ prepared, parentName }: { prepared: DatasetPrepared; parentName: string | null }) {
   const run = useRun(prepared.folder)
-  const summary = run.data?.summary ?? null
+  const preparedRun = run.data?.kind === 'prepared' ? run.data : null
+  const filterRun = run.data?.kind === 'filter' ? run.data : null
+  const files = (preparedRun ?? filterRun)?.summary.output.files_written
 
   return (
     <>
       <div className="card">
-        <h2>Converted rows</h2>
+        <h2>{filterRun !== null ? 'Rows that were kept' : 'Converted rows'}</h2>
         <p className="muted small">
           Version {prepared.version_id}
-          {prepared.finished_at !== null && <>, converted {formatTimestamp(prepared.finished_at)}</>}:{' '}
-          {formatCount(prepared.rows)} rows written, {formatCount(prepared.skipped)} skipped.
+          {prepared.finished_at !== null && (
+            <>
+              , {filterRun !== null ? 'made' : 'converted'} {formatTimestamp(prepared.finished_at)}
+            </>
+          )}
+          : {formatCount(prepared.rows)} rows written
+          {filterRun === null && <>, {formatCount(prepared.skipped)} skipped</>}.
         </p>
         {run.loading && <p className="muted">Opening the converted data…</p>}
         {run.error !== null && <p className="error">{run.error}</p>}
-        {summary !== null &&
-          (summary.output.files_written === undefined ? (
+        {run.data !== null &&
+          (files === undefined ? (
             <p className="muted">
               This version's <code>summary.json</code> doesn't list the files it wrote, so its rows can't be opened here.
             </p>
           ) : (
-            <PreparedRows key={prepared.folder} runDir={prepared.folder} files={summary.output.files_written} />
+            <PreparedRows key={prepared.folder} runDir={prepared.folder} files={files} />
           ))}
       </div>
 
-      <div className="card">
-        <h2>Skipped rows{summary !== null && ` (${formatCount(summary.rows.skipped_file.entries)})`}</h2>
-        {summary !== null && <SkippedRows key={prepared.folder} runDir={prepared.folder} summary={summary} />}
-      </div>
+      {filterRun !== null ? (
+        <div className="card">
+          <h2>Dropped rows ({formatCount(filterRun.summary.rows.removed)})</h2>
+          <DroppedRows summary={filterRun.summary} parentName={parentName} />
+        </div>
+      ) : (
+        <div className="card">
+          <h2>Skipped rows{preparedRun !== null && ` (${formatCount(preparedRun.summary.rows.skipped_file.entries)})`}</h2>
+          {preparedRun !== null && (
+            <SkippedRows key={prepared.folder} runDir={prepared.folder} summary={preparedRun.summary} />
+          )}
+        </div>
+      )}
     </>
   )
 }
 
 // Browse the rows of a dataset: the original rows, and, once it is converted, the
-// converted rows and the rows the conversion skipped, each with its reason.
+// converted rows and the rows the conversion skipped, each with its reason. For a filtered
+// dataset, the rows that were kept and the rows that were dropped.
 export default function DataTab({ dataset }: { dataset: Dataset }) {
+  const filtered = dataset.parent !== null
   return (
     <>
       <OriginalRows dataset={dataset} />
       {dataset.prepared !== null ? (
-        <PreparedData prepared={dataset.prepared} />
+        <PreparedData prepared={dataset.prepared} parentName={dataset.filter?.parent_name ?? null} />
       ) : (
         <div className="card">
-          <h2>Converted rows</h2>
+          <h2>{filtered ? 'Rows that were kept' : 'Converted rows'}</h2>
           <p className="muted">
-            This dataset isn't converted yet. Once it is, its converted rows and the rows the conversion skipped
-            appear here.
+            {filtered
+              ? "This filtered version isn't ready yet. Once its filter job has finished, the rows that were kept and the rows that were dropped appear here."
+              : "This dataset isn't converted yet. Once it is, its converted rows and the rows the conversion skipped appear here."}
           </p>
         </div>
       )}

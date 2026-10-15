@@ -11,10 +11,14 @@
 // data; "convert again" deletes the current Prepared version first), and cancelScan
 // stops one. Reading a dataset, a conversion or a scan also saves a finished conversion
 // as the dataset's Prepared version, and a finished scan as the dataset's result.
-// checkResult submits one CPU job that checks a finished scan's coverage again. Every
-// other call here is read-only, including the two that read a result's flagged rows.
+// checkResult submits one CPU job that checks a finished scan's coverage again. submitDrop
+// drops the chosen rows: it registers a new (filtered) dataset and submits one CPU job that
+// copies the other rows into it, and cancelFilter stops that job; the dataset the rows were
+// dropped from is not changed. Every other call here is read-only, including the two that read
+// a result's flagged rows and checkDrop, which only counts.
 import type {
   AllConversionsResponse,
+  AnyRunResponse,
   CancelResponse,
   CheckAgainResponse,
   ConversionCheckResponse,
@@ -27,6 +31,11 @@ import type {
   DatasetResultResponse,
   DatasetResultsResponse,
   DatasetsResponse,
+  DropCheckResponse,
+  DropRequest,
+  DropSubmitResponse,
+  FilterStatusResponse,
+  FiltersResponse,
   FlaggedFilters,
   FlaggedPage,
   FlaggedRowDetail,
@@ -37,7 +46,6 @@ import type {
   PreviewRequest,
   PreviewResponse,
   RegisterDatasetRequest,
-  RunResponse,
   ScanCancelResponse,
   ScanCheckResponse,
   ScanDetail,
@@ -122,9 +130,10 @@ export function runPreview(body: PreviewRequest): Promise<PreviewResponse> {
   return request<PreviewResponse>('/api/preview', body)
 }
 
-// A Prepared version's summary.json and run_identity.json.
-export function openRun(runDir: string): Promise<RunResponse> {
-  return request<RunResponse>('/api/run', { run_dir: runDir })
+// A version's summary.json and run_identity.json: a Prepared version's, or (for a filtered
+// dataset) a filter run's. `kind` says which.
+export function openRun(runDir: string): Promise<AnyRunResponse> {
+  return request<AnyRunResponse>('/api/run', { run_dir: runDir })
 }
 
 export function getSkippedPage(body: SkippedPageRequest): Promise<SkippedPageResponse> {
@@ -285,4 +294,33 @@ export function getFlaggedRow(
   return request<FlaggedRowDetail>(
     `/api/datasets/${encodeURIComponent(datasetId)}/results/${encodeURIComponent(scanner)}/flagged/row?${params.toString()}`,
   )
+}
+
+// ---- Dropping rows ----
+
+// What dropping the chosen rows would do: the rows counted by scanner and reason, the name the new
+// dataset would get, warnings and the exact command. Starts nothing.
+export function checkDrop(datasetId: string, body: DropRequest): Promise<DropCheckResponse> {
+  return request<DropCheckResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/drop/check`, body)
+}
+
+// Drops the chosen rows: registers the new filtered dataset and submits the job that makes it.
+// The dataset the rows are dropped from is not changed.
+export function submitDrop(datasetId: string, body: DropRequest): Promise<DropSubmitResponse> {
+  return request<DropSubmitResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/drop/submit`, body)
+}
+
+// Every filter job of every filtered dataset, newest first (the Activity page).
+export function listFilters(): Promise<FiltersResponse> {
+  return request<FiltersResponse>('/api/filters')
+}
+
+// One filtered dataset's filter job: its state, what it drops, the command and log tails.
+export function getFilter(datasetId: string): Promise<FilterStatusResponse> {
+  return request<FilterStatusResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/filter`)
+}
+
+// Runs `scancel` on the one SLURM job the filtered dataset's record lists.
+export function cancelFilter(datasetId: string): Promise<CancelResponse> {
+  return request<CancelResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/filter/cancel`, {})
 }

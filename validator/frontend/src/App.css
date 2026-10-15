@@ -1556,3 +1556,37 @@ a.chip-link:hover .chip {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
 }
+
+/* ---- Dropping rows ---- */
+
+/* Stays at the bottom of the window while the dataset's pages scroll under it. */
+.drop-bar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+
+.drop-bar p {
+  margin: 0;
+}
+
+.drop-bar-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.filter-lineage {
+  display: block;
+  margin-top: 2px;
+}

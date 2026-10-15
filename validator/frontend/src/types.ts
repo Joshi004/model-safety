@@ -38,6 +38,34 @@ export interface DatasetPrepared {
   skipped: number | null
   finished_at: string | null
   kept: boolean
+  // A filtered dataset's version only: the rows its filter job dropped.
+  removed?: number | null
+}
+
+// The state of a filtered dataset's own filter job (the job that makes its Prepared version).
+// The states are the scans'.
+export type FilterState = Extract<ScanState, 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown'>
+
+// `filter` of a filtered dataset in GET /api/datasets[/{id}]. `removed` is what the filter
+// reported once it finished, and what was chosen before.
+export interface FilterSummary {
+  state: FilterState
+  reason: string | null
+  removed: number | null
+  parent_id: string
+  parent_name: string | null
+  version_id: string | null
+}
+
+// One of the filtered versions made from a dataset: GET /api/datasets/{id}'s `filtered_versions`.
+export interface FilteredVersion {
+  id: string
+  name: string
+  created_at: string
+  rows: number | null
+  state: FilterState
+  reason: string | null
+  removed: number | null
 }
 
 export interface Dataset {
@@ -61,6 +89,10 @@ export interface Dataset {
   // The state of each scanner on this dataset, by scanner key (Phase 4). Only
   // GET /api/datasets and GET /api/datasets/{id} send it; register and PATCH don't.
   scans?: Record<string, ScanSummary>
+  // Only for a filtered dataset (and only in those two routes): the state of its filter job.
+  filter?: FilterSummary | null
+  // Only in GET /api/datasets/{id}: the filtered versions made from this dataset, newest first.
+  filtered_versions?: FilteredVersion[]
 }
 
 export interface DatasetsResponse {
@@ -251,14 +283,48 @@ export interface RunSummary {
   checks: { passed: boolean; failures: string[]; warnings: string[] }
 }
 
-// POST /api/run for a Prepared version. (A filtered dataset's version is a filter run,
-// which has another shape; it comes with Phase 10.)
+// POST /api/run for a Prepared version.
 export interface RunResponse {
   kind: 'prepared'
   run_dir: string
   summary: RunSummary
   run_identity: { settings?: Record<string, unknown>; created_at?: string } | null
 }
+
+// The summary.json of a filter run: a filtered dataset's version, made by dropping rows from
+// its parent's. It reads like a Prepared run's where the two overlap (`source`, `rows.written`,
+// `output`), but it removes rows instead of skipping them.
+export interface FilterRunSummary {
+  created_at: string
+  tool: string
+  parent: { run: string; run_dir: string; tool: string | null; scan_root: string; files: number }
+  source: { rows_read: number }
+  rows: { written: number; removed: number }
+  removed_by_reason: Record<string, number>
+  output: {
+    files: number
+    rows_on_disk: number
+    bytes_on_disk: number
+    files_written?: WrittenFile[]
+  }
+  removed_rows: { path: string; bytes: number; sha256: string; entries: number }
+  drop_list?: { path: string; sha256: string; entries: number }
+  checks: { passed: boolean; failures: string[]; warnings: string[] }
+}
+
+// POST /api/run for a filtered dataset's version.
+export interface FilterRunResponse {
+  kind: 'filter'
+  run_dir: string
+  summary: FilterRunSummary
+  run_identity: { settings?: Record<string, unknown>; created_at?: string } | null
+  // The Prepared run it was made from, which "Show original" follows; null, with the reason,
+  // when it can't be found.
+  prepared_run_dir: string | null
+  prepared_run_problem: string | null
+}
+
+export type AnyRunResponse = RunResponse | FilterRunResponse
 
 // One line of skipped_rows.ndjson. `row` is the original row as the reader saw it.
 export interface SkippedEntry {
@@ -372,6 +438,7 @@ export interface ConversionSettings {
 export type ConversionStatus =
   | 'ready'
   | 'converted'
+  | 'filtered'
   | 'no_settings'
   | 'unavailable'
   | 'active'
@@ -1036,4 +1103,113 @@ export interface FlaggedRowDetail {
   findings_cut: boolean
   findings_total: number | null
   duplicate_of: KeptCopy | null
+}
+
+// ---- Dropping rows (backend/filters.py) ----
+
+// A row of a dataset's Prepared version: its file (relative to the version) and line.
+export interface DropRow {
+  file: string
+  line: number
+}
+
+// The rows chosen from one scanner's result: some rows (`rows`), or every row matching the
+// filters (`all_matching`, which the server resolves). Exactly one of the two is set.
+// `categories` and `verdicts` are toxicity's choice at the time (null: the scan's own).
+export interface DropSelectionRequest {
+  scanner: string
+  scan_id: string
+  rows: DropRow[] | null
+  all_matching: { reason: string | null; name: string | null } | null
+  categories: string[] | null
+  verdicts: string[] | null
+}
+
+export interface DropRequest {
+  // The dataset's converted data the rows were chosen from.
+  version_id: string
+  selections: DropSelectionRequest[]
+}
+
+export interface DropReasonCount {
+  reason: string
+  count: number
+}
+
+export interface DropScannerCounts {
+  scanner: string
+  label: string
+  scan_id: string
+  // Rows of this scanner's result that will be dropped.
+  rows: number
+  // A row can have more than one reason, so these can add up to more than `rows`.
+  by_reason: DropReasonCount[]
+}
+
+export interface DropCounts {
+  // Distinct rows that will be dropped: a row several scanners flagged counts once.
+  rows: number
+  // Lines of the drop list: a row once for each scanner that flagged it.
+  entries: number
+  // `entries` - `rows`: rows that more than one scanner flagged.
+  overlap: number
+  by_scanner: DropScannerCounts[]
+}
+
+// POST /api/datasets/{id}/drop/check
+export interface DropCheckResponse {
+  dataset_id: string
+  dataset_name: string
+  version_id: string
+  rows_in_dataset: number | null
+  counts: DropCounts
+  // The name the new dataset will get.
+  new_name: string
+  warnings: string[]
+  // Why it can't be started right now (SLURM can't be reached, say); empty when it can.
+  blocked: string[]
+  can_start: boolean
+  resources: JobResources | null
+  // The exact command, with <new-id> and <version-id> where those aren't known yet.
+  command_text: string | null
+}
+
+// POST /api/datasets/{id}/drop/submit
+export interface DropSubmitResponse {
+  dataset_id: string
+  name: string
+  parent_id: string
+  rows: number
+  counts: DropCounts
+  // The SLURM job; null when sbatch failed (then `submit_error` says why).
+  job_id: string | null
+  version_id: string
+  submit_error: string | null
+}
+
+// One filtered dataset's filter job, as GET /api/filters lists it.
+export interface FilterJob extends FilterSummary {
+  dataset_id: string
+  dataset_name: string
+  created_at: string | null
+  submitted_at: string | null
+  finished_at: string | null
+  elapsed: string | null
+  job_id: string | null
+  drop: DropCounts | null
+  folder: string | null
+}
+
+export interface FiltersResponse {
+  slurm_error: string | null
+  has_active: boolean
+  filters: FilterJob[]
+}
+
+// GET /api/datasets/{id}/filter
+export interface FilterStatusResponse extends FilterJob {
+  command_text: string | null
+  wrapper_output: string | null
+  logs: ScanLog[]
+  slurm_error: string | null
 }

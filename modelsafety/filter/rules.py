@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -32,6 +33,11 @@ TOXICITY_REMOVABLE_VERDICTS = ("Unsafe", "Controversial")
 GUARD_ERROR_CHOICES = ("remove", "refuse")
 DEDUP_MODES = ("global", "cross")
 
+# A drop list is rows somebody chose to remove. It has no scanner results folder: its own
+# name stands where a scanner's would.
+DROP_LIST = "drop_list"
+MANUAL_REASON = "manual"
+
 # Each reason a row can be removed for, and the scanner it comes from.
 REASON_SCANNERS = {
     "regex_pii": "regex_pii",
@@ -41,7 +47,14 @@ REASON_SCANNERS = {
     "toxicity_guard_error": "toxicity",
     "duplicate": "dedup",
     "duplicate_of_reference": "dedup",
+    MANUAL_REASON: DROP_LIST,
 }
+
+# What a drop-list line may say about where it came from. The tool only needs them to be plain
+# names; the caller that wrote the list gives them meaning.
+DROP_LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+DROP_LIST_REASON = re.compile(r"^[a-z][a-z_]{0,39}$")
+MAX_DROP_LIST_REASONS = 20
 
 
 class FindingsError(ValueError):
@@ -444,3 +457,57 @@ READERS = {
     "toxicity": read_toxicity,
     "dedup": read_dedup,
 }
+
+
+def _drop_list_name(where: str, field_name: str, value: Any) -> str:
+    if not isinstance(value, str) or DROP_LIST_NAME.fullmatch(value) is None:
+        raise FindingsError(
+            f"{where}: '{field_name}' must be 1 to 64 characters: letters, digits, '.', '_' and '-'."
+        )
+    return value
+
+
+def read_drop_list(path: Path, index: HitIndex, rows_by_file: dict[str, int]) -> FindingsRead:
+    """A drop list (JSONL): one line for each row to remove, and the scanner that flagged it.
+
+    Each line is ``{"file", "line", "sha256", "scanner", "scan_id", "reasons"}``. `file`,
+    `line` and `sha256` name a line of a finished run under the scanned folder, and the
+    fingerprint has to be the line's (the filter checks it against the line itself). A row
+    can be listed once for each scanner. Every line removes its row, with the reason
+    ``manual``; `scanner`, `scan_id` and `reasons` are only kept in the removed-row entry.
+    """
+    result = FindingsRead(DROP_LIST)
+    seen: set[tuple[str, int, str]] = set()
+    by_scanner: Counter = Counter()
+    for where, record in _iter_json_lines(path):
+        file, line, sha256 = record.get("file"), record.get("line"), record.get("sha256")
+        _check_location(where, file, line, sha256, rows_by_file)
+        scanner = _drop_list_name(where, "scanner", record.get("scanner"))
+        scan_id = _drop_list_name(where, "scan_id", record.get("scan_id"))
+        reasons = record.get("reasons")
+        if (
+            not isinstance(reasons, list)
+            or not 1 <= len(reasons) <= MAX_DROP_LIST_REASONS
+            or any(not isinstance(reason, str) or DROP_LIST_REASON.fullmatch(reason) is None for reason in reasons)
+        ):
+            raise FindingsError(
+                f"{where}: 'reasons' must be a list of 1 to {MAX_DROP_LIST_REASONS} names in lower case."
+            )
+        key = (file, line, scanner)
+        if key in seen:
+            raise FindingsError(f"{where}: {file} line {line} is listed twice for {scanner}.")
+        seen.add(key)
+        index.add(
+            file,
+            line,
+            sha256,
+            DROP_LIST,
+            MANUAL_REASON,
+            {"scanner": scanner, "scan_id": scan_id, "reasons": reasons},
+        )
+        by_scanner[scanner] += 1
+        result.hit_findings += 1
+    if result.hit_findings == 0:
+        result.problems.append(f"The drop list {path} has no rows, so there is nothing to remove.")
+    result.details = {"entries": result.hit_findings, "by_scanner": dict(sorted(by_scanner.items()))}
+    return result

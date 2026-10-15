@@ -586,8 +586,6 @@ def _plan_unit(
         "command_text": None,
     }
     if request_ok and resources is not None:
-        plan["cost"] = scanner.cost(settings, resources)
-        plan["needs_gpu_confirmation"] = bool(plan["cost"]["gpus"])
         context = scanners.ScanContext(
             scan_id=SCAN_ID_PLACEHOLDER,
             mode=unit["mode"],
@@ -598,6 +596,8 @@ def _plan_unit(
             version_folders=version_folders,
         )
         try:
+            plan["cost"] = scanner.cost(settings, resources)
+            plan["needs_gpu_confirmation"] = bool(plan["cost"]["gpus"])
             plan["command_text"] = shlex.join(scanner.build_command(context))
         except scanners.ScannerError as exc:
             blocked.append(str(exc))

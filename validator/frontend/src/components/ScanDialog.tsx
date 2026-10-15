@@ -98,7 +98,8 @@ function DatasetItem({
         )}
       </div>
 
-      {prepared !== null && (
+      {/* A filtered version is never converted, so there is nothing to convert again. */}
+      {prepared !== null && dataset.parent === null && (
         <div className="convert-item-choices">
           <label>
             <input type="radio" name={name} checked={!again} onChange={() => onAgain(false)} />

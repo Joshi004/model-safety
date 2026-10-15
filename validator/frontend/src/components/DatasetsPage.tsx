@@ -68,10 +68,12 @@ export default function DatasetsPage() {
     setReloads((count) => count + 1)
   }
 
-  // While any scan is waiting for a conversion, queued or running, the list is read again
-  // every few seconds. The selection and the search are kept.
-  const scanGoing = (datasets ?? []).some((dataset) =>
-    Object.values(dataset.scans ?? {}).some((summary) => isHolding(summary.state)),
+  // While any scan is waiting for a conversion, queued or running, or a filtered version's job is,
+  // the list is read again every few seconds. The selection and the search are kept.
+  const scanGoing = (datasets ?? []).some(
+    (dataset) =>
+      Object.values(dataset.scans ?? {}).some((summary) => isHolding(summary.state)) ||
+      (dataset.filter != null && isHolding(dataset.filter.state)),
   )
   useEffect(() => {
     if (!scanGoing) return

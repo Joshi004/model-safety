@@ -1590,3 +1590,8 @@ a.chip-link:hover .chip {
   display: block;
   margin-top: 2px;
 }
+
+.filtered-versions {
+  margin: 0;
+  padding-left: 18px;
+}

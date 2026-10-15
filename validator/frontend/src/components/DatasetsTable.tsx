@@ -1,10 +1,27 @@
 import { useEffect, useRef } from 'react'
 import { formatCount } from '../format'
 import { hrefFor } from '../route'
+import { isHolding } from '../scans'
 import type { Dataset } from '../types'
 import Chip from './Chip'
 import Menu from './Menu'
 import ScannerChips from './ScannerChips'
+
+// What the Rows column says about a filtered dataset that has no data yet: its filter job is
+// still making it, or it ended without data.
+function FilterState({ dataset }: { dataset: Dataset }) {
+  const filter = dataset.filter
+  if (filter == null || isHolding(filter.state)) {
+    return <Chip label="Filtering…" tone="neutral" title="Its filter job is queued or running." />
+  }
+  return (
+    <Chip
+      label={filter.state === 'cancelled' ? 'Filter cancelled' : 'Filter failed'}
+      tone={filter.state === 'cancelled' ? 'warn' : 'error'}
+      title={filter.reason ?? undefined}
+    />
+  )
+}
 
 // Every value here comes from the registry and is rendered as plain text.
 export default function DatasetsTable({
@@ -67,6 +84,15 @@ export default function DatasetsTable({
             </td>
             <td className="name-cell">
               <a href={hrefFor({ page: 'dataset', id: dataset.id })}>{dataset.name}</a>
+              {dataset.parent !== null && (
+                <div className="muted small">
+                  Filtered from{' '}
+                  <a href={hrefFor({ page: 'dataset', id: dataset.parent })}>
+                    {dataset.filter?.parent_name ?? 'another dataset'}
+                  </a>
+                  {dataset.filter?.removed != null && `, ${formatCount(dataset.filter.removed)} rows dropped`}
+                </div>
+              )}
               <div className="path-line muted small" title={dataset.path}>
                 {dataset.path}
               </div>
@@ -76,6 +102,8 @@ export default function DatasetsTable({
             <td>
               {dataset.prepared !== null ? (
                 formatCount(dataset.prepared.rows)
+              ) : dataset.parent !== null ? (
+                <FilterState dataset={dataset} />
               ) : (
                 <span className="muted">Not converted</span>
               )}

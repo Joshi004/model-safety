@@ -6,6 +6,7 @@ import type { DropSelection } from '../drop'
 import { formatCount, formatTimestamp } from '../format'
 import { DATASET_TABS, hrefFor } from '../route'
 import type { DatasetTab } from '../route'
+import { STATE_LABELS, STATE_TONES, isHolding } from '../scans'
 import type { Dataset, DropSubmitResponse } from '../types'
 import Chip from './Chip'
 import ConversionTab from './ConversionTab'
@@ -18,6 +19,9 @@ import ResultsTab from './ResultsTab'
 import ScannerChips from './ScannerChips'
 
 type Loaded = { status: 'loading' } | { status: 'ready'; dataset: Dataset } | { status: 'error'; message: string }
+
+// How often the dataset is read again while a filter job is going.
+const FILTER_POLL_MS = 4000
 
 const TAB_LABELS: Record<DatasetTab, string> = {
   overview: 'Overview',
@@ -73,6 +77,19 @@ export default function DatasetPage({
   }, [datasetId])
 
   const setDataset = useCallback((dataset: Dataset) => setLoaded({ status: 'ready', dataset }), [])
+
+  // While this dataset's own filter job, or the job of one of its filtered versions, is going, the
+  // page is read again every few seconds, so the state and the row counts follow it.
+  const filterGoing =
+    loaded.status === 'ready' &&
+    ((loaded.dataset.filter != null && isHolding(loaded.dataset.filter.state)) ||
+      (loaded.dataset.filtered_versions ?? []).some((version) => isHolding(version.state)))
+  useEffect(() => {
+    if (!filterGoing) return
+    const timer = window.setTimeout(reload, FILTER_POLL_MS)
+    return () => window.clearTimeout(timer)
+    // `loaded` is a new object after every read, which sets the next one up.
+  }, [filterGoing, loaded, reload])
 
   // The rows chosen to drop, from every result page of this dataset. They belong to one version of
   // its converted data: when that changes (it is converted again) they are forgotten, which is
@@ -168,10 +185,62 @@ export default function DatasetPage({
                       `, converted ${formatTimestamp(loaded.dataset.prepared.finished_at)}`}{' '}
                     <span className="muted">(version {loaded.dataset.prepared.version_id})</span>
                   </>
+                ) : loaded.dataset.parent !== null ? (
+                  <span className="muted">
+                    {loaded.dataset.filter != null && isHolding(loaded.dataset.filter.state)
+                      ? 'Being made: its filter job is queued or running'
+                      : (loaded.dataset.filter?.reason ?? 'Its filter job ended without making any data')}
+                  </span>
                 ) : (
                   <span className="muted">Not converted</span>
                 )}
               </dd>
+              {loaded.dataset.parent !== null && (
+                <>
+                  <dt>Made from</dt>
+                  <dd>
+                    <a href={hrefFor({ page: 'dataset', id: loaded.dataset.parent })}>
+                      {loaded.dataset.filter?.parent_name ?? loaded.dataset.parent}
+                    </a>
+                    {loaded.dataset.filter?.removed != null && (
+                      <>
+                        , by dropping {formatCount(loaded.dataset.filter.removed)}{' '}
+                        {loaded.dataset.filter.removed === 1 ? 'row' : 'rows'}{' '}
+                      </>
+                    )}
+                    {loaded.dataset.filter != null && loaded.dataset.filter.state !== 'succeeded' && (
+                      <Chip
+                        label={STATE_LABELS[loaded.dataset.filter.state]}
+                        tone={STATE_TONES[loaded.dataset.filter.state]}
+                        title={loaded.dataset.filter.reason ?? undefined}
+                      />
+                    )}
+                  </dd>
+                </>
+              )}
+              {(loaded.dataset.filtered_versions?.length ?? 0) > 0 && (
+                <>
+                  <dt>Filtered versions</dt>
+                  <dd>
+                    <ul className="filtered-versions">
+                      {(loaded.dataset.filtered_versions ?? []).map((version) => (
+                        <li key={version.id}>
+                          <a href={hrefFor({ page: 'dataset', id: version.id })}>{version.name}</a>{' '}
+                          {version.state === 'succeeded' ? (
+                            <span className="muted">{formatCount(version.rows)} rows</span>
+                          ) : (
+                            <Chip
+                              label={STATE_LABELS[version.state]}
+                              tone={STATE_TONES[version.state]}
+                              title={version.reason ?? undefined}
+                            />
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </dd>
+                </>
+              )}
               <dt>Scans</dt>
               <dd className="scans-cell">
                 <ScannerChips datasetId={loaded.dataset.id} scans={loaded.dataset.scans} />
@@ -206,9 +275,25 @@ export default function DatasetPage({
 
           {tab === 'overview' && <OverviewTab dataset={loaded.dataset} />}
           {tab === 'data' && <DataTab dataset={loaded.dataset} />}
-          {conversionOpened && (
+          {conversionOpened && loaded.dataset.parent === null && (
             <div hidden={tab !== 'conversion'}>
               <ConversionTab dataset={loaded.dataset} onDatasetChanged={setDataset} onReload={reload} />
+            </div>
+          )}
+          {tab === 'conversion' && loaded.dataset.parent !== null && (
+            <div className="card">
+              <h2>Conversion</h2>
+              <p>
+                This is a filtered version. It isn't converted from the original data: it was made by dropping rows from{' '}
+                <a href={hrefFor({ page: 'dataset', id: loaded.dataset.parent })}>
+                  {loaded.dataset.filter?.parent_name ?? 'another dataset'}
+                </a>
+                {"'s converted data, so there are no conversion settings to set and nothing to convert again."}
+              </p>
+              <p className="muted small">
+                To change which rows are in it, unregister it and drop the rows again from the result pages of the dataset it
+                was made from.
+              </p>
             </div>
           )}
           {tab === 'results' &&

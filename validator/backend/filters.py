@@ -96,6 +96,8 @@ MAX_OUTPUT_CHARS = scans.MAX_OUTPUT_CHARS
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REFRESH_SECONDS = 30
+REQUEST_KEYS = {"version_id", "selections"}
+SELECTION_KEYS = {"scanner", "scan_id", "rows", "all_matching", "categories", "verdicts"}
 
 _LOCK = threading.Lock()
 
@@ -211,6 +213,9 @@ def _validated(request: Any) -> tuple[str, list[_Selection]]:
     wrong. Nothing is read from disk."""
     if not isinstance(request, dict):
         raise FiltersError("The request must be an object.")
+    unknown = sorted(str(key) for key in set(request) - REQUEST_KEYS)
+    if unknown:
+        raise FiltersError(f"Unknown fields in the request: {', '.join(unknown)}.")
     version_id = request.get("version_id")
     if not isinstance(version_id, str) or jobs.BATCH_ID.fullmatch(version_id) is None:
         raise FiltersError("The request needs the version_id of the dataset's converted data.")
@@ -226,6 +231,9 @@ def _validated(request: Any) -> tuple[str, list[_Selection]]:
     for item in raw:
         if not isinstance(item, dict):
             raise FiltersError("Each selection must be an object.")
+        unknown = sorted(str(key) for key in set(item) - SELECTION_KEYS)
+        if unknown:
+            raise FiltersError(f"Unknown fields in a selection: {', '.join(unknown)}.")
         scanner = results._scanner_key(item.get("scanner"))
         if scanner in seen:
             raise FiltersError(f"{scanners.SCANNERS[scanner].label} is chosen twice.")

@@ -8,14 +8,15 @@ user logged into the same login node) can reach this too. That's a
 deliberate choice for a trusted-network deployment.
 
 Only these routes act on anything: the dataset registry ones (registry.py), the
-conversion ones (conversions.py) and the scan ones (scans.py).
+conversion ones (conversions.py), the scan ones (scans.py), the result "check" one (results.py)
+and the drop ones (filters.py).
 
 The dataset registry routes: POST /api/datasets and PATCH /api/datasets/{id} write
 <service root>/registry/datasets.json, and POST /api/datasets/{id}/unregister removes an
 entry and deletes that dataset's own folder <service root>/datasets/<id>, after checking
-the id and the folder's location (it is refused while a conversion or a scan of the
-dataset is going; the scan results only that dataset used are deleted afterwards, see
-the scan routes below). The first read of a new service root also writes datasets.json, from
+the id and the folder's location (it is refused while a conversion, a scan or a filter job of
+the dataset is going, and while the dataset has filtered versions; the scan results only that
+dataset used are deleted afterwards, see the scan routes below). The first read of a new service root also writes datasets.json, from
 the catalog in registry_seed.py. The service root is $VALIDATOR_SERVICE_ROOT, or
 <repo>/output/service. GET /api/teams, GET /api/datasets and GET /api/datasets/{id} only
 check that a dataset's path exists and can be read.
@@ -66,7 +67,22 @@ scanner's summary files. Nothing is deleted. The same job also writes each datas
 index (`index/<dataset id>.jsonl`, one line for each flagged row, and its counts file):
 GET /api/datasets/{id}/results/{scanner}/flagged pages that index, and .../flagged/row opens one
 row, reading one line of its Prepared file at the byte offset the index holds (flagged.py). They
-only read the index and single Prepared lines. Every other route is read-only, and none of them
+only read the index and single Prepared lines.
+
+The drop routes: POST /api/datasets/{id}/drop/submit turns the rows chosen on a dataset's result
+pages into a filtered version (filters.py). It resolves the rows again from the scans' findings
+indexes, marks the dataset's current Prepared version `kept` (so "convert again" sets it aside
+instead of deleting it), registers a new dataset in the same team with `parent` set, writes
+<service root>/datasets/<new id>/drop_list.jsonl and submits one CPU SLURM job
+(`sbatch` on launchers/slurm/filter_rows.sbatch, which runs modelsafety/filter/filter_rows.py with
+--drop-list) that copies the other rows byte for byte into .../<new id>/prepared/<version id>/.
+The job's record is .../_jobs/filter.json and its logs are in .../_logs. When the job has
+finished and its checks passed, that folder becomes the new dataset's Prepared version (a
+background task, and whenever datasets or filter jobs are read). POST .../drop/check only counts.
+POST /api/datasets/{id}/filter/cancel runs `scancel` on the one job the record lists. A filtered
+version is unregistered like any dataset (refused while its job is going); the dataset it was made
+from can't be unregistered while it has filtered versions. The dataset itself, its Prepared rows
+and its results are never changed. Every other route is read-only, and none of them
 ever writes to or deletes original data.
 
 This process never writes to the data it inspects: /api/inspect and
@@ -99,6 +115,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import conversions
 import detect
+import filters
 import flagged
 import jobs
 import preview
@@ -121,6 +138,9 @@ async def lifespan(_app: FastAPI):
     # Submits the coverage check and counts of every finished scan that hasn't had them, and
     # copies the numbers of the ones that have finished, also every 30 seconds.
     results.start_background_refresh()
+    # Makes the output of every finished filter job (rows dropped from a dataset) the new
+    # dataset's Prepared version, also every 30 seconds.
+    filters.start_background_refresh()
     yield
 
 
@@ -213,11 +233,15 @@ def datasets_list(team: str | None = None) -> dict[str, Any]:
     finished is started or made the dataset's result."""
     _conversions_call(conversions.refresh_all)
     _scans_call(scans.refresh)
+    filters.refresh()
     datasets = _registry_call(registry.list_datasets, team)
     summaries = _scans_call(scans.dataset_summaries, datasets)
+    filtered = _results_call(filters.dataset_summaries, datasets)
     return {
         "service_root": str(registry.service_root()),
-        "datasets": [{**dataset, "scans": summaries[dataset["id"]]} for dataset in datasets],
+        "datasets": [
+            {**dataset, "scans": summaries[dataset["id"]], "filter": filtered.get(dataset["id"])} for dataset in datasets
+        ],
     }
 
 
@@ -227,8 +251,16 @@ def dataset_get(dataset_id: str) -> dict[str, Any]:
     if registry.DATASET_ID.fullmatch(dataset_id) is not None:
         _conversions_call(conversions.refresh, dataset_id)
         _scans_call(scans.refresh)
+        filters.refresh()
     dataset = _registry_call(registry.get_dataset, dataset_id)
-    return {**dataset, "scans": _scans_call(scans.dataset_summaries, [dataset])[dataset["id"]]}
+    return {
+        **dataset,
+        "scans": _scans_call(scans.dataset_summaries, [dataset])[dataset["id"]],
+        # The state of this dataset's own filter job, if it is a filtered version, and the
+        # filtered versions made from it.
+        "filter": _results_call(filters.dataset_summaries, [dataset]).get(dataset["id"]),
+        "filtered_versions": _results_call(filters.filtered_versions, dataset["id"]),
+    }
 
 
 @app.post("/api/datasets")
@@ -246,9 +278,10 @@ def dataset_update(dataset_id: str, body: DatasetUpdateRequest) -> dict[str, Any
 @app.post("/api/datasets/{dataset_id}/unregister")
 def dataset_unregister(dataset_id: str) -> dict[str, Any]:
     """Remove a dataset's entry and its folder under the service root, and the scan results
-    only it used. Refused while a conversion or a scan of the dataset is going. The original
-    data is never touched."""
-    return _scans_call(scans.unregister, dataset_id)
+    only it used. Refused while a conversion, a scan or (for a filtered version) its filter job
+    is going, and while the dataset has filtered versions of its own. The original data is
+    never touched."""
+    return _results_call(filters.unregister, dataset_id)
 
 
 class InspectRequest(BaseModel):
@@ -673,6 +706,55 @@ def dataset_flagged_row(
     """One flagged row: its Prepared text, what was found and where in it, and for a duplicate
     the copy it matched. `file` and `line` are the row's place in the dataset's Prepared version."""
     return _results_call(flagged.flagged_row, dataset_id, scanner, file, line, categories, verdicts)
+
+
+# -------------------------------------------------------------------------
+# Dropping rows (filters.py): the rows chosen on a dataset's result pages become a filtered
+# version, a new dataset made by one CPU SLURM job. "check" only counts; "submit" acts.
+# -------------------------------------------------------------------------
+
+
+class DropRequest(BaseModel):
+    # Any: filters.py explains what's wrong in words, instead of the request failing with a
+    # generic validation error. `selections` is a list with one entry per scanner:
+    # {scanner, scan_id, rows: [{file, line}] | null, all_matching: {reason, name} | null,
+    # categories, verdicts}.
+    model_config = ConfigDict(extra="forbid")
+    version_id: Any = None
+    selections: Any = None
+
+
+@app.post("/api/datasets/{dataset_id}/drop/check")
+def dataset_drop_check(dataset_id: str, body: DropRequest) -> dict[str, Any]:
+    """What dropping the chosen rows would do: the rows counted by scanner and reason, the name
+    the new dataset would get, warnings, and the exact command. Starts nothing."""
+    return _results_call(filters.check, dataset_id, body.model_dump(exclude_unset=True))
+
+
+@app.post("/api/datasets/{dataset_id}/drop/submit")
+def dataset_drop_submit(dataset_id: str, body: DropRequest) -> dict[str, Any]:
+    """Drop the chosen rows: mark the dataset's converted data as kept, register the new
+    filtered dataset, write its drop list and submit the filter job. Nothing in the dataset
+    itself, its converted rows or its results changes."""
+    return _results_call(filters.submit, dataset_id, body.model_dump(exclude_unset=True))
+
+
+@app.get("/api/filters")
+def filters_list() -> dict[str, Any]:
+    """Every filter job of every filtered dataset, newest first (the Activity page)."""
+    return _results_call(filters.list_all)
+
+
+@app.get("/api/datasets/{dataset_id}/filter")
+def dataset_filter(dataset_id: str) -> dict[str, Any]:
+    """One filtered dataset's filter job: its state, what it drops, the command and log tails."""
+    return _results_call(filters.status, dataset_id)
+
+
+@app.post("/api/datasets/{dataset_id}/filter/cancel")
+def dataset_filter_cancel(dataset_id: str) -> dict[str, Any]:
+    """`scancel` the one SLURM job a filtered dataset's record lists."""
+    return _results_call(filters.cancel, dataset_id)
 
 
 # Serves the built frontend (validator/frontend/dist, built by run.sh) at

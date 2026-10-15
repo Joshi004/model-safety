@@ -10,6 +10,23 @@ export function formatCount(value: number | null | undefined): string {
   return value === null || value === undefined ? '—' : value.toLocaleString()
 }
 
+// "1:02:03": a length of time in hours, minutes and seconds (hours can go past 24).
+export function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds))
+  const minutes = String(Math.floor((total % 3600) / 60)).padStart(2, '0')
+  const rest = String(total % 60).padStart(2, '0')
+  return `${Math.floor(total / 3600)}:${minutes}:${rest}`
+}
+
+// The seconds from `start` to `end` (UTC ISO times), or null when either is missing or
+// can't be read.
+export function secondsBetween(start: string | null, end: string | null): number | null {
+  if (start === null || end === null) return null
+  const from = new Date(start).getTime()
+  const to = new Date(end).getTime()
+  return Number.isNaN(from) || Number.isNaN(to) ? null : (to - from) / 1000
+}
+
 // "47.6%": `part` as a share of `whole`, or a dash when there is no whole.
 export function formatPercent(part: number | null | undefined, whole: number | null | undefined): string {
   if (part === null || part === undefined || !whole) return '—'

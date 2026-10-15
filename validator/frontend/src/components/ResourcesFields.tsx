@@ -1,23 +1,30 @@
 import { useId } from 'react'
-import type { ResourceInputs } from '../resources'
-import type { ConversionSettings } from '../types'
+import type { ResourceInputs, ResourceOptions } from '../resources'
 
-// The SLURM resource boxes shared by the Conversion tab and the Convert-only dialog:
-// partition, CPUs, memory and time limit, all required, with the note on why and the
-// banner for when SLURM's partitions couldn't be read. The ids come from useId so two
-// copies on one page don't share them.
+// The SLURM resource boxes shared by the Conversion tab, the Convert-only dialog and the
+// scan dialog: partition, CPUs, memory and time limit, all required, with the note on why
+// and the banner for when SLURM's partitions couldn't be read. The ids come from useId so
+// two copies on one page don't share them.
+//
+// `jobWord` says what needs a partition ("Converting", "Scanning"). `usesGpu` is for a scan
+// that runs on GPUs: only then is the note about GPUs left out, because these boxes don't
+// ask for any.
 export default function ResourcesFields({
   settings,
   settingsError,
   onReloadSettings,
   resources,
   onResourcesChange,
+  jobWord = 'Converting',
+  usesGpu = false,
 }: {
-  settings: ConversionSettings | null
+  settings: ResourceOptions | null
   settingsError: string | null
   onReloadSettings: () => void
   resources: ResourceInputs
   onResourcesChange: (next: ResourceInputs) => void
+  jobWord?: string
+  usesGpu?: boolean
 }) {
   const id = useId()
   const partitions = settings?.partitions ?? []
@@ -86,12 +93,13 @@ export default function ResourcesFields({
       </div>
       <p className="muted small">
         Memory and time are always required: on this cluster a job without them is given a whole GPU node's
-        memory and no end time, which blocks that node for everyone else. No GPU is ever requested.
+        memory and no end time, which blocks that node for everyone else.
+        {!usesGpu && ' No GPU is ever requested.'}
       </p>
 
       {(settingsError || settings?.slurm_error) && (
         <div className="banner banner-error small">
-          {settingsError ?? settings?.slurm_error} Converting needs a partition from SLURM.{' '}
+          {settingsError ?? settings?.slurm_error} {jobWord} needs a partition from SLURM.{' '}
           <button type="button" className="secondary" onClick={onReloadSettings}>
             Try again
           </button>

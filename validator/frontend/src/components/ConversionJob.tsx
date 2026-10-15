@@ -95,10 +95,12 @@ export default function ConversionJob({
   datasetId,
   jobId,
   onChanged,
+  title = 'Latest conversion',
 }: {
   datasetId: string
   jobId: string
   onChanged: () => void
+  title?: string
 }) {
   const fileWaits = useRef(0)
   useEffect(() => {
@@ -152,7 +154,7 @@ export default function ConversionJob({
   if (job === null) {
     return (
       <div className="card">
-        <h2>Latest conversion</h2>
+        <h2>{title}</h2>
         {error !== null ? <p className="error">{error}</p> : <p className="muted">Loading…</p>}
       </div>
     )
@@ -163,7 +165,7 @@ export default function ConversionJob({
   return (
     <div className="card conversion-job">
       <div className="page-header">
-        <h2>Latest conversion</h2>
+        <h2>{title}</h2>
         <Chip label={OUTCOME_LABELS[job.outcome]} tone={OUTCOME_TONES[job.outcome]} title={job.reason ?? undefined} />
         {job.current && <Chip label="Current converted data" tone="ok" />}
         {active && (

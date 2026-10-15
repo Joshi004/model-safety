@@ -1282,6 +1282,93 @@ a.tab {
   gap: 12px;
 }
 
+/* ---- Scan dialog ---- */
+
+.dialog-wide {
+  width: min(760px, calc(100vw - 32px));
+}
+
+.scan-heading {
+  margin: 16px 0 8px;
+  font-size: 1em;
+}
+
+.scan-setting {
+  margin: 0 0 12px;
+  padding: 0;
+  border: none;
+}
+
+.scan-setting legend {
+  padding: 0;
+  margin-bottom: 4px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.scan-setting > p {
+  margin: 2px 0 0;
+}
+
+/* A checkbox's help lines up with its label. */
+div.scan-setting > p {
+  margin-left: 22px;
+}
+
+.scan-choice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.scan-summary {
+  margin: 12px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+}
+
+.scan-summary p {
+  margin: 2px 0;
+}
+
+.scan-gpu {
+  margin: 8px 0;
+  font-weight: 600;
+}
+
+/* ---- Scan chips (Datasets table) ---- */
+
+.scans-cell .chip {
+  margin: 0 6px 4px 0;
+}
+
+/* ---- Activity ---- */
+
+.activity-table td {
+  vertical-align: top;
+}
+
+.activity-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.activity-actions button + button {
+  margin-left: 6px;
+}
+
+.activity-detail > td {
+  padding: 12px;
+  background: var(--bg-alt);
+}
+
+.activity-detail .card {
+  margin: 0;
+}
+
 @media (max-width: 800px) {
   .top-bar,
   .page {

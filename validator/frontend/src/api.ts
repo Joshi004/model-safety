@@ -6,10 +6,14 @@
 // unregisterDataset write the dataset registry (and unregisterDataset deletes that
 // dataset's own folder under the service root), submitConversions starts SLURM
 // conversion jobs (and "convert again" deletes the dataset's current Prepared
-// version first), and cancelConversion cancels one. Reading a dataset or a
-// conversion also saves a finished conversion as the dataset's Prepared version.
+// version first), and cancelConversion cancels one. submitScans starts the conversions
+// the chosen datasets need and then the scans (SLURM jobs that only read the converted
+// data; "convert again" deletes the current Prepared version first), and cancelScan
+// stops one. Reading a dataset, a conversion or a scan also saves a finished conversion
+// as the dataset's Prepared version, and a finished scan as the dataset's result.
 // Every other call here is read-only.
 import type {
+  AllConversionsResponse,
   CancelResponse,
   ConversionCheckResponse,
   ConversionListResponse,
@@ -27,6 +31,13 @@ import type {
   PreviewResponse,
   RegisterDatasetRequest,
   RunResponse,
+  ScanCancelResponse,
+  ScanCheckResponse,
+  ScanDetail,
+  ScanSubmitResponse,
+  ScannersResponse,
+  ScansRequest,
+  ScansResponse,
   SkippedPageRequest,
   SkippedPageResponse,
   TeamsResponse,
@@ -138,6 +149,11 @@ export function listConversions(datasetId: string): Promise<ConversionListRespon
   return request<ConversionListResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/conversions`)
 }
 
+// Every conversion of every dataset, newest first (the Activity page).
+export function listAllConversions(): Promise<AllConversionsResponse> {
+  return request<AllConversionsResponse>('/api/conversions')
+}
+
 export function getConversion(datasetId: string, jobId: string): Promise<ConversionStatusResponse> {
   return request<ConversionStatusResponse>(
     `/api/datasets/${encodeURIComponent(datasetId)}/conversions/${encodeURIComponent(jobId)}`,
@@ -149,6 +165,40 @@ export function cancelConversion(datasetId: string, jobId: string): Promise<Canc
     `/api/datasets/${encodeURIComponent(datasetId)}/conversions/${encodeURIComponent(jobId)}/cancel`,
     {},
   )
+}
+
+// ---- Scanning datasets ----
+
+// The scanners with their settings, modes and default resources, and the partitions SLURM lists.
+export function getScanners(): Promise<ScannersResponse> {
+  return request<ScannersResponse>('/api/scanners')
+}
+
+// What a request would do: what each dataset needs first, the commands, the cost and what
+// stops it. Starts and deletes nothing.
+export function checkScans(body: ScansRequest): Promise<ScanCheckResponse> {
+  return request<ScanCheckResponse>('/api/scans/check', body)
+}
+
+// Starts the conversions the datasets need, and the scans (a scan whose datasets are all
+// converted starts now, any other waits for its conversions). The whole request is refused
+// if any scan can't be started.
+export function submitScans(body: ScansRequest): Promise<ScanSubmitResponse> {
+  return request<ScanSubmitResponse>('/api/scans/submit', body)
+}
+
+export function listScans(): Promise<ScansResponse> {
+  return request<ScansResponse>('/api/scans')
+}
+
+export function getScan(scanId: string): Promise<ScanDetail> {
+  return request<ScanDetail>(`/api/scans/${encodeURIComponent(scanId)}`)
+}
+
+// Stops a waiting scan from ever starting, or runs `scancel` on the scan's one job. The
+// conversions it waits for keep running.
+export function cancelScan(scanId: string): Promise<ScanCancelResponse> {
+  return request<ScanCancelResponse>(`/api/scans/${encodeURIComponent(scanId)}/cancel`, {})
 }
 
 // Removes the entry and the dataset's own folder under the service root. The original data is not touched.

@@ -3,16 +3,19 @@ import type { ReactNode } from 'react'
 
 // A modal dialog built on the browser's own <dialog>. It opens when it is rendered and
 // goes away when the parent stops rendering it. Escape, the backdrop and `onClose` all ask
-// the parent to stop rendering it, except while `busy` (a request is running).
+// the parent to stop rendering it, except while `busy` (a request is running). `wide` is
+// for a dialog with a lot in it.
 export default function Dialog({
   title,
   onClose,
   busy = false,
+  wide = false,
   children,
 }: {
   title: string
   onClose: () => void
   busy?: boolean
+  wide?: boolean
   children: ReactNode
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null)
@@ -27,7 +30,7 @@ export default function Dialog({
   return (
     <dialog
       ref={dialogRef}
-      className="dialog"
+      className={wide ? 'dialog dialog-wide' : 'dialog'}
       aria-label={title}
       onCancel={(event) => {
         if (busy) event.preventDefault()

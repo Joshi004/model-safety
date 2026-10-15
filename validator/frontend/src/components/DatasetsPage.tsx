@@ -1,14 +1,24 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import { errorMessage, getTeams, listDatasets } from '../api'
+import { hrefFor } from '../route'
+import { isHolding } from '../scans'
 import { loadString, saveString } from '../storage'
-import type { ConversionSubmitResponse, Dataset, Team, UnregisterResponse } from '../types'
+import type { ConversionSubmitResponse, Dataset, ScanSubmitResponse, Team, UnregisterResponse } from '../types'
 import ActionBar from './ActionBar'
 import ConvertDialog from './ConvertDialog'
 import DatasetsTable from './DatasetsTable'
 import RegisterDatasetDialog from './RegisterDatasetDialog'
+import ScanDialog from './ScanDialog'
 import UnregisterDialog from './UnregisterDialog'
 
 const TEAM_KEY = 'datasets.team'
+// How often the list is read again while a scan is going, so the scan chips follow it.
+const SCAN_POLL_MS = 10_000
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`
+}
 
 export default function DatasetsPage() {
   const [teams, setTeams] = useState<Team[]>([])
@@ -24,8 +34,10 @@ export default function DatasetsPage() {
 
   const [registering, setRegistering] = useState(false)
   const [converting, setConverting] = useState(false)
+  // The key of the scanner whose dialog is open, or null.
+  const [scanning, setScanning] = useState<string | null>(null)
   const [unregistering, setUnregistering] = useState<Dataset | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<ReactNode>(null)
 
   // Bumped to read the list again (after a register or unregister, or Retry).
   const [reloads, setReloads] = useState(0)
@@ -55,6 +67,17 @@ export default function DatasetsPage() {
   function reload() {
     setReloads((count) => count + 1)
   }
+
+  // While any scan is waiting for a conversion, queued or running, the list is read again
+  // every few seconds. The selection and the search are kept.
+  const scanGoing = (datasets ?? []).some((dataset) =>
+    Object.values(dataset.scans ?? {}).some((summary) => isHolding(summary.state)),
+  )
+  useEffect(() => {
+    if (!scanGoing) return
+    const timer = window.setInterval(() => setReloads((count) => count + 1), SCAN_POLL_MS)
+    return () => window.clearInterval(timer)
+  }, [scanGoing])
 
   // A remembered team that is no longer in the list counts as "All".
   const activeTeam = teams.some((team) => team.name === teamChoice) ? teamChoice : ''
@@ -129,10 +152,33 @@ export default function DatasetsPage() {
 
   function handleConversionsStarted(result: ConversionSubmitResponse) {
     setConverting(false)
-    const count = result.started.length
     const problems = result.errors.length > 0 ? ` Problems: ${result.errors.join(' ')}` : ''
     setNotice(
-      `Started ${count} ${count === 1 ? 'conversion' : 'conversions'}. Open a dataset's Conversion tab to watch one.${problems}`,
+      <>
+        Started {plural(result.started.length, 'conversion', 'conversions')}. Watch them on the{' '}
+        <a href={hrefFor({ page: 'activity' })}>Activity page</a>.{problems}
+      </>,
+    )
+    reload()
+  }
+
+  function handleScan(scannerKey: string) {
+    setNotice(null)
+    setScanning(scannerKey)
+  }
+
+  function handleScansStarted(result: ScanSubmitResponse) {
+    setScanning(null)
+    const jobs = result.scans.length + result.conversions.length
+    const conversions =
+      result.conversions.length > 0 ? ` and ${plural(result.conversions.length, 'conversion', 'conversions')}` : ''
+    const problems = result.errors.length > 0 ? ` Problems: ${result.errors.join(' ')}` : ''
+    setNotice(
+      <>
+        Started {plural(result.scans.length, 'scan', 'scans')}
+        {conversions}. Watch {jobs === 1 ? 'it' : 'them'} on the <a href={hrefFor({ page: 'activity' })}>Activity page</a>.
+        {problems}
+      </>,
     )
     reload()
   }
@@ -238,6 +284,7 @@ export default function DatasetsPage() {
             <ActionBar
               count={selected.size}
               onClear={() => setSelected(new Set())}
+              onScan={handleScan}
               onConvertOnly={handleConverting}
             />
           )}
@@ -270,6 +317,15 @@ export default function DatasetsPage() {
           datasets={datasets.filter((dataset) => selected.has(dataset.id))}
           onClose={() => setConverting(false)}
           onStarted={handleConversionsStarted}
+        />
+      )}
+
+      {scanning !== null && datasets !== null && (
+        <ScanDialog
+          scannerKey={scanning}
+          datasets={datasets.filter((dataset) => selected.has(dataset.id))}
+          onClose={() => setScanning(null)}
+          onStarted={handleScansStarted}
         />
       )}
 

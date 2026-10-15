@@ -711,6 +711,36 @@ def list_conversions(dataset_id: str) -> dict[str, Any]:
     }
 
 
+def list_all() -> dict[str, Any]:
+    """Every conversion of every registered dataset, newest first, for the Activity page. One
+    squeue and one sacct cover all of them. Each entry is what `list_conversions` shows, plus
+    `dataset_name`."""
+    records: list[dict[str, Any]] = []
+    for dataset_id in registry.dataset_names():
+        records.extend(_read_records(dataset_id)[0])
+    # SLURM is read before the files, so a job seen as finished has its files written.
+    active, accounting, slurm_error = _slurm_for(records)
+    for dataset_id in registry.unconverted_ids():
+        refresh(dataset_id, lambda: active)
+
+    # A conversion may just have become current, so the datasets and records are read again.
+    problems: list[str] = []
+    views: list[dict[str, Any]] = []
+    for dataset in registry.list_datasets():
+        found, notes = _read_records(dataset["id"])
+        problems.extend(f"{dataset['name']}: {note}" for note in notes)
+        for record in found:
+            views.append({**_view(dataset, record, active, accounting, False), "dataset_name": dataset["name"]})
+    # The ids start with the time they were made, so this is newest first.
+    views.sort(key=lambda view: view["job_id"], reverse=True)
+    return {
+        "slurm_error": slurm_error,
+        "problems": problems,
+        "has_active": any(view["outcome"] in jobs.ACTIVE_OUTCOMES for view in views),
+        "conversions": views,
+    }
+
+
 def conversion_status(dataset_id: str, job_id: str) -> dict[str, Any]:
     """One conversion with its progress, summary and log tails. When it has just finished
     and passed its checks, this is also what makes it the dataset's current version."""

@@ -5,6 +5,7 @@ import { hrefFor } from '../route'
 import type { ConversionCheckResponse, ConversionPlanItem, ConversionSubmitResponse, Dataset } from '../types'
 import { useConversionResources } from '../useConversionResources'
 import CommandBox from './CommandBox'
+import DeleteList from './DeleteList'
 import Dialog from './Dialog'
 import ResourcesFields from './ResourcesFields'
 
@@ -114,33 +115,14 @@ export default function ConvertDialog({
         <p>
           Starting {startable.length} {startable.length === 1 ? 'conversion' : 'conversions'} deletes:
         </p>
-        <ul>
-          {deletes.map((item) => (
-            <li key={item.dataset_id}>
-              <strong>{item.name}</strong>
-              <ul>
-                {item.will_delete !== null && !item.will_delete.kept && (
-                  <li>
-                    its current converted data (<code>{item.will_delete.folder}</code>
-                    {item.will_delete.rows !== null && `, ${formatCount(item.will_delete.rows)} rows`}) and the
-                    results of every scan that read it
-                  </li>
-                )}
-                {item.will_delete !== null && item.will_delete.kept && (
-                  <li>
-                    nothing of its current converted data: a filtered dataset was made from it, so it stays on disk
-                    (the dataset shows as not converted until the new conversion finishes)
-                  </li>
-                )}
-                {item.leftovers.map((folder) => (
-                  <li key={folder}>
-                    the folder of a failed or cancelled attempt: <code>{folder}</code>
-                  </li>
-                ))}
-              </ul>
-            </li>
-          ))}
-        </ul>
+        <DeleteList
+          items={deletes.map((item) => ({
+            id: item.dataset_id,
+            name: item.name,
+            will_delete: item.will_delete,
+            leftovers: item.leftovers,
+          }))}
+        />
         <p>The original data is not touched.</p>
 
         {error !== null && (

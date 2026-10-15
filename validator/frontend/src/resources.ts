@@ -1,7 +1,7 @@
 // The SLURM resource boxes of the conversion forms: what they hold, their starting
 // values, and how they're sent. No React here.
 
-import type { ConversionSettings, JobResources } from './types'
+import type { JobResources } from './types'
 
 // What the resource boxes hold: text, exactly as typed.
 export interface ResourceInputs {
@@ -11,13 +11,29 @@ export interface ResourceInputs {
   time: string
 }
 
+// What the boxes offer: the partitions SLURM lists and the most CPUs a job may ask for, and
+// the error when SLURM couldn't be asked (then there are no partitions). Both the
+// conversion settings and the scanners' settings have these.
+export interface ResourceOptions {
+  partitions: string[]
+  max_cpus: number
+  slurm_error: string | null
+}
+
+// What the starting values come from: the partitions SLURM lists, and the defaults of the
+// kind of job (a conversion's, or one scanner's).
+export interface ResourceDefaults {
+  partitions: string[]
+  default_resources: JobResources
+}
+
 export const EMPTY_RESOURCES: ResourceInputs = { partition: '', cpus: '', mem: '', time: '' }
 
-export function initialResources(settings: ConversionSettings): ResourceInputs {
-  const defaults = settings.default_resources
-  const partition = settings.partitions.includes(defaults.partition)
+export function initialResources(source: ResourceDefaults): ResourceInputs {
+  const defaults = source.default_resources
+  const partition = source.partitions.includes(defaults.partition)
     ? defaults.partition
-    : (settings.partitions[0] ?? defaults.partition)
+    : (source.partitions[0] ?? defaults.partition)
   return { partition, cpus: String(defaults.cpus), mem: defaults.mem, time: defaults.time }
 }
 

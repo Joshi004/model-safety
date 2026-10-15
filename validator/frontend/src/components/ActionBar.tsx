@@ -1,16 +1,20 @@
 import Menu from './Menu'
 
-const NOT_YET = 'Not available yet'
+const NOT_YET = 'Comes in a later update'
 
-// Shown while at least one dataset is ticked. The scans can't be started yet, so they are
-// disabled with a short note. "More -> Convert only" converts the ticked datasets.
+// Shown while at least one dataset is ticked. "Find duplicates" opens the scan dialog; the
+// other scans are disabled until they can be started. "More -> Convert only" converts the
+// ticked datasets.
 export default function ActionBar({
   count,
   onClear,
+  onScan,
   onConvertOnly,
 }: {
   count: number
   onClear: () => void
+  // Opens the scan dialog for one scanner, by its key.
+  onScan: (scannerKey: string) => void
   onConvertOnly: () => void
 }) {
   return (
@@ -21,7 +25,7 @@ export default function ActionBar({
           Clear
         </button>
         <div className="action-buttons">
-          <button type="button" className="secondary" disabled title={NOT_YET}>
+          <button type="button" className="secondary" onClick={() => onScan('dedup')}>
             Find duplicates
           </button>
           <button type="button" className="secondary" disabled title={NOT_YET}>
@@ -37,7 +41,6 @@ export default function ActionBar({
           </Menu>
         </div>
       </div>
-      <p className="muted small">Scans can't be started from here yet.</p>
     </div>
   )
 }

@@ -5,15 +5,19 @@
 // needs for a scanner are here. A scanner this file doesn't know is shown by its key.
 import type { ChipTone } from './components/Chip'
 import { formatCount } from './format'
-import type { ScanState, ScanSummary, ScannerField, ScannerInfo } from './types'
+import type { ChoiceField, ScanSettings, ScanState, ScanSummary, ScannerField, ScannerInfo } from './types'
 
 const SCANNER_LABELS: Record<string, string> = {
   dedup: 'Duplicates',
+  pii_ner: 'PII (NER)',
+  pii_regex: 'PII (rules)',
 }
 
 // What a finished scan's headline count counts, by scanner.
 const SCANNER_COUNT_LABELS: Record<string, string> = {
   dedup: 'duplicate rows',
+  pii_ner: 'PII findings',
+  pii_regex: 'PII findings',
 }
 
 export function scannerLabel(key: string): string {
@@ -87,13 +91,13 @@ export function visibleFields(scanner: ScannerInfo): ScannerField[] {
   return scanner.fields.filter((field) => !hidden.includes(field.name))
 }
 
-// A setting whose only two values are "0" and "1" is a checkbox.
-export function isToggle(field: ScannerField): boolean {
+// A choice whose only two values are "0" and "1" is a checkbox.
+export function isToggle(field: ChoiceField): boolean {
   return field.choices.length === 2 && field.choices.includes('0') && field.choices.includes('1')
 }
 
 // The default of every setting the dialog offers.
-export function defaultSettings(scanner: ScannerInfo): Record<string, string> {
+export function defaultSettings(scanner: ScannerInfo): ScanSettings {
   return Object.fromEntries(visibleFields(scanner).map((field) => [field.name, field.default]))
 }
 
@@ -103,10 +107,121 @@ const CHOICE_LABELS: Record<string, Record<string, string>> = {
     prompt: 'What was asked (the prompt)',
     all: 'The whole conversation',
   },
+  'pii_ner/size': {
+    full: 'Full node (every GPU of one node)',
+    one_gpu: 'One GPU',
+  },
 }
 
 export function choiceLabel(scannerKey: string, fieldName: string, value: string): string {
-  return CHOICE_LABELS[`${scannerKey}/${fieldName}`]?.[value] ?? value
+  const named = CHOICE_LABELS[`${scannerKey}/${fieldName}`]?.[value]
+  if (named !== undefined) return named
+  if (scannerKey === 'pii_ner' && fieldName === 'labels') return nerLabelName(value)
+  return value
+}
+
+// ---- PII: the NER model's categories, and the two methods behind "Scan for PII" ----
+
+// "date_of_birth" as "Date of birth".
+function sentenceCase(name: string): string {
+  const words = name.replace(/_/g, ' ')
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+// The categories of the NER model. Most read well as their name with spaces; these don't.
+const NER_LABEL_NAMES: Record<string, string> = {
+  api_key: 'API key',
+  credit_debit_card: 'Credit or debit card',
+  customer_id: 'Customer ID',
+  cvv: 'Card security code (CVV)',
+  date_time: 'Date and time',
+  employee_id: 'Employee ID',
+  http_cookie: 'HTTP cookie',
+  ipv4: 'IPv4 address',
+  ipv6: 'IPv6 address',
+  mac_address: 'MAC address',
+  national_id: 'National ID',
+  pin: 'PIN',
+  race_ethnicity: 'Race or ethnicity',
+  ssn: 'Social security number',
+  swift_bic: 'SWIFT/BIC code',
+  tax_id: 'Tax ID',
+  unique_id: 'Unique ID',
+  url: 'URL',
+}
+
+export function nerLabelName(label: string): string {
+  return NER_LABEL_NAMES[label] ?? sentenceCase(label)
+}
+
+// The categories of the rule-based scan.
+const RULE_CATEGORY_NAMES: Record<string, string> = {
+  emails: 'Email addresses',
+  phones: 'Phone numbers',
+  phones_with_exts: 'Phone numbers with an extension',
+  ukphones: 'UK phone numbers',
+  street_addresses: 'Street addresses',
+  po_boxes: 'PO boxes',
+  credit_cards: 'Credit card numbers',
+  ips: 'IPv4 addresses',
+  ipv6s: 'IPv6 addresses',
+  btc_addresses: 'Bitcoin addresses',
+}
+
+export function ruleCategoryName(category: string): string {
+  return RULE_CATEGORY_NAMES[category] ?? sentenceCase(category)
+}
+
+// The groups the NER categories are shown in, by the backend's key (the policy's tiers).
+const GROUP_TITLES: Record<string, string> = {
+  direct_identifier: 'Direct identifiers',
+  person_linked: 'Names',
+  contextual: 'Contextual',
+}
+
+const GROUP_HELP: Record<string, string> = {
+  direct_identifier: 'Identify a person or account on their own: credentials, IDs, contact details, financial and health numbers.',
+  person_linked: 'First and last names.',
+  contextual: 'Places, dates, demographics, jobs and languages. They are common in text with no personal data in it, so they are off unless you turn them on.',
+}
+
+export function groupTitle(key: string): string {
+  return GROUP_TITLES[key] ?? sentenceCase(key)
+}
+
+export function groupHelp(key: string): string | null {
+  return GROUP_HELP[key] ?? null
+}
+
+// An action of the action bar: one scan dialog, over one scanner or a choice between several
+// ("Scan for PII" is NER or rules). The first scanner is the one selected to begin with.
+export interface ScanActionInfo {
+  title: string
+  scannerKeys: string[]
+}
+
+export const SCAN_ACTIONS: Record<string, ScanActionInfo> = {
+  dedup: { title: 'Scan for duplicates', scannerKeys: ['dedup'] },
+  pii: { title: 'Scan for PII', scannerKeys: ['pii_ner', 'pii_regex'] },
+}
+
+// How the methods of an action with a choice are named and told apart, by scanner.
+export const METHOD_INFO: Record<string, { title: string; blurb: string }> = {
+  pii_ner: {
+    title: 'Model (NER)',
+    blurb: 'A model reads every message and marks personal information from its context, names included. It needs GPUs.',
+  },
+  pii_regex: {
+    title: 'Rules',
+    blurb: 'Fixed patterns for emails, phone numbers, cards and the like. It runs on CPUs and is much faster.',
+  },
+}
+
+// What a scanner can't do, shown with the list of what it finds.
+export function scannerNote(scannerKey: string): string | null {
+  return scannerKey === 'pii_regex'
+    ? "Rules can't find names, or ID numbers that have no fixed pattern. Use the model for those."
+    : null
 }
 
 // ---- Modes (D4): one scan over all the chosen datasets, or one for each ----

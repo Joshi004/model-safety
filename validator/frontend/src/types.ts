@@ -520,15 +520,42 @@ export interface AllConversionsResponse {
 
 // ---- Scanners and scans (backend/scanners.py, scans.py) ----
 
-// One setting of a scanner. Only choices exist so far; a value is always one of `choices`.
-export interface ScannerField {
+interface ScannerFieldBase {
   name: string
   label: string
+  help: string
+}
+
+// One of `choices`.
+export interface ChoiceField extends ScannerFieldBase {
   type: 'choice'
   choices: string[]
   default: string
-  help: string
 }
+
+// A whole number from `min` to `max`. Empty is allowed when the default is null.
+export interface IntegerField extends ScannerFieldBase {
+  type: 'integer'
+  min: number
+  max: number
+  default: number | null
+}
+
+// At least one of `choices`. `groups` only says how to show them together: each group holds
+// some of the choices, and every choice is in one.
+export interface MultiField extends ScannerFieldBase {
+  type: 'multi'
+  choices: string[]
+  default: string[]
+  groups?: { key: string; choices: string[] }[]
+}
+
+// One setting of a scanner. The backend checks every value against its field.
+export type ScannerField = ChoiceField | IntegerField | MultiField
+
+// What a setting holds: a choice, a whole number (null when it is empty), or a list of choices.
+export type SettingValue = string | number | string[] | null
+export type ScanSettings = Record<string, SettingValue>
 
 export interface ScannerInfo {
   key: string
@@ -538,6 +565,11 @@ export interface ScannerInfo {
   gpu: boolean
   fields: ScannerField[]
   default_resources: JobResources
+  // True when the scanner's job scripts fix the CPUs, memory and time (and so the GPUs): only
+  // the partition is chosen, and the check says what the scripts ask for.
+  resources_fixed: boolean
+  // What the scanner looks for when the settings don't choose it; empty when they do.
+  detects: string[]
   // How a scan over several datasets can be made, by mode; null when every dataset gets its own scan.
   modes: Record<string, string> | null
   default_mode: string | null
@@ -584,6 +616,10 @@ export interface ScanDatasetRequest {
   reconvert: boolean
 }
 
+// What a scan request asks for: all four, or only the partition for a scanner whose job
+// scripts fix the rest (`ScannerInfo.resources_fixed`).
+export type ResourceRequest = Partial<JobResources>
+
 // The body of POST /api/scans/check and /api/scans/submit. `settings` holds a value for each
 // setting the user can change; one that is left out gets its default. Null resources mean the
 // scanner's own defaults. Scans use the default resources for any conversion they start.
@@ -591,8 +627,8 @@ export interface ScansRequest {
   scanner: string
   datasets: ScanDatasetRequest[]
   mode: string | null
-  settings: Record<string, string>
-  resources: JobResources | null
+  settings: ScanSettings
+  resources: ResourceRequest | null
   confirm_gpu: boolean
 }
 
@@ -641,7 +677,7 @@ export interface ScanCheckResponse {
   mode: string | null
   service_root: string
   slurm_error: string | null
-  settings: Record<string, string>
+  settings: ScanSettings
   resources: JobResources | null
   // What is wrong with the request as a whole; what is wrong with one scan is in its unit.
   blocked: string[]
@@ -655,6 +691,11 @@ export interface ScanWaitingFor {
   name: string
   job_id: string
   outcome: JobOutcome
+}
+
+export interface ScanJobRef {
+  role: string
+  job_id: string
 }
 
 // One scan, as GET /api/scans lists it.
@@ -674,8 +715,12 @@ export interface ScanView {
   submitted_at: string | null
   finished_at: string | null
   cancelled_at: string | null
+  // The scan's own job.
   job_id: string | null
-  settings: Record<string, string>
+  // Every SLURM job the scan started, in order, each with its role: "plan" for a job the scan's
+  // own job waits for, "scan" for its own.
+  jobs: ScanJobRef[]
+  settings: ScanSettings
   resources: JobResources
   // The conversions this scan started or waits for, by dataset id.
   conversions: Record<string, { reconvert: boolean; job_id: string }>

@@ -32,13 +32,18 @@ version in datasets.json. GET /api/conversions/settings, POST /api/conversions/c
 /api/conversions and GET /api/datasets/{id}/conversions[/{job_id}] only read, apart from that.
 
 The scan routes: POST /api/scans/submit first starts the conversions the chosen datasets need
-(as above, one job each), then one SLURM job per scan (`sbatch` on
-launchers/slurm/run_dedup_scan.sbatch, CPU only), writing into <service root>/scans/<scan id>/
-(its `scan.json`, `inputs/`, `results/` and `_logs/`). A scan that has to wait for a
+(as above, one job each), then the scans: duplicates and the rule-based PII scan are one
+SLURM job each (`sbatch` on launchers/slurm/run_dedup_scan.sbatch or
+run_pii_scan_and_extract.sbatch, CPU only); the NER PII scan runs
+launchers/slurm/submit_privacy_filter.sh, which submits a CPU job that plans the work and the
+GPU job that waits for it (only the partition is chosen: the job scripts fix the rest), and
+is refused without the confirmation a GPU scan asks for. Each scan writes into
+<service root>/scans/<scan id>/ (its `scan.json`, `inputs/`, `results/` and `_logs/`; the NER
+scan's own SLURM logs are in the repo's logs/slurm/). A scan that has to wait for a
 conversion is saved without a job and started by the service itself, within 30 seconds of the
 conversion finishing (a background task, and whenever scans or datasets are read); one whose
-conversion failed is never started. POST /api/scans/{id}/cancel runs `scancel` on the one job
-the scan's record lists, or stops a waiting scan from ever starting. When a scan has
+conversion failed is never started. POST /api/scans/{id}/cancel runs `scancel` on the jobs
+the scan's record lists (and only those), or stops a waiting scan from ever starting. When a scan has
 finished, reading scans or datasets saves it in datasets.json as the current result of each
 of its datasets for that scanner, replacing the earlier one. A scan folder is deleted only
 when it was a result and nothing points at it any more (replaced, or its dataset converted

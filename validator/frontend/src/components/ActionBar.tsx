@@ -2,9 +2,9 @@ import Menu from './Menu'
 
 const NOT_YET = 'Comes in a later update'
 
-// Shown while at least one dataset is ticked. "Find duplicates" opens the scan dialog; the
-// other scans are disabled until they can be started. "More -> Convert only" converts the
-// ticked datasets.
+// Shown while at least one dataset is ticked. "Find duplicates" and "Scan for PII" open the
+// scan dialog; "Scan for toxicity" is disabled until it can be started. "More -> Convert only"
+// converts the ticked datasets.
 export default function ActionBar({
   count,
   onClear,
@@ -13,8 +13,8 @@ export default function ActionBar({
 }: {
   count: number
   onClear: () => void
-  // Opens the scan dialog for one scanner, by its key.
-  onScan: (scannerKey: string) => void
+  // Opens the scan dialog for one action, by its key in SCAN_ACTIONS.
+  onScan: (action: string) => void
   onConvertOnly: () => void
 }) {
   return (
@@ -28,7 +28,7 @@ export default function ActionBar({
           <button type="button" className="secondary" onClick={() => onScan('dedup')}>
             Find duplicates
           </button>
-          <button type="button" className="secondary" disabled title={NOT_YET}>
+          <button type="button" className="secondary" onClick={() => onScan('pii')}>
             Scan for PII
           </button>
           <button type="button" className="secondary" disabled title={NOT_YET}>

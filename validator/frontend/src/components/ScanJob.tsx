@@ -109,10 +109,14 @@ export default function ScanJob({ scanId }: { scanId: string }) {
             <dd>{scan.elapsed}</dd>
           </>
         )}
-        {scan.job_id !== null && (
+        {scan.jobs.length > 0 && (
           <>
-            <dt>SLURM job</dt>
-            <dd>{scan.job_id}</dd>
+            <dt>{scan.jobs.length === 1 ? 'SLURM job' : 'SLURM jobs'}</dt>
+            <dd>
+              {scan.jobs.length === 1
+                ? scan.jobs[0].job_id
+                : scan.jobs.map((job) => `${job.role} ${job.job_id}`).join(', ')}
+            </dd>
           </>
         )}
         <dt>Resources</dt>

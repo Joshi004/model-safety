@@ -82,8 +82,14 @@ background task, and whenever datasets or filter jobs are read). POST .../drop/c
 POST /api/datasets/{id}/filter/cancel runs `scancel` on the one job the record lists. A filtered
 version is unregistered like any dataset (refused while its job is going); the dataset it was made
 from can't be unregistered while it has filtered versions. The dataset itself, its Prepared rows
-and its results are never changed. Every other route is read-only, and none of them
-ever writes to or deletes original data.
+and its results are never changed.
+
+A duplicates scan started with "auto_drop" does that by itself (autodrop.py, a background task):
+when the scan's analysis has finished, if the coverage check passed it makes one filtered
+version for every dataset that has flagged rows, exactly as above with every flagged row of the
+dataset (the drop list says the rows were dropped automatically); if it failed, nothing is
+dropped. The decision is saved once in the scan's own folder (auto_drop.json). Every other route
+is read-only, and none of them ever writes to or deletes original data.
 
 This process never writes to the data it inspects: /api/inspect and
 /api/preview only read a bounded sample and report what would happen,
@@ -113,6 +119,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+import autodrop
 import conversions
 import detect
 import filters
@@ -141,6 +148,9 @@ async def lifespan(_app: FastAPI):
     # Makes the output of every finished filter job (rows dropped from a dataset) the new
     # dataset's Prepared version, also every 30 seconds.
     filters.start_background_refresh()
+    # Drops what a duplicates scan flagged, by itself, for the scans that were started with
+    # "drop duplicates automatically" and whose coverage check has passed, also every 30 seconds.
+    autodrop.start_background_refresh()
     yield
 
 
@@ -589,6 +599,9 @@ class ScansRequest(BaseModel):
     # Null means the scanner's own default resources (scans.settings).
     resources: JobResources | None = None
     confirm_gpu: bool = False
+    # Drop what the scan flags by itself, once it has finished and its coverage check has passed
+    # (D17). Any for the same reason as the fields above; only the duplicates scan offers it.
+    auto_drop: Any = False
 
 
 def _scan_arguments(body: ScansRequest) -> tuple[Any, ...]:
@@ -609,7 +622,7 @@ def scans_check(body: ScansRequest) -> dict[str, Any]:
     """For each scan the request would make: what each dataset needs first (use the converted
     data, convert, or convert again), the command, the cost and everything that stops it.
     Starts and deletes nothing."""
-    return _scans_call(scans.check, *_scan_arguments(body))
+    return _scans_call(scans.check, *_scan_arguments(body), body.auto_drop)
 
 
 @app.post("/api/scans/submit")
@@ -617,7 +630,7 @@ def scans_submit(body: ScansRequest) -> dict[str, Any]:
     """Start the conversions the datasets need and the scans: a scan whose datasets are all
     converted starts now, any other waits for its conversions. The whole request is refused
     if any scan can't be started."""
-    return _scans_call(scans.submit, *_scan_arguments(body), body.confirm_gpu)
+    return _scans_call(scans.submit, *_scan_arguments(body), body.confirm_gpu, body.auto_drop)
 
 
 @app.get("/api/scans")
@@ -658,8 +671,12 @@ def dataset_result(
 ) -> dict[str, Any]:
     """One scanner's result for the dataset, in full. For toxicity, `categories` and `verdicts`
     (comma-separated; empty means none) change what counts as flagged in the answer, and
-    nothing else: nothing is saved."""
-    return _results_call(results.dataset_result, dataset_id, scanner, categories, verdicts)
+    nothing else: nothing is saved. `auto_drop` says what came of the scan's automatic drop (D17):
+    null when the scan wasn't started with it."""
+    view = _results_call(results.dataset_result, dataset_id, scanner, categories, verdicts)
+    # Not in results.py: the automatic drop makes filtered versions (filters.py), which imports it.
+    view["auto_drop"] = autodrop.view_of(view["result"]["scan_id"]) if view.get("result") is not None else None
+    return view
 
 
 @app.post("/api/datasets/{dataset_id}/results/{scanner}/check")

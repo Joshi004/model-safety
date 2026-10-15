@@ -14,7 +14,13 @@ and can write the deduplicated dataset.
 ## Deduplication policy
 
 - Input order is deterministic: sorted relative file path, then one-based line.
-- The earliest row in each connected duplicate component is retained.
+  With `--input-manifest` the files are read in the order the manifest lists them
+  (nothing sorts them again), then one-based line within each file.
+- The earliest row in each connected duplicate component is retained, so the
+  order the files are read in decides which copy counts as the original. The
+  validator service uses this: it writes the manifest dataset by dataset in the
+  order the user chose (first by path, a priority order, or protected datasets
+  first).
 - `--text-scope prompt` is the default. For chat records it excludes a final
   assistant message, so equal prompts with different generated answers are
   duplicates. Plain `text` records use the complete value.
@@ -32,7 +38,11 @@ and can write the deduplicated dataset.
 - The source-compatible LSH shape is 256 permutations split into 32 bands of 8
   rows. A match is an LSH band collision; it is approximate, not a guaranteed
   exact Jaccard cutoff. The 50% collision-probability midpoint is recorded in
-  `summary.json`.
+  `summary.json` (`collision_probability_midpoint` in `lsh.py`, which does not need
+  datasketch, so the validator service uses the same formula). The service offers
+  three shapes, all with 256 permutations and 60-character n-grams: Strict (16
+  bands of 16 rows, midpoint about 82%), Standard (32 of 8, about 62%) and Loose
+  (64 of 4, about 32%).
 
 The index is global and in memory. Do not split one dataset into independent
 SLURM arrays: doing so would miss duplicates across shards. Use a pilot to

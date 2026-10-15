@@ -20,6 +20,7 @@ import {
   scannerNote,
 } from '../scans'
 import type {
+  ChoiceField,
   Dataset,
   ScanCheckResponse,
   ScanSettings,
@@ -233,6 +234,9 @@ function SettingControl({
     )
   }
 
+  // A list of datasets is drawn by the dialog itself (see CUSTOM_SETTINGS in scans.ts).
+  if (field.type === 'datasets') return null
+
   const current = typeof value === 'string' ? value : field.default
   if (isToggle(field)) {
     return (
@@ -249,12 +253,151 @@ function SettingControl({
     <fieldset className="scan-setting">
       <legend>{field.label}</legend>
       {field.choices.map((choice) => (
-        <label key={choice} className="scan-choice">
-          <input type="radio" name={`${id}-${field.name}`} checked={current === choice} onChange={() => onChange(choice)} />
-          {choiceLabel(scannerKey, field.name, choice)}
-        </label>
+        <ChoiceRadio
+          key={choice}
+          name={`${id}-${field.name}`}
+          label={choiceLabel(scannerKey, field.name, choice)}
+          hint={field.hints?.[choice] ?? null}
+          checked={current === choice}
+          onChange={() => onChange(choice)}
+        />
       ))}
       <p className="muted small">{field.help}</p>
+    </fieldset>
+  )
+}
+
+// One radio button of a choice, with the line saying what it means (when the scanner has one).
+function ChoiceRadio({
+  name,
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  name: string
+  label: string
+  hint: string | null
+  checked: boolean
+  onChange: () => void
+}) {
+  if (hint === null) {
+    return (
+      <label className="scan-choice">
+        <input type="radio" name={name} checked={checked} onChange={onChange} />
+        {label}
+      </label>
+    )
+  }
+  return (
+    <label className="scan-choice scan-choice-hinted">
+      <input type="radio" name={name} checked={checked} onChange={onChange} />
+      <span className="scan-method-text">
+        <span>{label}</span>
+        <span className="muted small">{hint}</span>
+      </span>
+    </label>
+  )
+}
+
+// Which copy counts as the original when rows match across datasets (D15): the dataset first by
+// path, the datasets in an order the user sets, or datasets nothing is flagged in. The order is
+// set with "Move up" and "Move down", so it needs no dragging and works from the keyboard.
+// `datasets` are in the order the scan will read them.
+function OriginalCopy({
+  field,
+  value,
+  protectedIds,
+  datasets,
+  disabled,
+  onChange,
+  onProtect,
+  onMove,
+}: {
+  field: ChoiceField
+  value: string
+  protectedIds: string[]
+  datasets: Dataset[]
+  disabled: boolean
+  onChange: (value: string) => void
+  onProtect: (datasetId: string, on: boolean) => void
+  onMove: (datasetId: string, by: -1 | 1) => void
+}) {
+  const id = useId()
+  // At least one dataset has to stay unprotected, so no more can be ticked than all but one.
+  const atLimit = protectedIds.length >= datasets.length - 1
+
+  return (
+    <fieldset className="scan-setting">
+      <legend>Original copy</legend>
+      <p className="muted small">{field.help}</p>
+      {field.choices.map((choice) => (
+        <ChoiceRadio
+          key={choice}
+          name={`${id}-original`}
+          label={choiceLabel('dedup', field.name, choice)}
+          hint={field.hints?.[choice] ?? null}
+          checked={value === choice}
+          onChange={() => onChange(choice)}
+        />
+      ))}
+
+      {value === 'priority' && (
+        <div className="original-extra">
+          <p className="muted small">The first dataset wins: a row in it counts as the original.</p>
+          <ol className="original-order">
+            {datasets.map((dataset, index) => (
+              <li key={dataset.id}>
+                <span className="original-order-row">
+                  <span>{dataset.name}</span>
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => onMove(dataset.id, -1)}
+                    disabled={disabled || index === 0}
+                    aria-label={`Move ${dataset.name} up`}
+                  >
+                    Move up
+                  </button>
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => onMove(dataset.id, 1)}
+                    disabled={disabled || index === datasets.length - 1}
+                    aria-label={`Move ${dataset.name} down`}
+                  >
+                    Move down
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {value === 'protected' && (
+        <div className="original-extra">
+          <p className="muted small">
+            Tick the datasets nothing is flagged in. At least one has to stay unticked.
+          </p>
+          <div className="scan-labels">
+            {datasets.map((dataset) => {
+              const isProtected = protectedIds.includes(dataset.id)
+              return (
+                <label key={dataset.id} className="scan-choice">
+                  <input
+                    type="checkbox"
+                    checked={isProtected}
+                    disabled={disabled || (!isProtected && atLimit)}
+                    onChange={(event) => onProtect(dataset.id, event.target.checked)}
+                  />
+                  {dataset.name}
+                </label>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </fieldset>
   )
 }
@@ -280,9 +423,10 @@ export default function ScanDialog({
   // The key of the action in SCAN_ACTIONS. One that isn't there is taken for a scanner's key.
   action: string
   datasets: Dataset[]
-  // What "Run again" fills in: the scanner (the method, for PII), the settings and the mode of
-  // the scan being repeated. The settings are checked again like any other.
-  initial?: { scannerKey: string; settings: ScanSettings; mode: string | null }
+  // What "Run again" fills in: the scanner (the method, for PII), the settings, the mode and
+  // whether it dropped what it flagged by itself, of the scan being repeated. The settings are
+  // checked again like any other.
+  initial?: { scannerKey: string; settings: ScanSettings; mode: string | null; autoDrop: boolean }
   onClose: () => void
   onStarted: (result: ScanSubmitResponse) => void
 }) {
@@ -304,6 +448,8 @@ export default function ScanDialog({
     initial === undefined ? {} : { [initial.scannerKey]: initial.settings },
   )
   const overrides = overridesByScanner[scannerKey] ?? {}
+  // Drop what the scan flags by itself when it has finished and passed its coverage check (D17).
+  const [autoDrop, setAutoDrop] = useState(initial?.autoDrop ?? false)
   const [confirmGpu, setConfirmGpu] = useState(false)
 
   // The newest answer of the check, and the choices (`key`) it was for.
@@ -320,14 +466,31 @@ export default function ScanDialog({
   })
 
   const mode = scanner !== null && scanner.modes !== null ? (modeChoice ?? scanner.default_mode) : null
-  const settings: ScanSettings = scanner === null ? {} : { ...defaultSettings(scanner), ...overrides }
   const items = rows.map((dataset) => ({ id: dataset.id, reconvert: again.has(dataset.id) }))
   // A scan of one dataset is always that dataset on its own, whatever the mode says.
   const effectiveMode = mode !== null && rows.length <= 1 ? 'within' : mode
-  const modeText = modeNote(scannerKey, effectiveMode, rows.length)
-  const dropText = dropNote(scannerKey)
+
+  // Which copy counts as the original (D15) only means something when rows are compared across
+  // datasets. Otherwise the plain choice is sent, so a choice made earlier (or by "Run again")
+  // that no longer applies can't make the check refuse the scan. The protected datasets sent are
+  // only the ones still in the scan.
+  const originalField = scanner?.fields.find((field): field is ChoiceField => field.name === 'original' && field.type === 'choice')
+  const showOriginal = originalField !== undefined && effectiveMode === 'across'
+  const rawSettings: ScanSettings = scanner === null ? {} : { ...defaultSettings(scanner), ...overrides }
+  const original = showOriginal && typeof rawSettings.original === 'string' ? rawSettings.original : 'path'
+  const protectedIds =
+    original === 'protected' && Array.isArray(rawSettings.protected)
+      ? rawSettings.protected.filter((id) => rows.some((dataset) => dataset.id === id))
+      : []
+  const settings: ScanSettings = originalField === undefined ? rawSettings : { ...rawSettings, original, protected: protectedIds }
+
+  const autoDropSent = scanner !== null && scanner.offers_auto_drop && autoDrop
+  const modeText = modeNote(scannerKey, effectiveMode, rows.length, original)
+  const dropText = dropNote(scannerKey, autoDropSent)
   const requestKey = JSON.stringify(
-    scanner === null || rows.length === 0 ? null : [scannerKey, items, mode, settings, resources.requestResources],
+    scanner === null || rows.length === 0
+      ? null
+      : [scannerKey, items, mode, settings, resources.requestResources, autoDropSent],
   )
 
   // Checks again whenever a choice or a resource changes. The first check is immediate;
@@ -347,6 +510,7 @@ export default function ScanDialog({
         settings,
         resources: resources.requestResources,
         confirm_gpu: false,
+        auto_drop: autoDropSent,
       })
         .then((response) => {
           if (cancelled) return
@@ -421,6 +585,27 @@ export default function ScanDialog({
     chooseAgain(datasetId, false)
   }
 
+  // Protected datasets are kept in the order they are shown, which is the order they are read in.
+  function protect(datasetId: string, on: boolean) {
+    const next = on ? [...protectedIds, datasetId] : protectedIds.filter((id) => id !== datasetId)
+    changeSetting(
+      'protected',
+      rows.map((dataset) => dataset.id).filter((id) => next.includes(id)),
+    )
+  }
+
+  // The order of the datasets is the priority order: the dataset shown first holds the original.
+  function moveDataset(datasetId: string, by: -1 | 1) {
+    setChosen((current) => {
+      const index = current.indexOf(datasetId)
+      const target = index + by
+      if (index < 0 || target < 0 || target >= current.length) return current
+      const next = [...current]
+      ;[next[index], next[target]] = [next[target], next[index]]
+      return next
+    })
+  }
+
   async function start() {
     setStarting(true)
     setError(null)
@@ -433,6 +618,7 @@ export default function ScanDialog({
           settings,
           resources: resources.requestResources,
           confirm_gpu: confirmGpu,
+          auto_drop: autoDropSent,
         }),
       )
     } catch (failure) {
@@ -568,6 +754,19 @@ export default function ScanDialog({
             </fieldset>
           )}
 
+          {showOriginal && originalField !== undefined && (
+            <OriginalCopy
+              field={originalField}
+              value={original}
+              protectedIds={protectedIds}
+              datasets={rows}
+              disabled={starting}
+              onChange={(value) => changeSetting('original', value)}
+              onProtect={protect}
+              onMove={moveDataset}
+            />
+          )}
+
           {mainFields(scanner).map((field) => (
             <SettingControl
               key={field.name}
@@ -577,6 +776,24 @@ export default function ScanDialog({
               onChange={(value) => changeSetting(field.name, value)}
             />
           ))}
+
+          {scanner.offers_auto_drop && (
+            <div className="scan-setting">
+              <label className="scan-choice">
+                <input
+                  type="checkbox"
+                  checked={autoDrop}
+                  onChange={(event) => setAutoDrop(event.target.checked)}
+                  disabled={starting}
+                />
+                Drop duplicates automatically when the scan finishes
+              </label>
+              <p className="muted small">
+                When the scan has finished and its coverage check has passed, a filtered dataset is made from each
+                dataset that has duplicates. If the check fails, nothing is dropped. Off by default.
+              </p>
+            </div>
+          )}
 
           {scanner.detects.length > 0 && (
             <div className="scan-setting">

@@ -58,6 +58,10 @@
 #   dataset's Prepared version, so it can be scanned like any other. Cancel runs scancel on
 #   that job. The dataset the rows were dropped from, its Prepared rows and its results are
 #   never changed, and a dataset that has filtered versions can't be unregistered.
+#   A duplicates scan started with "Drop duplicates automatically" does the same by itself,
+#   once, when its coverage check has passed: one filtered version for every dataset that has
+#   duplicates (never for a protected one), with the reason "automatic". If the check failed it
+#   drops nothing. What it decided is written to <service root>/scans/<scan id>/auto_drop.json.
 #
 #   Dataset registry: registering, editing and unregistering a dataset write
 #   <service root>/registry/datasets.json, where the service root is

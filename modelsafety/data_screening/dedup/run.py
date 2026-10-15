@@ -11,7 +11,6 @@ import argparse
 import csv
 import hashlib
 import json
-import math
 import multiprocessing
 import os
 import shutil
@@ -46,6 +45,7 @@ from modelsafety.contract.run_identity import (  # noqa: E402
     describe_input_files,
     make_identity,
 )
+from modelsafety.data_screening.dedup.lsh import collision_probability_midpoint  # noqa: E402
 from modelsafety.data_screening.dedup.row_text import extract_text, normalize_text  # noqa: E402
 
 
@@ -785,10 +785,6 @@ def write_partition(
                     kept_handle.write(raw_line)
                     kept_count += 1
     return kept_count, duplicate_count
-
-
-def collision_probability_midpoint(bands: int, rows: int) -> float:
-    return (1.0 - math.pow(0.5, 1.0 / bands)) ** (1.0 / rows)
 
 
 def run(

@@ -593,11 +593,12 @@ interface ScannerFieldBase {
   help: string
 }
 
-// One of `choices`.
+// One of `choices`. `hints` is a short line for some or all of them, shown next to the choice.
 export interface ChoiceField extends ScannerFieldBase {
   type: 'choice'
   choices: string[]
   default: string
+  hints?: Record<string, string>
 }
 
 // A whole number from `min` to `max`. Empty is allowed when the default is null.
@@ -626,8 +627,15 @@ export interface MultiField extends ScannerFieldBase {
   groups?: { key: string; choices: string[] }[]
 }
 
+// A list of ids of datasets chosen for the scan. The dialog draws these itself (see
+// CUSTOM_SETTINGS in scans.ts), because what to offer depends on the datasets chosen.
+export interface DatasetsField extends ScannerFieldBase {
+  type: 'datasets'
+  default: string[]
+}
+
 // One setting of a scanner. The backend checks every value against its field.
-export type ScannerField = ChoiceField | IntegerField | DecimalField | MultiField
+export type ScannerField = ChoiceField | IntegerField | DecimalField | MultiField | DatasetsField
 
 // What a setting holds: a choice, a number (a whole number is null when it is empty; a number
 // being typed is the text as typed), or a list of choices.
@@ -652,6 +660,9 @@ export interface ScannerInfo {
   default_mode: string | null
   // What the headline count of a finished scan counts ("duplicate rows").
   count_label: string
+  // Whether a scan can be asked to drop what it flags by itself when it has finished and its
+  // coverage check has passed (D17).
+  offers_auto_drop: boolean
 }
 
 // GET /api/scanners.
@@ -710,6 +721,8 @@ export interface ScansRequest {
   settings: ScanSettings
   resources: ResourceRequest | null
   confirm_gpu: boolean
+  // Drop what the scan flags by itself once it has finished and its coverage check has passed.
+  auto_drop: boolean
 }
 
 export type ScanAction = 'use_existing' | 'convert' | 'convert_again'
@@ -802,6 +815,8 @@ export interface ScanView {
   jobs: ScanJobRef[]
   settings: ScanSettings
   resources: JobResources
+  // Whether the scan was started to drop what it flags by itself (D17).
+  auto_drop: boolean
   // The conversions this scan started or waits for, by dataset id.
   conversions: Record<string, { reconvert: boolean; job_id: string }>
   folder: string
@@ -912,6 +927,12 @@ export interface ResultFact {
   value: number
 }
 
+// A line of text about how the scan was made ("Original copy: first by path").
+export interface ResultNote {
+  label: string
+  text: string
+}
+
 // What counts as flagged in a toxicity result. `selected_*` is what the numbers were made with;
 // `saved_*` is what the scan was started with (D8).
 export interface ToxicityFilter {
@@ -941,6 +962,8 @@ export interface ScannerResult {
   flagged: ResultFlagged
   breakdowns: ResultBreakdown[]
   facts: ResultFact[]
+  // Empty for a scanner with nothing to say about how it was made.
+  notes: ResultNote[]
   // Toxicity only.
   filter?: ToxicityFilter
 }
@@ -965,11 +988,50 @@ export interface DatasetResultsResponse {
   scanners: Record<string, ScannerResultView>
 }
 
+// What came of a scan's automatic drop (D17). `waiting` until it is decided (nothing is saved
+// before); `dropping` while its filtered versions are being made; `dropped` when at least one was
+// made; `nothing_to_drop` when nothing was flagged; `not_dropped` when the coverage check failed;
+// `failed` when nothing could be made; `interrupted` when the service stopped part way.
+export type AutoDropOutcome =
+  | 'waiting'
+  | 'dropping'
+  | 'dropped'
+  | 'nothing_to_drop'
+  | 'not_dropped'
+  | 'failed'
+  | 'interrupted'
+
+// One dataset's part of an automatic drop.
+export interface AutoDropDataset {
+  dataset_id: string
+  dataset_name: string | null
+  // The flagged rows dropped, or that there were.
+  rows: number | null
+  // The filtered version made from it (a dataset of its own), if there was one.
+  filtered_id: string | null
+  filtered_name: string | null
+  error: string | null
+  note: string | null
+}
+
+export interface AutoDropView {
+  scan_id: string
+  outcome: AutoDropOutcome
+  decided_at: string | null
+  reason: string | null
+  // The coverage problems, when it wasn't dropped for that.
+  problems: CoverageProblem[]
+  problems_total: number
+  datasets: AutoDropDataset[]
+}
+
 // GET /api/datasets/{id}/results/{scanner}.
 export interface DatasetResultResponse extends ScannerResultView {
   dataset_id: string
   name: string
   slurm_error: string | null
+  // Null when the scan wasn't started with an automatic drop.
+  auto_drop: AutoDropView | null
 }
 
 export interface CheckAgainResponse {
@@ -1197,6 +1259,8 @@ export interface FilterJob extends FilterSummary {
   elapsed: string | null
   job_id: string | null
   drop: DropCounts | null
+  // The scan this version was dropped from by itself (D17); null for one a user chose rows for.
+  automatic: { scan_id: string } | null
   folder: string | null
 }
 

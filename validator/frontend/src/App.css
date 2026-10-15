@@ -1384,6 +1384,36 @@ div.scan-setting > p {
   gap: 2px 12px;
 }
 
+/* A choice with a line under its name saying what it means. */
+.scan-choice-hinted {
+  align-items: flex-start;
+  margin-bottom: 6px;
+}
+
+.scan-choice-hinted input {
+  margin-top: 4px;
+}
+
+/* Under "Original copy": the datasets in the order the scan reads them, or the ones to protect. */
+.original-extra {
+  margin: 2px 0 8px 22px;
+}
+
+.original-order {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.original-order li {
+  margin-bottom: 4px;
+}
+
+.original-order-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 /* How far a running scan has got, one bar for each stage (the bars are the conversion's). */
 .scan-progress {
   margin: 8px 0 12px;

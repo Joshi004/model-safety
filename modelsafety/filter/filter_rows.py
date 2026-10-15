@@ -21,7 +21,8 @@ exactly those runs, and every finding points at a line whose fingerprint matches
 
 ``--drop-list FILE`` removes exactly the rows a list names (one JSON line each: file, line,
 fingerprint, and the scanner they came from, see ``rules.read_drop_list``), with the reason
-``manual``. It can stand alone, or be combined with scanner results. It is held to the same
+``manual``, or ``automatic`` for a line that says ``"automatic": true`` (a list the service made
+by itself after a scan). It can stand alone, or be combined with scanner results. It is held to the same
 checks: every line must be a line of a finished run, and its fingerprint must match.
 
 Usage:
@@ -794,7 +795,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--drop-list",
         type=Path,
         help="A JSONL file of rows to remove, each with its file, line, fingerprint and the scanner it "
-        "came from. They are removed with the reason 'manual'. Can be used alone.",
+        "came from. They are removed with the reason 'manual', or 'automatic' for a line that has "
+        '"automatic": true. Can be used alone.',
     )
     parser.add_argument(
         "--regex-ignore-category",

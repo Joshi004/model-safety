@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import jobs
+import registry
 from reader_imports import (
     PII_CATEGORIES,
     PII_STAGE1_NAME,
@@ -40,6 +41,7 @@ from reader_imports import (
     CandidatePolicy,
     TOXICITY_REMOVABLE_VERDICTS,
     RunFinderError,
+    collision_probability_midpoint,
     label_tier,
     read_json_or_none,
     select_scan_files,
@@ -63,6 +65,9 @@ MAIN_JOB_ROLE = "scan"
 
 MODE_ACROSS = "across"
 MODE_WITHIN = "within"
+
+# The most dataset ids a `datasets` setting can hold: the most datasets one request can name.
+MAX_SETTING_DATASETS = 50
 
 
 class ScannerError(ValueError):
@@ -115,7 +120,7 @@ class Scanner:
     stages: tuple[str, ...]
     gpu: bool
     # The settings, in the shape step forms are built from: name, label, type, default, help.
-    # The types are `choice`, `integer`, `decimal` and `multi` (see `_check_field`).
+    # The types are `choice`, `integer`, `decimal`, `multi` and `datasets` (see `_check_field`).
     fields: list[dict[str, Any]]
     default_resources: dict[str, Any]
     # How a scan over several datasets can be made: mode -> what it means. None when the
@@ -163,6 +168,20 @@ class Scanner:
     # Whether the scan's analysis (results.py) has to count something the summary files don't
     # hold, given the scan's mode. None when it never does.
     needs_tally: Callable[[str | None], bool] | None = None
+    # For a scanner with a mode across datasets: the datasets of a scan across them, in the order
+    # the scan reads them, from the settings and the chosen datasets (registry records, in the
+    # order the request gave them). None: by path.
+    order_across: Callable[[dict[str, Any], list[dict[str, Any]]], list[dict[str, Any]]] | None = None
+    # Refuses settings that don't fit the datasets chosen: the settings, the mode that will apply
+    # (a single dataset is always `within`) and the chosen dataset ids. What is wrong is added to
+    # the problems.
+    check_datasets: Callable[[dict[str, Any], str | None, list[str], list[str]], None] | None = None
+    # The datasets a scan only reads as a reference: from the settings and the scan's mode. The
+    # scan never becomes their result, and they have nothing flagged in it.
+    reference_datasets: Callable[[dict[str, Any], str | None], tuple[str, ...]] | None = None
+    # Whether the scan can be asked to drop what it flags by itself once it has finished and its
+    # coverage check has passed (D17). It is a setting of the scan as a whole, not of the scanner.
+    offers_auto_drop: bool = False
 
 
 # -------------------------------------------------------------------------
@@ -170,8 +189,20 @@ class Scanner:
 # -------------------------------------------------------------------------
 
 
-def _choice(name: str, label: str, choices: list[str], default: str, help_text: str) -> dict[str, Any]:
-    return {"name": name, "label": label, "type": "choice", "choices": choices, "default": default, "help": help_text}
+def _choice(
+    name: str, label: str, choices: list[str], default: str, help_text: str, hints: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """One of `choices`. `hints` is a short line for each choice (or some), shown next to it."""
+    field: dict[str, Any] = {"name": name, "label": label, "type": "choice", "choices": choices, "default": default, "help": help_text}
+    if hints is not None:
+        field["hints"] = hints
+    return field
+
+
+def _datasets(name: str, label: str, help_text: str) -> dict[str, Any]:
+    """A list of ids of the datasets chosen for the scan (which ones is checked against the request
+    by scans.py). Empty by default."""
+    return {"name": name, "label": label, "type": "datasets", "default": [], "help": help_text}
 
 
 def _integer(name: str, label: str, low: int, high: int, default: int | None, help_text: str) -> dict[str, Any]:
@@ -276,6 +307,22 @@ def _check_field(field: dict[str, Any], value: Any, problems: list[str]) -> Any:
         # In the order of the choices, so the same selection is always the same value.
         chosen = set(value)
         return [choice for choice in field["choices"] if choice in chosen]
+    if kind == "datasets":
+        # Each id goes into a comparison with the request's datasets, and later into a command, so
+        # only the exact id format is let through. The order is kept: it can mean something.
+        if value is None:
+            return []
+        if (
+            not isinstance(value, list)
+            or len(value) > MAX_SETTING_DATASETS
+            or not all(isinstance(item, str) and registry.DATASET_ID.fullmatch(item) for item in value)
+        ):
+            problems.append(f"{label} must be a list of at most {MAX_SETTING_DATASETS} dataset ids.")
+            return []
+        if len(set(value)) != len(value):
+            problems.append(f"{label} names a dataset twice.")
+            return []
+        return list(value)
     raise ValueError(f"Setting {field['name']} has a type this module doesn't know: {kind}.")
 
 
@@ -381,6 +428,7 @@ def describe(scanner: Scanner) -> dict[str, Any]:
         "modes": scanner.modes,
         "default_mode": scanner.default_mode,
         "count_label": scanner.count_label,
+        "offers_auto_drop": scanner.offers_auto_drop,
     }
 
 
@@ -414,6 +462,75 @@ def _read_wrapper_jobs(output: str, waited_for: tuple[tuple[str, str], ...], own
 
 DEDUP_JOB_SCRIPT = REPO_ROOT / "launchers" / "slurm" / "run_dedup_scan.sbatch"
 DEDUP_MANIFEST = "files.txt"
+
+# D16: how strict a match must be. Each preset is the LSH's bands and rows, with 256 permutations
+# and 60-character n-grams for all of them (bands x rows is always 256). More bands of fewer rows
+# flag less similar rows. These are starting points, to be checked on real data.
+DEDUP_NGRAM_SIZE = 60
+DEDUP_NUM_PERM = 256
+DEDUP_PRESETS = {"strict": (16, 16), "standard": (32, 8), "loose": (64, 4)}
+DEDUP_DEFAULT_STRICTNESS = "standard"
+
+# D15: which copy of a group of duplicates counts as the original. The scan keeps the row it reads
+# first, so what changes is the order the datasets are listed in.
+ORIGINAL_PATH = "path"
+ORIGINAL_PRIORITY = "priority"
+ORIGINAL_PROTECTED = "protected"
+
+
+def dedup_preset_midpoint(strictness: str) -> float:
+    """The similarity at which a pair of rows has a 50% chance of being flagged under a preset:
+    the scan's own formula, so what the dialog says and what the scan records can't differ."""
+    bands, rows = DEDUP_PRESETS[strictness]
+    return collision_probability_midpoint(bands, rows)
+
+
+def _strictness_hints() -> dict[str, str]:
+    return {name: f"flagged from about {round(dedup_preset_midpoint(name) * 100)}% similarity" for name in DEDUP_PRESETS}
+
+
+def dedup_order_across(settings: dict[str, Any], datasets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The datasets of a scan across them, in the order the scan reads them (D15). By path (the
+    default): the dataset first by path holds the copy that counts as the original. Priority: the
+    order the user gave. Protected: the protected datasets first, in the order given, then the
+    others by path. Rows are numbered in this order and the earliest row of a group of duplicates
+    is the one kept."""
+    by_path = sorted(datasets, key=lambda item: (item["path"], item["id"]))
+    original = settings.get("original", ORIGINAL_PATH)
+    if original == ORIGINAL_PRIORITY:
+        return list(datasets)
+    if original == ORIGINAL_PROTECTED:
+        protected = set(settings.get("protected") or [])
+        return [item for item in datasets if item["id"] in protected] + [item for item in by_path if item["id"] not in protected]
+    return by_path
+
+
+def dedup_reference_datasets(settings: dict[str, Any], mode: str | None) -> tuple[str, ...]:
+    """The protected datasets of a scan across datasets: their rows are read, so that rows in the
+    others can match them, but nothing in them is flagged."""
+    if mode == MODE_ACROSS and settings.get("original") == ORIGINAL_PROTECTED:
+        return tuple(settings.get("protected") or [])
+    return ()
+
+
+def dedup_check_datasets(settings: dict[str, Any], mode: str | None, dataset_ids: list[str], problems: list[str]) -> None:
+    """The original-copy choice has to fit the datasets: it only means something when rows are
+    compared across two or more datasets, and at least one dataset must stay unprotected."""
+    original = settings.get("original", ORIGINAL_PATH)
+    protected = settings.get("protected") or []
+    if mode != MODE_ACROSS:
+        if original != ORIGINAL_PATH or protected:
+            problems.append(
+                "Which copy counts as the original only applies when rows are compared across two or more datasets."
+            )
+        return
+    if original == ORIGINAL_PROTECTED:
+        if not protected:
+            problems.append("Choose at least one dataset to protect, or choose another way to pick the original copy.")
+        elif len(set(protected)) >= len(set(dataset_ids)):
+            problems.append("At least one dataset has to stay unprotected, or the scan would flag nothing.")
+    elif protected:
+        problems.append("Datasets can only be protected when 'Never flag rows in these datasets' is chosen.")
 
 
 def _check_export_values(variables: dict[str, str]) -> None:
@@ -474,6 +591,8 @@ def dedup_build_command(context: ScanContext) -> list[str]:
         (input_root,) = context.version_folders.values()
         manifest = None
 
+    # A scan saved before there was a choice of strictness was made with the standard one.
+    bands, rows = DEDUP_PRESETS[context.settings.get("strictness", DEDUP_DEFAULT_STRICTNESS)]
     variables = {
         "REPO": str(REPO_ROOT),
         "DEDUP_INPUT_ROOT": str(input_root),
@@ -482,6 +601,10 @@ def dedup_build_command(context: ScanContext) -> list[str]:
         "DEDUP_LOG_ROOT": str(logs / "dedup"),
         "DEDUP_TEXT_SCOPE": context.settings["text_scope"],
         "DEDUP_EXCLUDE_SYSTEM": context.settings["exclude_system"],
+        "DEDUP_NGRAM_SIZE": str(DEDUP_NGRAM_SIZE),
+        "DEDUP_NUM_PERM": str(DEDUP_NUM_PERM),
+        "DEDUP_BANDS": str(bands),
+        "DEDUP_ROWS_PER_BAND": str(rows),
         "DEDUP_WRITE_FILTERED": context.settings["write_filtered"],
         "DEDUP_OVERWRITE": "0",
     }
@@ -1101,6 +1224,40 @@ def _known(*breakdowns: dict[str, Any] | None) -> list[dict[str, Any]]:
     return [item for item in breakdowns if item is not None]
 
 
+def _strictness_note(context: ResultContext) -> dict[str, str]:
+    """The preset the scan was started with, and what it recorded of the LSH it used and the
+    similarity that LSH flags from (the scan's `summary.json`)."""
+    strictness = context.settings.get("strictness", DEDUP_DEFAULT_STRICTNESS)
+    name = strictness.capitalize() if strictness in DEDUP_PRESETS else str(strictness)
+    summary = read_json_or_none(context.results / "summary.json")
+    configuration = summary.get("configuration") if isinstance(summary, dict) else None
+    configuration = configuration if isinstance(configuration, dict) else {}
+    bands, rows = _whole_number(configuration.get("bands")), _whole_number(configuration.get("rows_per_band"))
+    midpoint = configuration.get("collision_probability_midpoint_similarity")
+    if bands is None or rows is None or not isinstance(midpoint, float):
+        return {"label": "Match strictness", "text": f"{name} (what the scan recorded isn't available)."}
+    return {
+        "label": "Match strictness",
+        "text": f"{name}: {bands} bands of {rows} rows. A pair of rows has a 50% chance of being flagged at {midpoint * 100:.1f}% similarity (recorded by the scan).",
+    }
+
+
+def _original_note(context: ResultContext) -> dict[str, str] | None:
+    """Which copy counted as the original, for a scan across datasets (D15). `dataset_names` is
+    in the order the scan read the datasets."""
+    if context.mode != MODE_ACROSS or len(context.dataset_names) < 2:
+        return None
+    original = context.settings.get("original", ORIGINAL_PATH)
+    if original == ORIGINAL_PRIORITY:
+        text = "priority: " + ", then ".join(context.dataset_names.values())
+    elif original == ORIGINAL_PROTECTED:
+        protected = context.settings.get("protected") or []
+        text = "protected: " + ", ".join(context.dataset_names.get(dataset_id, dataset_id) for dataset_id in protected)
+    else:
+        text = "first by path"
+    return {"label": "Original copy", "text": text}
+
+
 def dedup_read_result(context: ResultContext) -> dict[str, Any]:
     """The duplicate rows in this dataset (the coverage report's `findings` for its files). For
     a scan across datasets, also where the copy that was kept is: in this dataset or another."""
@@ -1127,7 +1284,8 @@ def dedup_read_result(context: ResultContext) -> dict[str, Any]:
                     "Rows in this dataset that repeat a row kept in the dataset named.",
                 )
             )
-    return {"flagged": _flagged(count, "duplicate rows", count), "breakdowns": _known(*breakdowns), "facts": []}
+    notes = [item for item in (_original_note(context), _strictness_note(context)) if item is not None]
+    return {"flagged": _flagged(count, "duplicate rows", count), "breakdowns": _known(*breakdowns), "facts": [], "notes": notes}
 
 
 def regex_read_result(context: ResultContext) -> dict[str, Any]:
@@ -1289,6 +1447,34 @@ SCANNERS: dict[str, Scanner] = {
         stages=("Scan",),
         gpu=False,
         fields=[
+            _choice(
+                "strictness",
+                "Match strictness",
+                list(DEDUP_PRESETS),
+                DEDUP_DEFAULT_STRICTNESS,
+                "How alike two rows must be to count as duplicates. Strict finds fewer, Loose finds more. "
+                "The percentage is the similarity at which a pair has a 50% chance of being flagged.",
+                _strictness_hints(),
+            ),
+            _choice(
+                "original",
+                "Which copy counts as the original",
+                [ORIGINAL_PATH, ORIGINAL_PRIORITY, ORIGINAL_PROTECTED],
+                ORIGINAL_PATH,
+                "Only when comparing across two or more datasets. The copy that counts as the original is kept; "
+                "the other copies are flagged.",
+                {
+                    ORIGINAL_PATH: "The dataset that comes first by path holds the original.",
+                    ORIGINAL_PRIORITY: "You order the datasets: a row in a higher one counts as the original.",
+                    ORIGINAL_PROTECTED: "Nothing is flagged in the datasets you tick, but rows in the others that repeat theirs are.",
+                },
+            ),
+            _datasets(
+                "protected",
+                "Datasets to never flag rows in",
+                "Used with 'Never flag rows in these datasets'. Their rows are still compared, so rows in the "
+                "other datasets that repeat them are flagged.",
+            ),
             _choice("text_scope", "Text compared", ["prompt", "all"], "prompt", "prompt compares what was asked; all compares the whole conversation."),
             _choice("exclude_system", "Leave out system messages", ["1", "0"], "1", "System messages carry tool definitions, not conversation."),
             _choice("write_filtered", "Write filtered copies of every row", ["0", "1"], "0", "The scan only flags duplicates; the copies aren't used."),
@@ -1311,6 +1497,10 @@ SCANNERS: dict[str, Scanner] = {
         headline_count=dedup_headline_count,
         read_result=dedup_read_result,
         needs_tally=lambda mode: mode == MODE_ACROSS,
+        order_across=dedup_order_across,
+        check_datasets=dedup_check_datasets,
+        reference_datasets=dedup_reference_datasets,
+        offers_auto_drop=True,
     ),
     "pii_ner": Scanner(
         key="pii_ner",

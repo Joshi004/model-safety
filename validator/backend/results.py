@@ -199,6 +199,10 @@ def _command(scan: dict[str, Any], kind: str) -> list[str]:
             # The groups name each dataset's files, for the tally and for the index.
             for dataset_id in scan["datasets"]:
                 args += ["--group", f"{dataset_id}={dataset_id}/prepared/{versions[dataset_id]['version_id']}/"]
+            # A dataset the scan only read as a reference (D15) has nothing flagged in it: no
+            # index, nothing in the tally. Rows in the others can still point at its rows.
+            for dataset_id in scans.reference_datasets_of(scan):
+                args += ["--protect", dataset_id]
     elif len(scan["datasets"]) == 1:
         root = _version_folder(scan["datasets"][0], versions.get(scan["datasets"][0]))
         args += ["--root", str(root), "--results-dir", str(folder / scanners.RESULTS_FOLDER), "--out-dir", str(folder)]
@@ -507,6 +511,8 @@ def _scanner_view(
             "with_text": row.get("rows_with_text") if row is not None else None,
             "without_text": row.get("rows_without_text") if row is not None else None,
         },
+        # Lines of text about how the scan was made, `{label, text}`, for a scanner that has any.
+        "notes": [],
         **body,
     }
     return view

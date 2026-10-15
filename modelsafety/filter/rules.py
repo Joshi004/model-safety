@@ -37,6 +37,8 @@ DEDUP_MODES = ("global", "cross")
 # name stands where a scanner's would.
 DROP_LIST = "drop_list"
 MANUAL_REASON = "manual"
+# The same, for a list the service made by itself after a scan, with nobody choosing the rows.
+AUTOMATIC_REASON = "automatic"
 
 # Each reason a row can be removed for, and the scanner it comes from.
 REASON_SCANNERS = {
@@ -48,6 +50,7 @@ REASON_SCANNERS = {
     "duplicate": "dedup",
     "duplicate_of_reference": "dedup",
     MANUAL_REASON: DROP_LIST,
+    AUTOMATIC_REASON: DROP_LIST,
 }
 
 # What a drop-list line may say about where it came from. The tool only needs them to be plain
@@ -148,6 +151,12 @@ class HitIndex:
         if reasons is None:
             reasons = by_line[line] = {}
         reasons.setdefault(reason, []).append(finding)
+
+    def forget_findings(self, file: str) -> None:
+        """Take back every finding in this file (the lines still have the fingerprints they were
+        expected to have, so the copies other findings point at can be checked). For a caller
+        that has been asked not to flag anything in a file, such as a protected dataset."""
+        self._reasons.pop(file, None)
 
     def reasons_for(self, file: str) -> dict[int, dict[str, list[dict[str, Any]]]]:
         return self._reasons.get(file, {})
@@ -470,11 +479,12 @@ def _drop_list_name(where: str, field_name: str, value: Any) -> str:
 def read_drop_list(path: Path, index: HitIndex, rows_by_file: dict[str, int]) -> FindingsRead:
     """A drop list (JSONL): one line for each row to remove, and the scanner that flagged it.
 
-    Each line is ``{"file", "line", "sha256", "scanner", "scan_id", "reasons"}``. `file`,
-    `line` and `sha256` name a line of a finished run under the scanned folder, and the
-    fingerprint has to be the line's (the filter checks it against the line itself). A row
-    can be listed once for each scanner. Every line removes its row, with the reason
-    ``manual``; `scanner`, `scan_id` and `reasons` are only kept in the removed-row entry.
+    Each line is ``{"file", "line", "sha256", "scanner", "scan_id", "reasons"}``, and may add
+    ``"automatic": true``. `file`, `line` and `sha256` name a line of a finished run under the
+    scanned folder, and the fingerprint has to be the line's (the filter checks it against the
+    line itself). A row can be listed once for each scanner. Every line removes its row, with
+    the reason ``manual``, or ``automatic`` for a line that says it was; `scanner`, `scan_id`
+    and `reasons` are only kept in the removed-row entry.
     """
     result = FindingsRead(DROP_LIST)
     seen: set[tuple[str, int, str]] = set()
@@ -493,6 +503,9 @@ def read_drop_list(path: Path, index: HitIndex, rows_by_file: dict[str, int]) ->
             raise FindingsError(
                 f"{where}: 'reasons' must be a list of 1 to {MAX_DROP_LIST_REASONS} names in lower case."
             )
+        automatic = record.get("automatic", False)
+        if not isinstance(automatic, bool):
+            raise FindingsError(f"{where}: 'automatic' must be true or false.")
         key = (file, line, scanner)
         if key in seen:
             raise FindingsError(f"{where}: {file} line {line} is listed twice for {scanner}.")
@@ -502,7 +515,7 @@ def read_drop_list(path: Path, index: HitIndex, rows_by_file: dict[str, int]) ->
             line,
             sha256,
             DROP_LIST,
-            MANUAL_REASON,
+            AUTOMATIC_REASON if automatic else MANUAL_REASON,
             {"scanner": scanner, "scan_id": scan_id, "reasons": reasons},
         )
         by_scanner[scanner] += 1

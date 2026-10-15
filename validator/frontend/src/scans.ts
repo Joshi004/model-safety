@@ -188,6 +188,24 @@ export function visibleFields(scanner: ScannerInfo): ScannerField[] {
   return scanner.fields.filter((field) => !hidden.includes(field.name))
 }
 
+// Settings the dialog draws itself (the duplicates scan's choice of which copy counts as the
+// original, D15), because what to offer depends on the datasets chosen. They are still sent, and
+// the result page tells them in a note instead of in its list of settings.
+const CUSTOM_SETTINGS: Record<string, string[]> = {
+  dedup: ['original', 'protected'],
+}
+
+export function isCustomSetting(scannerKey: string, name: string): boolean {
+  return (CUSTOM_SETTINGS[scannerKey] ?? []).includes(name)
+}
+
+// A result's settings as the page lists them: the ones the dialog offers, minus the ones its notes tell.
+export function shownSettings(scannerKey: string, settings: ScanSettings): ScanSettings {
+  return Object.fromEntries(
+    Object.entries(settingsToRepeat(scannerKey, settings)).filter(([name]) => !isCustomSetting(scannerKey, name)),
+  )
+}
+
 // Settings that are shown under "Advanced" in the dialog, not with the others.
 const ADVANCED_SETTINGS: Record<string, string[]> = {
   toxicity: ['shards', 'concurrency'],
@@ -195,7 +213,7 @@ const ADVANCED_SETTINGS: Record<string, string[]> = {
 
 export function mainFields(scanner: ScannerInfo): ScannerField[] {
   const advanced = ADVANCED_SETTINGS[scanner.key] ?? []
-  return visibleFields(scanner).filter((field) => !advanced.includes(field.name))
+  return visibleFields(scanner).filter((field) => !advanced.includes(field.name) && !isCustomSetting(scanner.key, field.name))
 }
 
 export function advancedFields(scanner: ScannerInfo): ScannerField[] {
@@ -221,6 +239,12 @@ const CHOICE_LABELS: Record<string, Record<string, string>> = {
   },
   // The dialog shows this one as a checkbox; a result's list of settings shows its value.
   'dedup/exclude_system': { '1': 'Yes', '0': 'No' },
+  'dedup/strictness': { strict: 'Strict', standard: 'Standard', loose: 'Loose' },
+  'dedup/original': {
+    path: 'First by path',
+    priority: 'Priority order',
+    protected: 'Never flag rows in these datasets',
+  },
   'pii_ner/size': {
     full: 'Full node (every GPU of one node)',
     one_gpu: 'One GPU',
@@ -366,22 +390,42 @@ export function modeLabel(scannerKey: string, mode: string, fallback: string): s
   return MODE_LABELS[scannerKey]?.[mode] ?? fallback
 }
 
-// The note under the mode choice, which follows the choice (D10). `mode` is the mode that
-// will apply: a single dataset is always compared with itself.
-export function modeNote(scannerKey: string, mode: string | null, datasetCount: number): string | null {
+// The note under the choices, which follows them (D10, D15). `mode` is the mode that will apply
+// (a single dataset is always compared with itself), and `original` which copy counts as the
+// original, as the dialog sends it.
+export function modeNote(scannerKey: string, mode: string | null, datasetCount: number, original: string): string | null {
   if (scannerKey !== 'dedup') return null
   if (mode === 'across') {
+    const compared = `Rows are compared across all ${datasetCount} datasets you chose. `
+    if (original === 'priority') {
+      return (
+        compared +
+        'When rows match, the one in the dataset highest in your order counts as the original, and the others are flagged as duplicates.'
+      )
+    }
+    if (original === 'protected') {
+      return (
+        compared +
+        'Nothing is flagged in the protected datasets, and a row in another dataset that matches one of their rows is flagged. ' +
+        'Among the others, the dataset that comes first by path holds the original.'
+      )
+    }
     return (
-      `Rows are compared across all ${datasetCount} datasets you chose. When rows match, the one in the ` +
-      'dataset that comes first by path counts as the original, and the others are flagged as duplicates.'
+      compared +
+      'When rows match, the one in the dataset that comes first by path counts as the original, and the others are flagged as duplicates.'
     )
   }
   return datasetCount > 1 ? 'Each dataset is compared only with itself.' : null
 }
 
-// Always shown for a scan that only flags (D10).
-export function dropNote(scannerKey: string): string | null {
-  return scannerKey === 'dedup' ? 'Nothing is dropped by this scan. You choose what to drop from the results.' : null
+// What the scan does with what it flags (D10, D17): by default nothing, the user chooses.
+export function dropNote(scannerKey: string, autoDrop: boolean): string | null {
+  if (scannerKey !== 'dedup') return null
+  return autoDrop
+    ? 'When the scan has finished and its coverage check has passed, the flagged duplicates are dropped by themselves: ' +
+        'a new filtered dataset is made from each dataset that has any. The datasets you chose are not changed. ' +
+        'If the coverage check fails, nothing is dropped.'
+    : 'Nothing is dropped by this scan. You choose what to drop from the results.'
 }
 
 // "within this dataset", "across: A, B": which datasets a scan compared. `names` are the

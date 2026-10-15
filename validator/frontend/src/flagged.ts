@@ -14,6 +14,8 @@ const REASON_LABELS: Record<string, string> = {
   toxicity_guard_error: 'Guard error',
   // A row someone chose to drop (a filtered dataset's removed rows).
   manual: 'Chosen to drop',
+  // A row dropped by itself after a scan, with nobody choosing it (D17).
+  automatic: 'Dropped automatically',
 }
 
 export function reasonLabel(reason: string): string {

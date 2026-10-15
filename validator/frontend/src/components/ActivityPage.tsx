@@ -66,7 +66,8 @@ function kindOf(item: Item): string {
   if (item.kind === 'conversion') return item.conversion.reconvert ? 'Convert again' : 'Conversion'
   if (item.kind === 'filter') {
     const rows = item.filter.removed
-    return rows === null ? 'Drop rows' : `Drop ${rows.toLocaleString()} ${rows === 1 ? 'row' : 'rows'}`
+    const drop = item.filter.automatic !== null ? 'Automatic drop' : 'Drop'
+    return rows === null ? `${drop} of rows` : `${drop} of ${rows.toLocaleString()} ${rows === 1 ? 'row' : 'rows'}`
   }
   const { scan } = item
   const across = scan.mode === 'across' && scan.datasets.length > 1 ? ` (across ${scan.datasets.length})` : ''
@@ -140,6 +141,14 @@ function DatasetsCell({ item }: { item: Item }) {
         {filter.parent_name !== null && (
           <span className="muted small filter-lineage">
             from <a href={hrefFor({ page: 'dataset', id: filter.parent_id })}>{filter.parent_name}</a>
+          </span>
+        )}
+        {filter.automatic !== null && (
+          <span className="muted small filter-lineage">
+            automatic, after scan{' '}
+            <a className="mono" href={hrefFor({ page: 'activity', scan: filter.automatic.scan_id })}>
+              {filter.automatic.scan_id}
+            </a>
           </span>
         )}
       </>

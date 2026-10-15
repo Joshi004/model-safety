@@ -60,6 +60,10 @@ from modelsafety.contract.run_identity import (  # noqa: E402
 )
 from modelsafety.contract.textract import extract_record_text  # noqa: E402
 
+# The dedup scan's own formula for the similarity a band shape flags from, so the dialog's
+# strictness presets say what the scan will record.
+from modelsafety.data_screening.dedup.lsh import collision_probability_midpoint  # noqa: E402
+
 # The values the filter's rule flags accept, so the UI offers exactly those.
 from modelsafety.data_screening.pii.regex.pii_output import (  # noqa: E402
     PII_CATEGORIES,
@@ -138,6 +142,7 @@ __all__ = [
     "STALE_AFTER_SECONDS",
     "RunFinderError",
     "select_scan_files",
+    "collision_probability_midpoint",
     "PII_CATEGORIES",
     "PII_STAGE1_NAME",
     "PII_STAGE2_NAME",

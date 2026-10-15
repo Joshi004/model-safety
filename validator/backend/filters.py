@@ -526,25 +526,37 @@ def check(dataset_id: str, request: Any) -> dict[str, Any]:
 # -------------------------------------------------------------------------
 
 
-def _write_drop_list(path: Path, lines: list[tuple[str, int, str, str, str, tuple[str, ...]]]) -> None:
+def _write_drop_list(path: Path, lines: list[tuple[str, int, str, str, str, tuple[str, ...]]], automatic: bool = False) -> None:
+    """One line for each row and scanner. An automatic drop (D17) says so on every line, so the
+    filter removes the rows with the reason `automatic` instead of `manual`."""
     temp = path.with_name(path.name + ".tmp")
     with temp.open("w", encoding="utf-8") as handle:
         for file, line, scanner, scan_id, sha256, reasons in lines:
-            handle.write(
-                json.dumps(
-                    {"file": file, "line": line, "sha256": sha256, "scanner": scanner, "scan_id": scan_id, "reasons": list(reasons)},
-                    separators=(",", ":"),
-                )
-                + "\n"
-            )
+            entry: dict[str, Any] = {
+                "file": file,
+                "line": line,
+                "sha256": sha256,
+                "scanner": scanner,
+                "scan_id": scan_id,
+                "reasons": list(reasons),
+            }
+            if automatic:
+                entry["automatic"] = True
+            handle.write(json.dumps(entry, separators=(",", ":")) + "\n")
     os.replace(temp, path)
 
 
-def _description(parent_name: str, counts: dict[str, Any]) -> str:
+def _description(parent_name: str, counts: dict[str, Any], automatic_scan_id: str | None = None) -> str:
     parts = ", ".join(f"{item['rows']:,} from the {item['label']} result" for item in counts["by_scanner"])
     rows = counts["rows"]
+    plural = "" if rows == 1 else "s"
+    if automatic_scan_id is not None:
+        return (
+            f"Made automatically from {parent_name} when scan {automatic_scan_id} finished: it dropped the "
+            f"{rows:,} row{plural} the scan flagged ({parts}). The rows that are left are copied unchanged."
+        )
     return (
-        f"Made from {parent_name} by dropping {rows:,} row{'' if rows == 1 else 's'} chosen from its scan results "
+        f"Made from {parent_name} by dropping {rows:,} row{plural} chosen from its scan results "
         f"({parts}). The rows that are left are copied unchanged."
     )
 
@@ -557,12 +569,16 @@ def _undo(dataset_id: str) -> None:
         _log(f"couldn't remove dataset {dataset_id} after a failed start: {exc}")
 
 
-def submit(dataset_id: str, request: Any) -> dict[str, Any]:
+def submit(dataset_id: str, request: Any, automatic_scan_id: str | None = None) -> dict[str, Any]:
     """Drop the chosen rows: resolve them again, mark the parent's version kept, register the new
     dataset, write its drop list and submit the filter job. Refused, with nothing changed, when
     the request is wrong, a result changed, or SLURM can't be asked. A failure before `sbatch`
     runs removes the new dataset again; one from `sbatch` itself leaves it registered, showing
-    why, and it can be unregistered."""
+    why, and it can be unregistered.
+
+    `automatic_scan_id` is only given by autodrop.py (D17), for the drop it makes by itself after
+    that scan: the drop list, the record and the new dataset's description then say so. The HTTP
+    routes never pass it."""
     version_id, selections = _validated(request)
     with _LOCK:
         resources = _resources()
@@ -572,7 +588,9 @@ def submit(dataset_id: str, request: Any) -> dict[str, Any]:
 
         if not registry.mark_kept(dataset_id, version_id):
             raise FiltersError("The dataset was converted again since the rows were chosen. Open its results again.")
-        child = registry.register_filtered(dataset_id, dropped.counts["rows"], _description(dataset["name"], dropped.counts))
+        child = registry.register_filtered(
+            dataset_id, dropped.counts["rows"], _description(dataset["name"], dropped.counts, automatic_scan_id)
+        )
         child_id = child["id"]
 
         new_version = jobs._new_batch_id()
@@ -585,6 +603,8 @@ def submit(dataset_id: str, request: Any) -> dict[str, Any]:
             "parent_version": {key: dataset["prepared"].get(key) for key in ("version_id", "folder", "rows")},
             "version_id": new_version,
             "created_at": jobs._now_iso(),
+            # Set when the drop was made by itself after a scan (D17), None when a user chose it.
+            "automatic": {"scan_id": automatic_scan_id} if automatic_scan_id is not None else None,
             "drop": dropped.counts,
             "resources": resources,
             "command": argv,
@@ -598,7 +618,7 @@ def submit(dataset_id: str, request: Any) -> dict[str, Any]:
         try:
             (folder / JOBS_FOLDER).mkdir(parents=True, exist_ok=True)
             (folder / LOGS_FOLDER).mkdir(exist_ok=True)
-            _write_drop_list(folder / DROP_LIST_FILE, dropped.lines)
+            _write_drop_list(folder / DROP_LIST_FILE, dropped.lines, automatic_scan_id is not None)
             # Made here, not by the job: a folder that was looked at before it existed is
             # remembered as "not there" by the shared disk for about a minute.
             output.mkdir(parents=True)
@@ -863,6 +883,8 @@ def _view(
         "elapsed": scans._slurm_elapsed(job_id, active, accounted) if job_id is not None else None,
         "job_id": job_id,
         "drop": record.get("drop") if record is not None else None,
+        # `{scan_id}` for a drop made by itself after a scan (D17), None for one a user chose.
+        "automatic": record.get("automatic") if record is not None else None,
         "folder": str(_version_folder(dataset["id"], record["version_id"])) if record is not None else None,
     }
     if with_logs:

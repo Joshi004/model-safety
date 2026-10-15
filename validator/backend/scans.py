@@ -171,6 +171,8 @@ def _is_scan(data: Any, scan_id: str) -> bool:
         isinstance(data.get("settings"), dict)
         and isinstance(data.get("resources"), dict)
         and (versions is None or isinstance(versions, dict))
+        # A record from before scans could drop what they flag has no `auto_drop`.
+        and isinstance(data.get("auto_drop", False), bool)
     )
 
 
@@ -257,6 +259,17 @@ def _jobs_of(scan: dict[str, Any]) -> list[dict[str, str]]:
     if scan.get("job_id"):
         started.append({"role": scanners.MAIN_JOB_ROLE, "job_id": scan["job_id"]})
     return started
+
+
+def reference_datasets_of(scan: dict[str, Any]) -> list[str]:
+    """The datasets of a scan that it only read as a reference (the protected ones of a duplicates
+    scan, D15), in the order it read them. The scan is never their result, and nothing in them is
+    flagged in it."""
+    scanner = scanners.SCANNERS[scan["scanner"]]
+    if scanner.reference_datasets is None:
+        return []
+    references = set(scanner.reference_datasets(scan["settings"], scan["mode"]))
+    return [dataset_id for dataset_id in scan["datasets"] if dataset_id in references]
 
 
 # -------------------------------------------------------------------------
@@ -566,15 +579,28 @@ def _check_mode(scanner: scanners.Scanner, mode: Any, problems: list[str]) -> st
     return mode
 
 
-def _units(scanner: scanners.Scanner, datasets: list[dict[str, Any]], mode: str | None) -> list[dict[str, Any]]:
+def _effective_mode(scanner: scanners.Scanner, datasets: list[Any], mode: str | None) -> str | None:
+    """The mode a request really makes: a single dataset is always compared with itself."""
+    if scanner.modes is None:
+        return None
+    return scanners.MODE_ACROSS if mode == scanners.MODE_ACROSS and len(datasets) > 1 else scanners.MODE_WITHIN
+
+
+def _units(
+    scanner: scanners.Scanner, datasets: list[dict[str, Any]], mode: str | None, settings: dict[str, Any]
+) -> list[dict[str, Any]]:
     """The scans a request makes (D4): each is a mode and the datasets it covers. Across
-    datasets they are in the order of their registered paths, which is the order the scan
-    reads them in, so the dataset that comes first by path holds the copy that counts as the
-    original (D10)."""
+    datasets they are in the order the scan reads them in, which decides which copy counts as the
+    original (D10, D15): by default the order of their registered paths, so the dataset that
+    comes first by path holds it, or the order the scanner's `order_across` gives."""
     if scanner.modes is None:
         return [{"mode": None, "datasets": [dataset]} for dataset in datasets]
-    if mode == scanners.MODE_ACROSS and len(datasets) > 1:
-        return [{"mode": scanners.MODE_ACROSS, "datasets": sorted(datasets, key=lambda item: (item["path"], item["id"]))}]
+    if _effective_mode(scanner, datasets, mode) == scanners.MODE_ACROSS:
+        if scanner.order_across is not None:
+            ordered = scanner.order_across(settings, datasets)
+        else:
+            ordered = sorted(datasets, key=lambda item: (item["path"], item["id"]))
+        return [{"mode": scanners.MODE_ACROSS, "datasets": ordered}]
     return [{"mode": scanners.MODE_WITHIN, "datasets": [dataset]} for dataset in datasets]
 
 
@@ -693,8 +719,37 @@ def _plan_unit(
     return plan
 
 
+def _check_auto_drop(scanner: scanners.Scanner, value: Any, problems: list[str]) -> bool:
+    """Whether the scan is asked to drop what it flags by itself (D17). Only a scanner that offers
+    it can be asked."""
+    if value is None or value is False:
+        return False
+    if value is not True:
+        problems.append("auto_drop must be true or false.")
+        return False
+    if not scanner.offers_auto_drop:
+        problems.append(f"{scanner.label} can't drop what it flags by itself.")
+        return False
+    return True
+
+
+def _check_dataset_settings(
+    scanner: scanners.Scanner, settings: dict[str, Any], mode: str | None, dataset_ids: list[str], problems: list[str]
+) -> None:
+    """A setting that is a list of datasets may only name datasets of this request, and the
+    scanner can have more to say about how its settings fit them."""
+    for field in scanner.fields:
+        if field["type"] != "datasets":
+            continue
+        stray = [dataset_id for dataset_id in settings[field["name"]] if dataset_id not in dataset_ids]
+        if stray:
+            problems.append(f"{field['label']} names {len(stray)} dataset(s) that aren't among the ones chosen.")
+    if scanner.check_datasets is not None:
+        scanner.check_datasets(settings, mode, dataset_ids, problems)
+
+
 def _plan(
-    scanner_key: Any, items_in: Any, mode_in: Any, settings_in: Any, resources_in: Any
+    scanner_key: Any, items_in: Any, mode_in: Any, settings_in: Any, resources_in: Any, auto_drop_in: Any = False
 ) -> dict[str, Any]:
     """Everything the check shows, and everything `submit` does. Read-only. What is wrong with
     the request as a whole is in `blocked`, and what is wrong with one scan in that scan's own
@@ -705,6 +760,8 @@ def _plan(
     mode = _check_mode(scanner, mode_in, problems)
     settings = scanners.parse_settings(scanner, settings_in, problems)
     resources = scanners.parse_resources(scanner, settings, resources_in, problems)
+    auto_drop = _check_auto_drop(scanner, auto_drop_in, problems)
+    _check_dataset_settings(scanner, settings, _effective_mode(scanner, items, mode), [item["id"] for item in items], problems)
 
     # D3 is already worked out by the conversions' own check, for one dataset at a time.
     conversion_plan = conversions.check(items, jobs.DEFAULT_RESOURCES)
@@ -716,7 +773,7 @@ def _plan(
 
     units = [
         _plan_unit(scanner, unit, conversion_items, held, settings, resources, not problems)
-        for unit in _units(scanner, datasets, mode)
+        for unit in _units(scanner, datasets, mode, settings)
     ]
     needs_conversion = any(row["action"] in CONVERT_ACTIONS for unit in units for row in unit["datasets"])
     if needs_conversion and conversion_plan["resources_error"]:
@@ -729,6 +786,7 @@ def _plan(
         "slurm_error": conversion_plan["slurm_error"],
         "settings": settings,
         "resources": resources,
+        "auto_drop": auto_drop,
         "blocked": problems,
         "units": units,
         "can_start": not problems and not any(unit["blocked"] for unit in units),
@@ -755,11 +813,13 @@ def settings() -> dict[str, Any]:
     }
 
 
-def check(scanner_key: Any, items_in: Any, mode_in: Any, settings_in: Any, resources_in: Any) -> dict[str, Any]:
+def check(
+    scanner_key: Any, items_in: Any, mode_in: Any, settings_in: Any, resources_in: Any, auto_drop_in: Any = False
+) -> dict[str, Any]:
     """The plan for a request: for each scan it would make, each dataset's conversion, the
     command (with `<version-id>` and `<scan-id>` where those aren't known yet), the cost and
     what stops it. Starts and deletes nothing."""
-    return _plan(scanner_key, items_in, mode_in, settings_in, resources_in)
+    return _plan(scanner_key, items_in, mode_in, settings_in, resources_in, auto_drop_in)
 
 
 # -------------------------------------------------------------------------
@@ -845,6 +905,9 @@ def _create_scan(
         "datasets": [row["id"] for row in unit["datasets"]],
         "settings": plan["settings"],
         "resources": plan["resources"],
+        # Whether the scan drops what it flags by itself once it has finished and its coverage
+        # check has passed (D17). What came of that is in the scan's auto_drop.json (autodrop.py).
+        "auto_drop": plan["auto_drop"],
         "created_at": jobs._now_iso(),
         # Only the datasets that were converted for this scan: the others are used as they are.
         "conversions": waits,
@@ -867,14 +930,20 @@ def _create_scan(
 
 
 def submit(
-    scanner_key: Any, items_in: Any, mode_in: Any, settings_in: Any, resources_in: Any, confirm_gpu: bool
+    scanner_key: Any,
+    items_in: Any,
+    mode_in: Any,
+    settings_in: Any,
+    resources_in: Any,
+    confirm_gpu: bool,
+    auto_drop_in: Any = False,
 ) -> dict[str, Any]:
     """Start the conversions the datasets need, and the scans. The check is made again under
     the lock, and the whole request is refused if any scan can't be started. A scan whose
     datasets are all converted is started now; any other waits for its conversions."""
     with _LOCK:
         _maintain()
-        plan = _plan(scanner_key, items_in, mode_in, settings_in, resources_in)
+        plan = _plan(scanner_key, items_in, mode_in, settings_in, resources_in, auto_drop_in)
         if not plan["can_start"]:
             raise ScanError("Nothing was started. " + " ".join(_all_problems(plan)))
         gpu_units = [unit for unit in plan["units"] if unit["needs_gpu_confirmation"]]
@@ -933,8 +1002,8 @@ def submit(
 
 
 def _apply_result(scan: dict[str, Any]) -> None:
-    """A scan that has succeeded becomes the current result of each of its datasets (D5), once.
-    Call it while holding `_LOCK`. The registry is changed first and the record noted
+    """A scan that has succeeded becomes the current result of each of its datasets (D5), once,
+    except the datasets it only read as a reference (D15). Call it while holding `_LOCK`. The registry is changed first and the record noted
     afterwards, so a crash in between is repaired by the next pass (setting a result is
     idempotent), rather than leaving a finished scan nobody ever picks up."""
     scanner = scanners.SCANNERS[scan["scanner"]]
@@ -943,7 +1012,11 @@ def _apply_result(scan: dict[str, Any]) -> None:
     stamps = [_modified_at(results / marker) for marker in scanners.markers_of(scanner, results)]
     finished_at = max((stamp for stamp in stamps if stamp is not None), default=None)
     versions = scan.get("versions") or {}
+    references = reference_datasets_of(scan)
     for dataset_id in scan["datasets"]:
+        if dataset_id in references:
+            # Read only so that rows in the others can match it: its own result stays as it was.
+            continue
         version = versions.get(dataset_id)
         version_id = version.get("version_id") if isinstance(version, dict) else None
         if not isinstance(version_id, str) or jobs.BATCH_ID.fullmatch(version_id) is None:
@@ -1061,6 +1134,7 @@ def _view(
         "jobs": _jobs_of(scan),
         "settings": scan["settings"],
         "resources": scan["resources"],
+        "auto_drop": bool(scan.get("auto_drop")),
         "conversions": scan["conversions"],
         "folder": str(folder),
         "is_result": scan.get("result_applied_at") is not None,
@@ -1151,6 +1225,8 @@ def dataset_summaries(datasets: list[dict[str, Any]]) -> dict[str, dict[str, dic
             }
         prepared = dataset["prepared"]
         for scan in mine:
+            if dataset["id"] in reference_datasets_of(scan):
+                continue  # only read for the others: its failure says nothing about this dataset
             version = (scan.get("versions") or {}).get(dataset["id"])
             if isinstance(version, dict):
                 current = isinstance(prepared, dict) and prepared.get("version_id") == version.get("version_id")

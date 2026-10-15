@@ -20,7 +20,8 @@ For one scanner's results folder (``--results-dir``), read-only, this writes int
     dedup      ``dedup_results.jsonl``, only when ``--group NAME=PREFIX`` is given (one for
                each dataset, PREFIX being the folder its files are under, with a trailing
                "/"): the duplicate rows of each group, by the group that holds the copy
-               that was kept.
+               that was kept. A group named with ``--protect`` has nothing flagged: its
+               duplicates are left out, and its index (below) is empty.
     regex_pii  nothing: its summary says it all.
 
 With ``--index-dir`` it also writes the findings index of each dataset, after the tally:
@@ -47,7 +48,7 @@ flagged rows), which the job script asks for.
 Usage:
     python3 modelsafety/results/analyse.py --scanner toxicity \\
         --root DIR --results-dir DIR --out-dir DIR \\
-        [--files-from FILE] [--group NAME=PREFIX ...] [--coverage-only] \\
+        [--files-from FILE] [--group NAME=PREFIX ...] [--protect NAME ...] [--coverage-only] \\
         [--index-dir DIR (--index-name NAME | with --group)]
 
 Exit code: 0 when the files asked for were written, 2 otherwise (an unreadable result
@@ -278,8 +279,10 @@ def ner_tally(results_dir: Path) -> dict[str, Any]:
 # -------------------------------------------------------------------------
 
 
-def dedup_tally(results_dir: Path, groups: list[tuple[str, str]]) -> dict[str, Any]:
-    """`groups` is [(name, prefix)]. A file is in the group whose prefix starts its path."""
+def dedup_tally(results_dir: Path, groups: list[tuple[str, str]], protected: frozenset[str] = frozenset()) -> dict[str, Any]:
+    """`groups` is [(name, prefix)]. A file is in the group whose prefix starts its path. The
+    duplicates in a `protected` group are left out: nothing is flagged in it, though rows in
+    the other groups still match its rows."""
     cache: dict[str, str | None] = {}
 
     def group_of(file: Any, where: str) -> str | None:
@@ -301,11 +304,14 @@ def dedup_tally(results_dir: Path, groups: list[tuple[str, str]]) -> dict[str, A
         if mine is None:
             unassigned += 1
             continue
+        if mine in protected:
+            continue
         duplicates[mine] += 1
         kept_in[mine][kept if kept is not None else "unassigned"] += 1
     return {
         "duplicates": sum(duplicates.values()) + unassigned,
         "unassigned": unassigned,
+        "protected": sorted(protected),
         "groups": {
             name: {"duplicates": duplicates[name], "kept_in": _sorted(kept_in[name])} for name, _prefix in groups
         },
@@ -556,11 +562,18 @@ def _write_group(
 
 
 def write_index(
-    scanner: str, root: Path, results_dir: Path, groups: list[tuple[str, str]], index_dir: Path
+    scanner: str,
+    root: Path,
+    results_dir: Path,
+    groups: list[tuple[str, str]],
+    index_dir: Path,
+    protected: frozenset[str] = frozenset(),
 ) -> dict[str, int]:
     """Write the findings index of each of `groups` ([(name, prefix)], a prefix being the folder
     of the group's Prepared version under `root`, with a trailing "/", or "" when `root` is
-    that version). Returns the rows flagged in each."""
+    that version). Returns the rows flagged in each. A `protected` group (duplicates only) has
+    nothing flagged: its index is empty, though the rows in the other groups that repeat its
+    rows are still flagged, with its rows as the kept copies."""
     rows_by_file, owner = _rows_by_file(root, groups)
     hits = HitIndex()
     try:
@@ -573,6 +586,10 @@ def write_index(
             f"The scan's findings disagree about the fingerprint of {len(hits.conflicts):,} row(s): "
             + " ".join(hits.conflicts[:3])
         )
+    protected_numbers = {number for number, (name, _prefix) in enumerate(groups) if name in protected}
+    for file, number in owner.items():
+        if number in protected_numbers:
+            hits.forget_findings(file)
     print(f"  {hits.rows_hit():,} flagged rows found", flush=True)
 
     # The copies that duplicates matched are read as well, to say where they start.
@@ -624,6 +641,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--coverage-only", action="store_true", help="Write coverage.json only.")
     parser.add_argument(
+        "--protect",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Duplicates only: a --group whose rows must not be flagged. Its rows still count as the kept "
+        "copies of rows in the other groups. Its duplicates are left out of the tally, and its index is empty. "
+        "Once for each protected group; not every group can be.",
+    )
+    parser.add_argument(
         "--index-dir", type=Path, help="Also write the findings index of each dataset here (see the top of this file)."
     )
     parser.add_argument(
@@ -631,6 +657,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="With --index-dir and no --group: the name of the one dataset that --root is the Prepared version of.",
     )
     args = parser.parse_args(argv)
+
+    if args.protect:
+        group_names = [name for name, _prefix in args.group]
+        if args.scanner != "dedup":
+            parser.error("--protect is only for the duplicates scanner.")
+        if args.coverage_only:
+            parser.error("--coverage-only writes no tally or index, so there is nothing to protect.")
+        if len(set(args.protect)) != len(args.protect):
+            parser.error("Each protected group can only be named once.")
+        unknown = [name for name in args.protect if name not in group_names]
+        if unknown:
+            parser.error(f"--protect names {', '.join(unknown)}, which isn't a --group.")
+        if set(args.protect) >= set(group_names):
+            parser.error("Not every group can be protected: nothing would be flagged.")
 
     if args.index_dir is None:
         if args.index_name is not None:
@@ -651,14 +691,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def build_tally(scanner: str, results_dir: Path, groups: list[tuple[str, str]]) -> dict[str, Any] | None:
+def build_tally(
+    scanner: str, results_dir: Path, groups: list[tuple[str, str]], protected: frozenset[str] = frozenset()
+) -> dict[str, Any] | None:
     """The tally for this scanner's results, or None when it has none."""
     if scanner == "toxicity":
         body = toxicity_tally(results_dir)
     elif scanner == "ner":
         body = ner_tally(results_dir)
     elif scanner == "dedup" and groups:
-        body = dedup_tally(results_dir, groups)
+        body = dedup_tally(results_dir, groups, protected)
     else:
         return None
     return {
@@ -695,7 +737,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.coverage_only:
         return 0
     try:
-        tally = build_tally(args.scanner, results_dir, args.group)
+        tally = build_tally(args.scanner, results_dir, args.group, frozenset(args.protect))
     except TallyError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -714,7 +756,7 @@ def main(argv: list[str] | None = None) -> int:
     groups = args.group or [(args.index_name, "")]
     print(f"Findings index of the {args.scanner} scan, to {index_dir}", flush=True)
     try:
-        write_index(args.scanner, root, results_dir, groups, index_dir)
+        write_index(args.scanner, root, results_dir, groups, index_dir, frozenset(args.protect))
     except (IndexBuildError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

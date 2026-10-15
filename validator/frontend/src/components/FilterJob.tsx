@@ -45,6 +45,9 @@ export default function FilterJob({ datasetId }: { datasetId: string }) {
       <div className="page-header">
         <h2>Drop rows: {job.dataset_name}</h2>
         <Chip label={STATE_LABELS[job.state]} tone={STATE_TONES[job.state]} title={job.reason ?? undefined} />
+        {job.automatic !== null && (
+          <Chip label="Automatic" title="Made by itself when the scan finished and its coverage check passed." />
+        )}
       </div>
 
       {error !== null && <p className="error">{error}</p>}
@@ -67,6 +70,18 @@ export default function FilterJob({ datasetId }: { datasetId: string }) {
         </dd>
         <dt>Made from</dt>
         <dd>{parentLink}, which isn't changed</dd>
+        {job.automatic !== null && (
+          <>
+            <dt>Dropped</dt>
+            <dd>
+              Automatically, after scan{' '}
+              <a className="mono" href={hrefFor({ page: 'activity', scan: job.automatic.scan_id })}>
+                {job.automatic.scan_id}
+              </a>{' '}
+              passed its coverage check
+            </dd>
+          </>
+        )}
         {job.drop !== null && (
           <>
             <dt>Rows dropped</dt>

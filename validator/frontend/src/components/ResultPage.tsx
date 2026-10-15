@@ -18,9 +18,11 @@ import {
   isHolding,
   scannerNote,
   settingsToRepeat,
+  shownSettings,
 } from '../scans'
-import type { AnalysisState, Dataset, ScanSubmitResponse, ScannerResult } from '../types'
+import type { AnalysisState, Dataset, DatasetResultResponse, ScanSubmitResponse, ScannerResult } from '../types'
 import { useRefreshing } from '../useRefreshing'
+import AutoDropCard from './AutoDropCard'
 import Chip from './Chip'
 import CommandBox from './CommandBox'
 import CoverageBadge from './CoverageBadge'
@@ -37,6 +39,15 @@ function flaggedRowsNote(state: AnalysisState): string {
     return 'This scan was checked before flagged rows were listed. Use "Check again" above to list them.'
   }
   return "The check of this scan didn't finish, so its flagged rows can't be listed. Use \"Check again\" above."
+}
+
+// Whether the page should keep asking: the scan's automatic drop (D17) is being decided or made.
+// A drop that waits for a check that failed isn't going to be decided, so it doesn't count.
+function autoDropGoing(loaded: DatasetResultResponse): boolean {
+  const auto = loaded.auto_drop
+  if (auto === null) return false
+  if (auto.outcome === 'dropping') return true
+  return auto.outcome === 'waiting' && loaded.result !== null && loaded.result.analysis.state === 'succeeded'
 }
 
 // The categories and verdicts chosen on the page. Null: the ones the scan was started with.
@@ -81,7 +92,10 @@ export default function ResultPage({
     () => getDatasetResult(dataset.id, scanner, choice),
     `${dataset.id}/${scanner}/${JSON.stringify(choice)}`,
     POLL_MS,
-    (loaded) => isHolding(loaded.summary.state) || (loaded.result !== null && isAnalysisGoing(loaded.result.analysis.state)),
+    (loaded) =>
+      isHolding(loaded.summary.state) ||
+      (loaded.result !== null && isAnalysisGoing(loaded.result.analysis.state)) ||
+      autoDropGoing(loaded),
   )
   const [checking, setChecking] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -275,6 +289,12 @@ export default function ResultPage({
                   <dd>{describeMode(result.mode, names)}</dd>
                 </>
               )}
+              {result.notes.map((item) => (
+                <Fragment key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.text}</dd>
+                </Fragment>
+              ))}
               <dt>Scan</dt>
               <dd>
                 <a className="mono" href={hrefFor({ page: 'activity', scan: result.scan_id })}>
@@ -286,10 +306,9 @@ export default function ResultPage({
             {scannerNote(scanner) !== null && <p className="muted small">{scannerNote(scanner)}</p>}
             {scanner === 'dedup' && (
               <p className="muted small">
-                {result.mode === 'across'
-                  ? 'When rows match across datasets, the one in the dataset that comes first by path counts as the original, and the others are flagged. '
-                  : ''}
-                Nothing is dropped by this scan. You choose what to drop from the results.
+                {data.auto_drop === null
+                  ? 'Nothing is dropped by this scan. You choose what to drop from the results.'
+                  : 'This scan was started to drop its duplicates by itself once its coverage check passed (see "Automatic drop" below). You can still choose other rows to drop from the results.'}
               </p>
             )}
           </div>
@@ -350,6 +369,8 @@ export default function ResultPage({
               </>
             )}
           </div>
+
+          {data.auto_drop !== null && <AutoDropCard auto={data.auto_drop} analysis={result.analysis.state} />}
 
           {filter !== undefined && result.flagged.count !== null && (
             <ToxicityFilter
@@ -422,7 +443,7 @@ export default function ResultPage({
           <div className="card">
             <h3 className="scan-heading">Settings the scan used</h3>
             <dl className="facts">
-              {Object.entries(settingsToRepeat(scanner, result.settings)).map(([name, value]) => (
+              {Object.entries(shownSettings(scanner, result.settings)).map(([name, value]) => (
                 <Fragment key={name}>
                   <dt>{name.replace(/_/g, ' ')}</dt>
                   <dd>{settingText(scanner, name, value)}</dd>
@@ -458,7 +479,12 @@ export default function ResultPage({
         <ScanDialog
           action={actionForScanner(scanner)}
           datasets={repeating}
-          initial={{ scannerKey: scanner, settings: settingsToRepeat(scanner, result.settings), mode: result.mode }}
+          initial={{
+            scannerKey: scanner,
+            settings: settingsToRepeat(scanner, result.settings),
+            mode: result.mode,
+            autoDrop: data?.auto_drop != null,
+          }}
           onClose={() => setRepeating(null)}
           onStarted={handleStarted}
         />

@@ -54,8 +54,10 @@ export default function App() {
           </div>
         )}
         {route.page === 'datasets' && <DatasetsPage />}
-        {route.page === 'dataset' && <DatasetPage key={route.id} datasetId={route.id} tab={route.tab} />}
-        {route.page === 'activity' && <ActivityPage />}
+        {route.page === 'dataset' && (
+          <DatasetPage key={route.id} datasetId={route.id} tab={route.tab} scanner={route.scanner} />
+        )}
+        {route.page === 'activity' && <ActivityPage key={route.scan ?? ''} scan={route.scan} />}
       </main>
     </>
   )

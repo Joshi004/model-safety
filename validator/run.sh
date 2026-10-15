@@ -36,6 +36,14 @@
 #   and the scan it replaces is deleted -- only a folder under <service root>/scans, and
 #   never one that is going, failed or was cancelled.
 #
+#   Results: when a scan has become a dataset's result, this service submits one more
+#   CPU-only SLURM job for it (within about a minute), which checks the scan's coverage
+#   and counts what the scanner's summary files don't hold. It writes coverage.json and
+#   tally.json in the scan's own folder (and its logs in the scan's _logs), and the service
+#   copies the dataset's count and coverage verdict into its result in datasets.json. The
+#   Results tab's "Check again" submits that job again. Nothing is deleted, and the jobs only
+#   read the Prepared versions and the scan's results.
+#
 #   Dataset registry: registering, editing and unregistering a dataset write
 #   <service root>/registry/datasets.json, where the service root is
 #   $VALIDATOR_SERVICE_ROOT, or <repo>/output/service. The first start with no

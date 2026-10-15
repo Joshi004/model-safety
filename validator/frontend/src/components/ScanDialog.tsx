@@ -272,18 +272,22 @@ function SettingControl({
 export default function ScanDialog({
   action,
   datasets,
+  initial,
   onClose,
   onStarted,
 }: {
   // The key of the action in SCAN_ACTIONS. One that isn't there is taken for a scanner's key.
   action: string
   datasets: Dataset[]
+  // What "Run again" fills in: the scanner (the method, for PII), the settings and the mode of
+  // the scan being repeated. The settings are checked again like any other.
+  initial?: { scannerKey: string; settings: ScanSettings; mode: string | null }
   onClose: () => void
   onStarted: (result: ScanSubmitResponse) => void
 }) {
   const info = SCAN_ACTIONS[action] ?? { title: 'Scan', scannerKeys: [action] }
   // Null until the user picks: the first method of the action.
-  const [methodChoice, setMethodChoice] = useState<string | null>(null)
+  const [methodChoice, setMethodChoice] = useState<string | null>(initial?.scannerKey ?? null)
   const scannerKey = methodChoice ?? info.scannerKeys[0]
   const resources = useScanResources(scannerKey)
   const scanner = resources.scanner
@@ -293,9 +297,11 @@ export default function ScanDialog({
   // The datasets the user chose "Convert again" for, by id.
   const [again, setAgain] = useState<Set<string>>(new Set())
   // Null until the user picks: the scanner's own default applies.
-  const [modeChoice, setModeChoice] = useState<string | null>(null)
+  const [modeChoice, setModeChoice] = useState<string | null>(initial?.mode ?? null)
   // Only the settings the user changed, by scanner; the others are the scanner's defaults.
-  const [overridesByScanner, setOverridesByScanner] = useState<Record<string, ScanSettings>>({})
+  const [overridesByScanner, setOverridesByScanner] = useState<Record<string, ScanSettings>>(() =>
+    initial === undefined ? {} : { [initial.scannerKey]: initial.settings },
+  )
   const overrides = overridesByScanner[scannerKey] ?? {}
   const [confirmGpu, setConfirmGpu] = useState(false)
 

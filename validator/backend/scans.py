@@ -1127,7 +1127,16 @@ def dataset_summaries(datasets: list[dict[str, Any]]) -> dict[str, dict[str, dic
     states, _error = _states_of(pending)
 
     def summary(dataset: dict[str, Any], key: str) -> dict[str, Any]:
-        empty = {"state": STATE_NOT_SCANNED, "scan_id": None, "finished_at": None, "count": None, "mode": None, "reason": None}
+        empty = {
+            "state": STATE_NOT_SCANNED,
+            "scan_id": None,
+            "finished_at": None,
+            "count": None,
+            "mode": None,
+            "reason": None,
+            # "pass" or "fail" once the result's coverage check has been made (results.py).
+            "coverage": None,
+        }
         mine = [scan for scan in pending if scan["scanner"] == key and dataset["id"] in scan["datasets"]]  # newest first
         for scan in mine:
             state = states[scan["id"]]
@@ -1135,7 +1144,11 @@ def dataset_summaries(datasets: list[dict[str, Any]]) -> dict[str, dict[str, dic
                 return {**empty, "state": state["state"], "scan_id": scan["id"], "mode": scan["mode"], "reason": state["reason"]}
         result = dataset["results"].get(key)
         if isinstance(result, dict):
-            return {**empty, **{name: result.get(name) for name in ("scan_id", "finished_at", "count", "mode")}, "state": STATE_SUCCEEDED}
+            return {
+                **empty,
+                **{name: result.get(name) for name in ("scan_id", "finished_at", "count", "mode", "coverage")},
+                "state": STATE_SUCCEEDED,
+            }
         prepared = dataset["prepared"]
         for scan in mine:
             version = (scan.get("versions") or {}).get(dataset["id"])

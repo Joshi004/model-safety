@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react'
 import { formatCount } from '../format'
 import { hrefFor } from '../route'
-import { STATE_TONES, chipLabel, chipTitle, scannerLabel } from '../scans'
 import type { Dataset } from '../types'
 import Chip from './Chip'
 import Menu from './Menu'
+import ScannerChips from './ScannerChips'
 
 // Every value here comes from the registry and is rendered as plain text.
 export default function DatasetsTable({
@@ -88,14 +88,7 @@ export default function DatasetsTable({
               )}
             </td>
             <td className="scans-cell">
-              {Object.entries(dataset.scans ?? {}).map(([scannerKey, summary]) => (
-                <Chip
-                  key={scannerKey}
-                  label={`${scannerLabel(scannerKey)}: ${chipLabel(summary)}`}
-                  tone={STATE_TONES[summary.state]}
-                  title={chipTitle(scannerKey, summary)}
-                />
-              ))}
+              <ScannerChips datasetId={dataset.id} scans={dataset.scans} />
             </td>
             <td className="menu-cell">
               <Menu label="⋯" ariaLabel={`Actions for ${dataset.name}`} align="right">

@@ -16,7 +16,9 @@ Rules this module keeps:
   conversions.py calls. They are not part of `update`.
 * `results` (the scan that is the dataset's current result, for each scanner) is only
   changed by `set_result`, which scans.py calls, and emptied by `clear_prepared`: every
-  result was made from the version that is being replaced. It is not part of `update`.
+  result was made from the version that is being replaced. `update_result` (results.py)
+  adds the exact count and the coverage verdict once the scan's analysis has finished.
+  It is not part of `update`.
 * One lock covers every read and write of the file, because FastAPI runs these
   handlers in a thread pool. A write goes to a temp file first and is then moved
   into place with `os.replace`, so the file is never half written.
@@ -597,6 +599,38 @@ def set_result(dataset_id: str, scanner: str, result: dict[str, Any], version_id
         record["results"] = results
         _save(data)
     return previous_id
+
+
+RESULT_COUNT_KEY = "count"
+RESULT_COVERAGE_KEY = "coverage"
+COVERAGE_VERDICTS = ("pass", "fail")
+
+
+def update_result(dataset_id: str, scanner: str, scan_id: str, fields: dict[str, Any]) -> bool:
+    """Set `count` and/or `coverage` ("pass" or "fail", or None) on the dataset's current
+    result for `scanner`, but only while that result is still `scan_id`: a newer scan may have
+    replaced it, and the numbers describe the old one. Called by results.py once a scan's
+    analysis has finished. Returns whether anything was written. Not reachable from a request."""
+    unknown = sorted(set(fields) - {RESULT_COUNT_KEY, RESULT_COVERAGE_KEY})
+    if unknown:
+        raise RegistryError(f"A result's {', '.join(unknown)} can't be set this way.")
+    count = fields.get(RESULT_COUNT_KEY)
+    if RESULT_COUNT_KEY in fields and count is not None and (not isinstance(count, int) or isinstance(count, bool) or count < 0):
+        raise RegistryError("A result's count must be a whole number, or None.")
+    if RESULT_COVERAGE_KEY in fields and fields[RESULT_COVERAGE_KEY] not in (*COVERAGE_VERDICTS, None):
+        raise RegistryError(f"A result's coverage must be one of {', '.join(COVERAGE_VERDICTS)}, or None.")
+    with _LOCK:
+        data = _read_registry()
+        records = data["datasets"]
+        record = records[_index_of(records, dataset_id)]
+        results = dict(record.get("results") or {})
+        current = results.get(scanner)
+        if not isinstance(current, dict) or current.get("scan_id") != scan_id:
+            return False
+        results[scanner] = {**current, **fields}
+        record["results"] = results
+        _save(data)
+    return True
 
 
 def result_pointers() -> dict[str, list[str]]:

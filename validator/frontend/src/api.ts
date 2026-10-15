@@ -11,10 +11,12 @@
 // data; "convert again" deletes the current Prepared version first), and cancelScan
 // stops one. Reading a dataset, a conversion or a scan also saves a finished conversion
 // as the dataset's Prepared version, and a finished scan as the dataset's result.
-// Every other call here is read-only.
+// checkResult submits one CPU job that checks a finished scan's coverage again. Every
+// other call here is read-only.
 import type {
   AllConversionsResponse,
   CancelResponse,
+  CheckAgainResponse,
   ConversionCheckResponse,
   ConversionListResponse,
   ConversionSettings,
@@ -22,6 +24,8 @@ import type {
   ConversionSubmitResponse,
   ConversionsRequest,
   Dataset,
+  DatasetResultResponse,
+  DatasetResultsResponse,
   DatasetsResponse,
   HealthResponse,
   InspectResult,
@@ -204,4 +208,36 @@ export function cancelScan(scanId: string): Promise<ScanCancelResponse> {
 // Removes the entry and the dataset's own folder under the service root. The original data is not touched.
 export function unregisterDataset(datasetId: string): Promise<UnregisterResponse> {
   return request<UnregisterResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/unregister`, {})
+}
+
+// ---- A dataset's results ----
+
+// Every scanner's result for the dataset: the numbers for this dataset only, the coverage
+// verdict and the state of the check that made them.
+export function getDatasetResults(datasetId: string): Promise<DatasetResultsResponse> {
+  return request<DatasetResultsResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/results`)
+}
+
+// One scanner's result in full. For toxicity, `categories` and `verdicts` change what counts as
+// flagged in the answer and nothing else (an empty list means none); null leaves the scan's own.
+export function getDatasetResult(
+  datasetId: string,
+  scanner: string,
+  choice?: { categories: string[] | null; verdicts: string[] | null },
+): Promise<DatasetResultResponse> {
+  const params: string[] = []
+  if (choice?.categories != null) params.push(`categories=${encodeURIComponent(choice.categories.join(','))}`)
+  if (choice?.verdicts != null) params.push(`verdicts=${encodeURIComponent(choice.verdicts.join(','))}`)
+  const query = params.length > 0 ? `?${params.join('&')}` : ''
+  return request<DatasetResultResponse>(
+    `/api/datasets/${encodeURIComponent(datasetId)}/results/${encodeURIComponent(scanner)}${query}`,
+  )
+}
+
+// Runs the check of a finished scan again: one CPU SLURM job. Refused while one is going.
+export function checkResult(datasetId: string, scanner: string): Promise<CheckAgainResponse> {
+  return request<CheckAgainResponse>(
+    `/api/datasets/${encodeURIComponent(datasetId)}/results/${encodeURIComponent(scanner)}/check`,
+    {},
+  )
 }

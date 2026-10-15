@@ -1444,3 +1444,50 @@ div.scan-setting > p {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- Results ---- */
+
+/* The scanner chips link to a result page without looking like a link. */
+a.chip-link {
+  text-decoration: none;
+}
+
+a.chip-link:hover .chip {
+  filter: brightness(0.95);
+}
+
+/* The Activity line a link from a result page pointed at. */
+.activity-focus {
+  background: var(--bg-alt);
+}
+
+.result-card h2 {
+  margin: 0;
+  font-size: 1.1em;
+}
+
+.result-card .page-header {
+  flex-wrap: wrap;
+}
+
+.result-headline {
+  margin: 0 0 4px;
+  font-size: 1.05em;
+  color: var(--text-h);
+}
+
+.coverage-problems {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.coverage-problems li {
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+
+.result-breakdowns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 0 16px;
+}

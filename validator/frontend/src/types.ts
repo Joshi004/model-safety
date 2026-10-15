@@ -619,6 +619,9 @@ export interface ScanSummary {
   count: number | null
   mode: string | null
   reason: string | null
+  // Whether the finished scan read exactly this dataset's converted data; null until its
+  // coverage check has been made.
+  coverage: CoverageVerdict | null
 }
 
 export interface ScanDatasetRequest {
@@ -787,4 +790,120 @@ export interface ScanCancelResponse {
   cancelled: string[]
   not_active: string[]
   stopped_waiting: boolean
+}
+
+// ---- Results per dataset ----
+
+export type CoverageVerdict = 'pass' | 'fail'
+
+// The state of the job that checks a finished scan: `pending` until it has been submitted, then
+// the states of a SLURM job.
+export type AnalysisState = 'pending' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown'
+
+export interface ResultAnalysis {
+  state: AnalysisState
+  reason: string | null
+  // "full" checks coverage and counts; "coverage" only checks coverage again.
+  kind: 'full' | 'coverage' | null
+  job_id: string | null
+  submitted_at: string | null
+  elapsed: string | null
+  // Only in the answer for one scanner.
+  command_text?: string | null
+  logs?: ScanLog[]
+}
+
+export interface CoverageProblem {
+  message: string
+  path: string | null
+}
+
+export interface ResultCoverage {
+  verdict: CoverageVerdict
+  problems: CoverageProblem[]
+  // How many there were, of which `problems` lists the first few.
+  problems_total: number
+  checked_at: string | null
+}
+
+export interface ResultFlagged {
+  // Null until the scan's analysis has counted it.
+  count: number | null
+  unit: string
+  // Rows with at least one finding, when the scanner can tell.
+  rows: number | null
+}
+
+export interface ResultBreakdown {
+  title: string
+  items: { name: string; count: number }[]
+  note: string | null
+}
+
+export interface ResultFact {
+  label: string
+  value: number
+}
+
+// What counts as flagged in a toxicity result. `selected_*` is what the numbers were made with;
+// `saved_*` is what the scan was started with (D8).
+export interface ToxicityFilter {
+  categories: string[]
+  verdicts: string[]
+  selected_categories: string[]
+  selected_verdicts: string[]
+  saved_categories: string[]
+  saved_verdicts: string[]
+  threshold: number | null
+}
+
+export interface ScannerResult {
+  scan_id: string
+  finished_at: string | null
+  mode: string | null
+  settings: ScanSettings
+  // The datasets the scan covered that are still registered, in the order it read them.
+  datasets: { id: string; name: string }[]
+  analysis: ResultAnalysis
+  // Null until the analysis has succeeded.
+  coverage: ResultCoverage | null
+  rows: { scanned: number | null; with_text: number | null; without_text: number | null }
+  flagged: ResultFlagged
+  breakdowns: ResultBreakdown[]
+  facts: ResultFact[]
+  // Toxicity only.
+  filter?: ToxicityFilter
+}
+
+// One scanner's side of a dataset's results: its state now, and the current result (which can
+// exist while a newer scan is running).
+export interface ScannerResultView {
+  scanner: string
+  label: string
+  count_label: string
+  stages: string[]
+  summary: ScanSummary
+  result: ScannerResult | null
+}
+
+// GET /api/datasets/{id}/results.
+export interface DatasetResultsResponse {
+  dataset_id: string
+  name: string
+  prepared: { version_id: string | null; rows: number | null } | null
+  slurm_error: string | null
+  scanners: Record<string, ScannerResultView>
+}
+
+// GET /api/datasets/{id}/results/{scanner}.
+export interface DatasetResultResponse extends ScannerResultView {
+  dataset_id: string
+  name: string
+  slurm_error: string | null
+}
+
+export interface CheckAgainResponse {
+  scan_id: string
+  job_id: string | null
+  submit_error: string | null
 }

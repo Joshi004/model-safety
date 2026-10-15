@@ -5,7 +5,17 @@
 // needs for a scanner are here. A scanner this file doesn't know is shown by its key.
 import type { ChipTone } from './components/Chip'
 import { formatCount } from './format'
-import type { ChoiceField, ScanSettings, ScanState, ScanSummary, ScannerField, ScannerInfo } from './types'
+import type {
+  AnalysisState,
+  ChoiceField,
+  ResultAnalysis,
+  ResultFlagged,
+  ScanSettings,
+  ScanState,
+  ScanSummary,
+  ScannerField,
+  ScannerInfo,
+} from './types'
 
 const SCANNER_LABELS: Record<string, string> = {
   dedup: 'Duplicates',
@@ -24,6 +34,14 @@ const SCANNER_COUNT_LABELS: Record<string, string> = {
 
 export function scannerLabel(key: string): string {
   return SCANNER_LABELS[key] ?? key
+}
+
+// The scanners the Datasets page knows, in the order their results are shown. Keep it in step
+// with backend/scanners.py's SCANNERS.
+export const SCANNER_KEYS: readonly string[] = Object.keys(SCANNER_LABELS)
+
+export function isScannerKey(value: string): boolean {
+  return SCANNER_KEYS.includes(value)
 }
 
 export const STATE_LABELS: Record<ScanState, string> = {
@@ -65,19 +83,96 @@ export function isHolding(state: ScanState): boolean {
   return HOLDING_STATES.includes(state)
 }
 
-// "Done (12)" for a finished scan with a count, otherwise the state's words.
-export function chipLabel(summary: ScanSummary): string {
-  if (summary.state === 'succeeded' && summary.count !== null) return `Done (${formatCount(summary.count)})`
-  return STATE_LABELS[summary.state]
+// A finished scan whose coverage check failed is marked: it may not have read exactly the
+// dataset's converted data.
+function coverageFailed(summary: ScanSummary): boolean {
+  return summary.state === 'succeeded' && summary.coverage === 'fail'
 }
 
-// What the chip's tooltip says: why, when there is a reason, or what the count counts.
+// "Done (12)" for a finished scan with a count, otherwise the state's words. A failed coverage
+// check adds a warning mark.
+export function chipLabel(summary: ScanSummary): string {
+  const label =
+    summary.state === 'succeeded' && summary.count !== null
+      ? `Done (${formatCount(summary.count)})`
+      : STATE_LABELS[summary.state]
+  return coverageFailed(summary) ? `${label} ⚠` : label
+}
+
+// What the chip's tooltip says: why, when there is a reason, or what the count counts, and a
+// failed coverage check.
 export function chipTitle(scannerKey: string, summary: ScanSummary): string | undefined {
-  if (summary.reason !== null && summary.reason !== '') return summary.reason
-  if (summary.state === 'succeeded' && summary.count !== null) {
-    return `${formatCount(summary.count)} ${SCANNER_COUNT_LABELS[scannerKey] ?? 'rows'} flagged`
+  const parts: string[] = []
+  if (summary.reason !== null && summary.reason !== '') {
+    parts.push(summary.reason)
+  } else if (summary.state === 'succeeded' && summary.count !== null) {
+    parts.push(`${formatCount(summary.count)} ${SCANNER_COUNT_LABELS[scannerKey] ?? 'rows'} flagged`)
   }
-  return undefined
+  if (coverageFailed(summary)) {
+    parts.push("The coverage check failed: the scan may not have read exactly this dataset's converted data.")
+  }
+  return parts.length > 0 ? parts.join(' ') : undefined
+}
+
+export function chipTone(summary: ScanSummary): ChipTone {
+  return coverageFailed(summary) ? 'warn' : STATE_TONES[summary.state]
+}
+
+// ---- Results ----
+
+// What the check of a finished scan (coverage, and the counts the summaries don't hold) is doing.
+const ANALYSIS_GOING: readonly AnalysisState[] = ['pending', 'queued', 'running', 'unknown']
+
+export function isAnalysisGoing(state: AnalysisState): boolean {
+  return ANALYSIS_GOING.includes(state)
+}
+
+// A line about a check that isn't finished or didn't finish, or null when it has.
+export function analysisNote(analysis: ResultAnalysis): { text: string; tone: ChipTone } | null {
+  const job = analysis.job_id === null ? '' : ` (SLURM job ${analysis.job_id})`
+  switch (analysis.state) {
+    case 'pending':
+      return { text: "The check of this scan hasn't started yet. It is started within a minute.", tone: 'neutral' }
+    case 'queued':
+      return { text: `The check of this scan is queued${job}.`, tone: 'neutral' }
+    case 'running':
+      return { text: `The check of this scan is running${job}.`, tone: 'neutral' }
+    case 'failed':
+      return { text: `The check of this scan failed: ${analysis.reason ?? 'no reason given'}`, tone: 'error' }
+    case 'cancelled':
+      return { text: 'The check of this scan was cancelled.', tone: 'warn' }
+    case 'unknown':
+      return { text: "The state of the check of this scan couldn't be read from SLURM.", tone: 'warn' }
+    case 'succeeded':
+      return null
+  }
+}
+
+// "159 messages flagged in 118 rows", "118,432 duplicate rows flagged", or "Not counted yet".
+export function describeFlagged(flagged: ResultFlagged): string {
+  if (flagged.count === null) return 'Not counted yet'
+  const rows =
+    flagged.rows !== null && !flagged.unit.includes('row') ? ` in ${formatCount(flagged.rows)} rows` : ''
+  return `${formatCount(flagged.count)} ${flagged.unit} flagged${rows}`
+}
+
+// How a name in a result's table is shown: a NER label or a rule category as the dialog names it.
+export function breakdownName(scannerKey: string, title: string, name: string): string {
+  if (scannerKey === 'pii_ner') return title.startsWith('Groups') ? groupTitle(name) : nerLabelName(name)
+  if (scannerKey === 'pii_regex') return ruleCategoryName(name)
+  return name
+}
+
+// The action of the action bar (a key of SCAN_ACTIONS) a scanner belongs to.
+export function actionForScanner(scannerKey: string): string {
+  return Object.entries(SCAN_ACTIONS).find(([, info]) => info.scannerKeys.includes(scannerKey))?.[0] ?? scannerKey
+}
+
+// What "Run again" fills the scan dialog with from a finished scan: its settings, minus the ones
+// the dialog never offers.
+export function settingsToRepeat(scannerKey: string, settings: ScanSettings): ScanSettings {
+  const hidden = HIDDEN_SETTINGS[scannerKey] ?? []
+  return Object.fromEntries(Object.entries(settings).filter(([name]) => !hidden.includes(name)))
 }
 
 // ---- The scan dialog's settings ----
@@ -124,6 +219,8 @@ const CHOICE_LABELS: Record<string, Record<string, string>> = {
     prompt: 'What was asked (the prompt)',
     all: 'The whole conversation',
   },
+  // The dialog shows this one as a checkbox; a result's list of settings shows its value.
+  'dedup/exclude_system': { '1': 'Yes', '0': 'No' },
   'pii_ner/size': {
     full: 'Full node (every GPU of one node)',
     one_gpu: 'One GPU',

@@ -53,8 +53,17 @@ again or unregistered), only inside <service root>/scans, and never one that is 
 or was cancelled. A scan only reads Prepared versions; it never writes to them or to original
 data. A conversion that replaces a Prepared version (convert again) is refused while a scan
 that reads or waits for the dataset is going. GET /api/scanners, POST /api/scans/check, GET
-/api/scans[/{id}] only read, apart from starting and finishing scans as above. Every other
-route is read-only, and none of them ever writes to or deletes original data.
+/api/scans[/{id}] only read, apart from starting and finishing scans as above.
+
+The results routes: when a scan has become a dataset's result, a background task (and POST
+/api/datasets/{id}/results/{scanner}/check) submits one CPU SLURM job over it
+(`sbatch` on launchers/slurm/run_result_analysis.sbatch, which runs
+modelsafety/results/analyse.py). It writes `coverage.json` (the coverage report for that scan) and
+`tally.json` (counts the summary files don't hold) in the scan's own folder, and the service
+copies the dataset's count and its coverage verdict into its result in datasets.json
+(results.py). GET /api/datasets/{id}/results[/{scanner}] only read those small files and the
+scanner's summary files. Nothing is deleted. Every other route is read-only, and none of them
+ever writes to or deletes original data.
 
 This process never writes to the data it inspects: /api/inspect and
 /api/preview only read a bounded sample and report what would happen,
@@ -89,6 +98,7 @@ import detect
 import jobs
 import preview
 import registry
+import results
 import runs
 import scans
 from reader_imports import json_safe
@@ -103,6 +113,9 @@ MAX_SKIPPED_PAGE_SIZE = 200
 async def lifespan(_app: FastAPI):
     # Starts scans that were left waiting for a conversion, and keeps looking every 30 seconds.
     scans.start_background_refresh()
+    # Submits the coverage check and counts of every finished scan that hasn't had them, and
+    # copies the numbers of the ones that have finished, also every 30 seconds.
+    results.start_background_refresh()
     yield
 
 
@@ -169,6 +182,14 @@ def _scans_call(function: Any, *args: Any) -> Any:
     try:
         return _conversions_call(function, *args)
     except scans.ScanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _results_call(function: Any, *args: Any) -> Any:
+    """`_scans_call`, plus the errors of results.py."""
+    try:
+        return _scans_call(function, *args)
+    except results.ResultsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -578,6 +599,36 @@ def scans_cancel(scan_id: str) -> dict[str, Any]:
     """Stop a scan: `scancel` on the one job its record lists, or, for a scan still waiting
     for its conversions, stop it from ever starting. The conversions keep running."""
     return _scans_call(scans.cancel, scan_id)
+
+
+# -------------------------------------------------------------------------
+# A dataset's results (results.py): what each scanner found in it, and whether the scan read
+# exactly its data. Only "check" acts: it submits the one CPU analysis job again.
+# -------------------------------------------------------------------------
+
+
+@app.get("/api/datasets/{dataset_id}/results")
+def dataset_results(dataset_id: str) -> dict[str, Any]:
+    """Every scanner's result for the dataset: the numbers for this dataset only, the coverage
+    verdict and the state of the analysis that made them. Reads small files only."""
+    return _results_call(results.dataset_results, dataset_id)
+
+
+@app.get("/api/datasets/{dataset_id}/results/{scanner}")
+def dataset_result(
+    dataset_id: str, scanner: str, categories: str | None = None, verdicts: str | None = None
+) -> dict[str, Any]:
+    """One scanner's result for the dataset, in full. For toxicity, `categories` and `verdicts`
+    (comma-separated; empty means none) change what counts as flagged in the answer, and
+    nothing else: nothing is saved."""
+    return _results_call(results.dataset_result, dataset_id, scanner, categories, verdicts)
+
+
+@app.post("/api/datasets/{dataset_id}/results/{scanner}/check")
+def dataset_result_check(dataset_id: str, scanner: str) -> dict[str, Any]:
+    """Run the dataset's result analysis for a scanner again: one CPU SLURM job that checks the
+    scan's coverage (and counts, if they aren't there yet). Refused while one is going."""
+    return _results_call(results.check_again, dataset_id, scanner)
 
 
 # Serves the built frontend (validator/frontend/dist, built by run.sh) at

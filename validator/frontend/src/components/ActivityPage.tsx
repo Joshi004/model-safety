@@ -118,13 +118,15 @@ function DatasetsCell({ item }: { item: Item }) {
 // it has run, Cancel while it is going, and the job in full under "Details". It asks again
 // every 5 seconds while anything is going. A scan that waits for a conversion says which.
 //
+// `scan` is a scan to show with its details open and in view (a link from a result page).
+//
 // Everything shown comes from SLURM or from files on disk and renders as plain text.
-export default function ActivityPage() {
+export default function ActivityPage({ scan }: { scan: string | null }) {
   const { data, error, reload } = useRefreshing(loadActivity, 'activity', POLL_MS, (loaded) =>
     mergeItems(loaded).some(isGoing),
   )
   // The jobs whose details are open, by `itemKey`.
-  const [open, setOpen] = useState<Set<string>>(new Set())
+  const [open, setOpen] = useState<Set<string>>(() => new Set(scan === null ? [] : [`scan/${scan}`]))
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -139,6 +141,8 @@ export default function ActivityPage() {
           ),
         ]
   const problems = data === null ? [] : [...new Set([...data.scans.problems, ...data.conversions.problems])]
+  // A scan that was asked for but isn't listed: a newer scan replaced it and it was deleted (D5).
+  const scanMissing = scan !== null && data !== null && !items.some((item) => item.kind === 'scan' && item.scan.id === scan)
 
   function toggle(key: string) {
     setOpen((current) => {
@@ -209,6 +213,11 @@ export default function ActivityPage() {
           </button>
         </div>
       )}
+      {scanMissing && (
+        <div className="banner banner-warning small">
+          Scan {scan} isn't in the list. A newer scan of the same kind may have replaced it, and then the old one is deleted.
+        </div>
+      )}
       {slurmErrors.map((text) => (
         <div key={text} className="banner banner-warning small">
           The state of running jobs couldn't be read, so some may show as unknown. {text}
@@ -263,6 +272,7 @@ export default function ActivityPage() {
                     item={item}
                     going={going}
                     open={open.has(key)}
+                    focus={item.kind === 'scan' && item.scan.id === scan}
                     busy={busyKey === key}
                     onToggle={() => toggle(key)}
                     onCancel={() => void cancel(item)}
@@ -278,11 +288,18 @@ export default function ActivityPage() {
   )
 }
 
+// Scrolls the line a link pointed at into view when it first appears. A function that never
+// changes, so React calls it once, when the line is added.
+function scrollIntoView(element: HTMLElement | null) {
+  element?.scrollIntoView({ block: 'center' })
+}
+
 // A job's line, and under it, when open, the job in full.
 function ActivityRows({
   item,
   going,
   open,
+  focus,
   busy,
   onToggle,
   onCancel,
@@ -291,6 +308,7 @@ function ActivityRows({
   item: Item
   going: boolean
   open: boolean
+  focus: boolean
   busy: boolean
   onToggle: () => void
   onCancel: () => void
@@ -298,7 +316,7 @@ function ActivityRows({
 }) {
   return (
     <>
-      <tr>
+      <tr ref={focus ? scrollIntoView : undefined} className={focus ? 'activity-focus' : undefined}>
         <td>{kindOf(item)}</td>
         <td>
           <StateCell item={item} />

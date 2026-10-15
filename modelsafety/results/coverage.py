@@ -22,10 +22,14 @@ The checks are functions (``check_scanner``, ``build_report``) so the filter
 step can call them. ``--json-out`` writes the same verdicts as a JSON report
 (``REPORT_VERSION``).
 
+A scan that was given a list of files (a duplicates scan over several datasets) is checked
+against exactly that list with ``--files-from``, instead of every run under the folder.
+
 Usage:
     python3 modelsafety/results/coverage.py --root output/prepared \\
         [--pii-run-dir DIR] [--ner-run-dir DIR] \\
-        [--toxicity-run-dir DIR] [--dedup-run-dir DIR] [--json-out FILE]
+        [--toxicity-run-dir DIR] [--dedup-run-dir DIR] \\
+        [--files-from FILE] [--json-out FILE]
 
 Exit code: 0 if every scanner that ran passed, 2 if anything failed, if no
 scanner ran, or if nothing under the folder could be checked.
@@ -36,10 +40,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 # Run as a script, so only this folder is on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -875,16 +879,59 @@ def check_scanner(
 
 
 # -------------------------------------------------------------------------
+# Narrowing the report to the files a scan was given
+# -------------------------------------------------------------------------
+
+
+def read_file_list(path: Path) -> list[str]:
+    """The relative paths in a scan's list of files (one per line, blanks skipped)."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [line.strip() for line in lines if line.strip()]
+
+
+def narrow_selection(selection: ScanSelection, only_files: Iterable[str]) -> ScanSelection:
+    """`selection` narrowed to `only_files`, the files a scan was given (relative to the scan
+    root, as in the selection). A scan over a list of files reads only those, so it is checked
+    against them and not against every run under the folder.
+
+    What was skipped is narrowed too: only a stray file inside a chosen run still counts, and
+    the number of runs found is the number of chosen runs. Raises RunFinderError when the
+    list is empty or names a file that no finished run wrote."""
+    wanted = set(only_files)
+    if not wanted:
+        raise RunFinderError("The scan's list of files is empty.")
+    known = {item.path for item in selection.files}
+    unknown = sorted(wanted - known)
+    if unknown:
+        raise RunFinderError(
+            f"The scan's list of files names {_files(len(unknown))} that no finished run under "
+            f"{selection.scan_root} wrote, e.g. {_examples(unknown)}."
+        )
+    files = [item for item in selection.files if item.path in wanted]
+    chosen_runs = {item.run for item in files if item.run is not None}
+    skipped = [
+        entry
+        for entry in selection.skipped
+        if entry["kind"] == "file"
+        and any(parent.as_posix() in chosen_runs for parent in PurePosixPath(entry["path"]).parents)
+    ]
+    return replace(selection, files=files, skipped=skipped, runs_found=len(chosen_runs))
+
+
+# -------------------------------------------------------------------------
 # The whole report
 # -------------------------------------------------------------------------
 
 
 def build_report(
-    root: str | Path, results_dirs: dict[str, str | Path | None]
+    root: str | Path,
+    results_dirs: dict[str, str | Path | None],
+    only_files: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Check every scanner in `results_dirs` ({scanner: folder or None})
-    against the finished runs under `root`. See the module docstring for the
-    JSON this returns."""
+    against the finished runs under `root`, or only against `only_files` (paths
+    relative to `root`) when a scan was given a list of files. See the module
+    docstring for the JSON this returns."""
     root_path = Path(root).expanduser().resolve()
     report: dict[str, Any] = {
         "report": "coverage",
@@ -901,6 +948,8 @@ def build_report(
     }
     try:
         selection = select_scan_files(root_path)
+        if only_files is not None:
+            selection = narrow_selection(selection, only_files)
     except RunFinderError as exc:
         report["scanners_not_run"] = [name for name in SCANNERS if results_dirs.get(name) is None]
         report["problems"].append(make_problem(None, str(exc)))
@@ -1086,6 +1135,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--toxicity-run-dir", type=Path, help="Toxicity results folder.")
     parser.add_argument("--dedup-run-dir", type=Path, help="Duplicates results folder.")
     parser.add_argument(
+        "--files-from",
+        type=Path,
+        help=(
+            "Check against only the files listed here (one path per line, relative to --root), "
+            "for a scan that was given a list of files. Without it, every finished run under "
+            "--root is expected to have been read."
+        ),
+    )
+    parser.add_argument(
         "--json-out",
         type=Path,
         help="Also write the report as JSON here. Not allowed inside --root or a results folder.",
@@ -1109,7 +1167,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
 
-    report = build_report(args.root, results_dirs)
+    only_files = None
+    if args.files_from is not None:
+        try:
+            only_files = read_file_list(args.files_from)
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"error: couldn't read {args.files_from}: {exc}", file=sys.stderr)
+            return 2
+
+    report = build_report(args.root, results_dirs, only_files)
     print_report(report)
     if json_out is not None:
         try:

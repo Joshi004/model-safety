@@ -9,7 +9,9 @@ import ConversionTab from './ConversionTab'
 import DataTab from './DataTab'
 import HistoryTab from './HistoryTab'
 import OverviewTab from './OverviewTab'
+import ResultPage from './ResultPage'
 import ResultsTab from './ResultsTab'
+import ScannerChips from './ScannerChips'
 
 type Loaded = { status: 'loading' } | { status: 'ready'; dataset: Dataset } | { status: 'error'; message: string }
 
@@ -21,9 +23,18 @@ const TAB_LABELS: Record<DatasetTab, string> = {
   history: 'History',
 }
 
-// One dataset: a header with what it is and its current Prepared version, and a tab for
-// each thing to do or look at. Everything shown is plain text.
-export default function DatasetPage({ datasetId, tab }: { datasetId: string; tab: DatasetTab }) {
+// One dataset: a header with what it is, its current Prepared version and the state of each
+// scanner on it, and a tab for each thing to do or look at. `scanner` is only set on the
+// results tab: the result page of that scanner. Everything shown is plain text.
+export default function DatasetPage({
+  datasetId,
+  tab,
+  scanner,
+}: {
+  datasetId: string
+  tab: DatasetTab
+  scanner: string | null
+}) {
   const [loaded, setLoaded] = useState<Loaded>({ status: 'loading' })
   // The Conversion tab holds edits that aren't saved yet, so once it has been opened it
   // stays mounted (hidden) while another tab is shown.
@@ -110,6 +121,10 @@ export default function DatasetPage({ datasetId, tab }: { datasetId: string; tab
                   <span className="muted">Not converted</span>
                 )}
               </dd>
+              <dt>Scans</dt>
+              <dd className="scans-cell">
+                <ScannerChips datasetId={loaded.dataset.id} scans={loaded.dataset.scans} />
+              </dd>
               <dt>Registered</dt>
               <dd>{formatTimestamp(loaded.dataset.created_at)}</dd>
             </dl>
@@ -136,7 +151,12 @@ export default function DatasetPage({ datasetId, tab }: { datasetId: string; tab
               <ConversionTab dataset={loaded.dataset} onDatasetChanged={setDataset} onReload={reload} />
             </div>
           )}
-          {tab === 'results' && <ResultsTab />}
+          {tab === 'results' &&
+            (scanner === null ? (
+              <ResultsTab dataset={loaded.dataset} onChanged={reload} />
+            ) : (
+              <ResultPage key={scanner} dataset={loaded.dataset} scanner={scanner} onChanged={reload} />
+            ))}
           {tab === 'history' && <HistoryTab dataset={loaded.dataset} onChanged={reload} />}
         </>
       )}

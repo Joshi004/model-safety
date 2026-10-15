@@ -86,6 +86,27 @@ class ScanContext:
 
 
 @dataclass(frozen=True)
+class ResultContext:
+    """What a scanner needs to say what one dataset's result holds: the scan's results folder,
+    its settings and mode, the dataset and the names of every dataset the scan covered, the
+    dataset's row of the coverage report and the scan's tally (both None until the scan's
+    analysis has finished), and the count the result was saved with."""
+
+    results: Path
+    settings: dict[str, Any]
+    mode: str | None
+    dataset_id: str
+    dataset_names: dict[str, str]
+    coverage: dict[str, Any] | None
+    tally: dict[str, Any] | None
+    saved_count: int | None
+    # Toxicity only: the categories and verdicts chosen on the result page. None: the ones the
+    # scan was started with.
+    categories_choice: list[str] | None = None
+    verdicts_choice: list[str] | None = None
+
+
+@dataclass(frozen=True)
 class Scanner:
     key: str
     label: str
@@ -121,6 +142,11 @@ class Scanner:
     # The headline count of one dataset: the scan's results folder, the scan's mode, the
     # dataset and the Prepared version the scan read for it.
     headline_count: Callable[[Path, str | None, str, str], int | None]
+    # What one dataset's result holds, for its results page: `{flagged: {count, unit, rows},
+    # breakdowns: [{title, items: [{name, count}], note}], facts: [{label, value}]}`, and
+    # `filter` for a scanner whose reader can change what counts as flagged. A number the
+    # scan's analysis hasn't produced yet is None.
+    read_result: Callable[[ResultContext], dict[str, Any]]
     # For a scanner whose job scripts fix the CPUs, memory and time (and so the GPUs): what
     # they ask for, for these settings, as `{cpus, mem, time}`. Only the partition can be
     # chosen then. None when the user sets all of them.
@@ -134,6 +160,9 @@ class Scanner:
     # How far a scan that is running has got, from its results folder: one entry for each stage
     # that can be counted, `{stage, done, total, unit}`. None when nothing can be told yet.
     read_progress: Callable[[Path], list[dict[str, Any]] | None] | None = None
+    # Whether the scan's analysis (results.py) has to count something the summary files don't
+    # hold, given the scan's mode. None when it never does.
+    needs_tally: Callable[[str | None], bool] | None = None
 
 
 # -------------------------------------------------------------------------
@@ -1045,22 +1074,211 @@ def toxicity_read_details(results: Path) -> dict[str, Any]:
 
 
 def toxicity_headline_count(results: Path, _mode: str | None, _dataset_id: str, _version_id: str) -> int | None:
-    """The messages the guard didn't call Safe: Unsafe, Controversial, and the ones with no
-    verdict it could use, which count as flagged (D9). It doesn't depend on the categories and
-    verdicts the user chose, which only apply when the results are read (D8)."""
-    names = _toxicity_shard_names(results)
-    if not names:
+    """None: the messages that count as flagged depend on the categories and verdicts the scan
+    was started with (D8), and the summaries don't hold verdicts by category. The count is
+    set by results.py once the scan's analysis has tallied the judged messages, so the chip
+    never shows a number that later changes."""
+    return None
+
+
+# -------------------------------------------------------------------------
+# What one dataset's result holds (read_result)
+# -------------------------------------------------------------------------
+
+
+def _flagged(count: int | None, unit: str, rows: int | None = None) -> dict[str, Any]:
+    return {"count": count, "unit": unit, "rows": rows}
+
+
+def _breakdown(title: str, counts: dict[str, int] | None, note: str | None = None) -> dict[str, Any] | None:
+    """A table of name and count, biggest first; None when the counts aren't known."""
+    if counts is None:
         return None
-    total = 0
-    for name in names:
-        guard = read_json_or_none(results / TOXICITY_SHARDS_FOLDER / name / "guard_results" / "summary.json")
-        records = _whole_number(guard.get("total_records")) if isinstance(guard, dict) else None
-        safety = guard.get("safety") if isinstance(guard, dict) else None
-        if records is None or not isinstance(safety, dict):
-            # A shard that can't be counted would make the total too low.
-            return None
-        total += records - (_whole_number(safety.get("Safe")) or 0)
-    return total
+    return {"title": title, "items": [{"name": name, "count": count} for name, count in counts.items()], "note": note}
+
+
+def _known(*breakdowns: dict[str, Any] | None) -> list[dict[str, Any]]:
+    return [item for item in breakdowns if item is not None]
+
+
+def dedup_read_result(context: ResultContext) -> dict[str, Any]:
+    """The duplicate rows in this dataset (the coverage report's `findings` for its files). For
+    a scan across datasets, also where the copy that was kept is: in this dataset or another."""
+    findings = _whole_number(context.coverage.get("findings")) if context.coverage is not None else None
+    count = findings if findings is not None else context.saved_count
+    breakdowns: list[dict[str, Any] | None] = []
+    if context.mode == MODE_ACROSS and len(context.dataset_names) > 1 and context.tally is not None:
+        groups = context.tally.get("groups")
+        mine = groups.get(context.dataset_id) if isinstance(groups, dict) else None
+        kept_in = _sorted_counts(mine.get("kept_in")) if isinstance(mine, dict) else None
+        if kept_in is not None:
+            where = {
+                (
+                    "This dataset"
+                    if dataset_id == context.dataset_id
+                    else context.dataset_names.get(dataset_id, "A file outside the chosen datasets")
+                ): number
+                for dataset_id, number in kept_in.items()
+            }
+            breakdowns.append(
+                _breakdown(
+                    "Where the kept copy of each duplicate is",
+                    where,
+                    "Rows in this dataset that repeat a row kept in the dataset named.",
+                )
+            )
+    return {"flagged": _flagged(count, "duplicate rows", count), "breakdowns": _known(*breakdowns), "facts": []}
+
+
+def regex_read_result(context: ResultContext) -> dict[str, Any]:
+    details = regex_read_details(context.results)
+    kept = _whole_number(details.get("kept_hits"))
+    raw = _whole_number(details.get("raw_hits"))
+    facts = [] if raw is None else [{"label": "Matches before the checks that drop false ones", "value": raw}]
+    return {
+        "flagged": _flagged(kept if kept is not None else context.saved_count, "PII findings", _whole_number(details.get("rows_with_hits"))),
+        "breakdowns": _known(_breakdown("Categories (matches kept)", _sorted_counts(details.get("kept_by_category")))),
+        "facts": facts,
+    }
+
+
+def ner_read_result(context: ResultContext) -> dict[str, Any]:
+    """The spans the policy counts, from the tally (which also has the rows) once there is one;
+    until then, the scan's own total."""
+    details = ner_read_details(context.results)
+    tally = context.tally
+    eligible = _whole_number(tally.get("eligible_spans")) if tally is not None else _whole_number(details.get("policy_eligible_spans"))
+    found = _whole_number(details.get("spans"))
+    facts = [] if found is None else [{"label": "Spans the model found", "value": found}]
+    return {
+        "flagged": _flagged(
+            eligible if eligible is not None else context.saved_count,
+            "PII findings",
+            _whole_number(tally.get("rows_flagged")) if tally is not None else None,
+        ),
+        "breakdowns": _known(
+            _breakdown("Labels (spans the policy counts)", _sorted_counts(tally.get("eligible_by_label")) if tally is not None else None),
+            _breakdown("Groups of labels", _sorted_counts(tally.get("eligible_by_tier")) if tally is not None else None),
+        ),
+        "facts": facts,
+    }
+
+
+def _chosen(value: Any, allowed: tuple[str, ...]) -> list[str]:
+    """The items of `allowed` that `value` (a list) names, in the order of `allowed`. Anything
+    that isn't a list is every item: the scan was started with the defaults."""
+    if not isinstance(value, list):
+        return list(allowed)
+    return [item for item in allowed if item in value]
+
+
+def _atom_counts(atom: str, verdicts: set[str], categories: set[str]) -> bool:
+    """Whether one of a row's tally atoms ("error", or "<verdict>|<category>") counts as
+    flagged. A guard error always does (D9). So does a verdict with no category: it has no
+    category to untick. So does a category this service doesn't know."""
+    if atom == "error":
+        return True
+    verdict, _separator, category = atom.partition("|")
+    return verdict in verdicts and (category == "" or category in categories or category not in GUARD_CATEGORIES)
+
+
+def toxicity_flagged(tally: dict[str, Any], verdicts: list[str], categories: list[str]) -> dict[str, Any]:
+    """What counts as flagged under these verdicts and categories, from the toxicity tally: the
+    messages, the rows, and the messages by verdict and by category. A message can have several
+    categories, so the categories add up to more than the messages."""
+    chosen_verdicts, chosen_categories = set(verdicts), set(categories)
+    errors = _whole_number(tally.get("guard_errors")) or 0
+    messages = errors
+    by_verdict: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    without_category = 0
+    entries = tally.get("messages")
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("categories"), list):
+            continue
+        verdict, count = entry.get("verdict"), _whole_number(entry.get("count"))
+        if not isinstance(verdict, str) or count is None or verdict not in chosen_verdicts:
+            continue
+        named = [category for category in entry["categories"] if isinstance(category, str)]
+        counted = [category for category in named if category in chosen_categories or category not in GUARD_CATEGORIES]
+        if named and not counted:
+            continue
+        messages += count
+        by_verdict[verdict] = by_verdict.get(verdict, 0) + count
+        if not named:
+            without_category += count
+        for category in counted:
+            by_category[category] = by_category.get(category, 0) + count
+    rows = 0
+    row_entries = tally.get("rows")
+    for entry in row_entries if isinstance(row_entries, list) else []:
+        atoms = entry.get("atoms") if isinstance(entry, dict) else None
+        count = _whole_number(entry.get("count")) if isinstance(entry, dict) else None
+        if isinstance(atoms, list) and count is not None and any(
+            isinstance(atom, str) and _atom_counts(atom, chosen_verdicts, chosen_categories) for atom in atoms
+        ):
+            rows += count
+    return {
+        "messages": messages,
+        "rows": rows,
+        "guard_errors": errors,
+        "by_verdict": by_verdict,
+        "by_category": by_category,
+        "without_category": without_category,
+    }
+
+
+def toxicity_read_result(context: ResultContext) -> dict[str, Any]:
+    """The messages that count as flagged under the scan's saved categories and verdicts (D8), or
+    the ones the user chose on the page, which only changes what is shown. The Detoxify
+    threshold is not among them: it decided what the judge saw."""
+    saved_categories = _chosen(context.settings.get("categories"), GUARD_CATEGORIES)
+    saved_verdicts = _chosen(context.settings.get("verdicts"), TOXICITY_REMOVABLE_VERDICTS)
+    categories = saved_categories if context.categories_choice is None else context.categories_choice
+    verdicts = saved_verdicts if context.verdicts_choice is None else context.verdicts_choice
+    details = toxicity_read_details(context.results)
+    facts = [
+        {"label": label, "value": details[key]}
+        for label, key in (
+            ("Messages Detoxify scored", "messages_scored"),
+            ("Messages sent to the judge", "messages_flagged"),
+            ("Messages the judge rated", "guard_records"),
+        )
+        if _whole_number(details.get(key)) is not None
+    ]
+    flagged = _flagged(None, "messages")
+    breakdowns: list[dict[str, Any] | None] = []
+    if context.tally is not None:
+        found = toxicity_flagged(context.tally, verdicts, categories)
+        flagged = _flagged(found["messages"], "messages", found["rows"])
+        extra = {}
+        if found["guard_errors"]:
+            extra["Guard error (counts as flagged)"] = found["guard_errors"]
+        breakdowns = [
+            _breakdown("Verdicts", {**_sorted_counts(found["by_verdict"]), **extra}),
+            _breakdown(
+                "Categories",
+                {
+                    **_sorted_counts(found["by_category"]),
+                    **({"No category given": found["without_category"]} if found["without_category"] else {}),
+                },
+                "A message can have several categories, so these add up to more than the flagged messages.",
+            ),
+        ]
+    return {
+        "flagged": flagged,
+        "breakdowns": _known(*breakdowns),
+        "facts": facts,
+        "filter": {
+            "categories": list(GUARD_CATEGORIES),
+            "verdicts": list(TOXICITY_REMOVABLE_VERDICTS),
+            "selected_categories": categories,
+            "selected_verdicts": verdicts,
+            "saved_categories": saved_categories,
+            "saved_verdicts": saved_verdicts,
+            "threshold": context.settings.get("threshold"),
+        },
+    }
 
 
 SCANNERS: dict[str, Scanner] = {
@@ -1091,6 +1309,8 @@ SCANNERS: dict[str, Scanner] = {
         success_markers=(SUCCESS_MARKER,),
         read_details=dedup_read_details,
         headline_count=dedup_headline_count,
+        read_result=dedup_read_result,
+        needs_tally=lambda mode: mode == MODE_ACROSS,
     ),
     "pii_ner": Scanner(
         key="pii_ner",
@@ -1125,6 +1345,8 @@ SCANNERS: dict[str, Scanner] = {
         success_markers=(SUCCESS_MARKER,),
         read_details=ner_read_details,
         headline_count=ner_headline_count,
+        read_result=ner_read_result,
+        needs_tally=lambda _mode: True,
         fixed_resources=_ner_fixed_resources,
     ),
     "pii_regex": Scanner(
@@ -1149,6 +1371,7 @@ SCANNERS: dict[str, Scanner] = {
         success_markers=REGEX_MARKERS,
         read_details=regex_read_details,
         headline_count=regex_headline_count,
+        read_result=regex_read_result,
         detects=tuple(PII_CATEGORIES),
     ),
     "toxicity": Scanner(
@@ -1211,6 +1434,8 @@ SCANNERS: dict[str, Scanner] = {
         success_markers=(TOXICITY_MANIFEST,),
         read_details=toxicity_read_details,
         headline_count=toxicity_headline_count,
+        read_result=toxicity_read_result,
+        needs_tally=lambda _mode: True,
         markers_for=toxicity_markers,
         read_progress=toxicity_progress,
     ),

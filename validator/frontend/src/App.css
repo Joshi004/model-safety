@@ -1491,3 +1491,68 @@ a.chip-link:hover .chip {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 0 16px;
 }
+
+/* ---- Flagged rows of a result ---- */
+
+.flagged-filters {
+  margin-bottom: 8px;
+}
+
+.flagged-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.flagged-bar p {
+  margin: 0;
+}
+
+.flagged-detail {
+  margin: 16px 0 0;
+  background: var(--bg-alt);
+}
+
+.flagged-detail h4 {
+  margin: 12px 0 4px;
+}
+
+.segment-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  margin: 0;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+/* A mark in a row's text: what a scanner found there. */
+.hl {
+  border-radius: 3px;
+  padding: 0 1px;
+  color: inherit;
+}
+
+.hl-ner {
+  background: rgba(122, 59, 220, 0.2);
+  border-bottom: 2px solid var(--accent);
+}
+
+.hl-regex_pii {
+  background: rgba(214, 137, 16, 0.25);
+  border-bottom: 2px solid #d68910;
+}
+
+.finding-list {
+  margin: 4px 0 4px 18px;
+  padding: 0;
+}
+
+.duplicate-sides {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}

@@ -12,7 +12,7 @@
 // stops one. Reading a dataset, a conversion or a scan also saves a finished conversion
 // as the dataset's Prepared version, and a finished scan as the dataset's result.
 // checkResult submits one CPU job that checks a finished scan's coverage again. Every
-// other call here is read-only.
+// other call here is read-only, including the two that read a result's flagged rows.
 import type {
   AllConversionsResponse,
   CancelResponse,
@@ -27,6 +27,9 @@ import type {
   DatasetResultResponse,
   DatasetResultsResponse,
   DatasetsResponse,
+  FlaggedFilters,
+  FlaggedPage,
+  FlaggedRowDetail,
   HealthResponse,
   InspectResult,
   LookupRequest,
@@ -239,5 +242,47 @@ export function checkResult(datasetId: string, scanner: string): Promise<CheckAg
   return request<CheckAgainResponse>(
     `/api/datasets/${encodeURIComponent(datasetId)}/results/${encodeURIComponent(scanner)}/check`,
     {},
+  )
+}
+
+// ---- A result's flagged rows ----
+
+// The part of the address that says which toxicity categories and verdicts count as flagged: an
+// empty list means none, null leaves the scan's own.
+function toxicityParams(params: URLSearchParams, choice: { categories: string[] | null; verdicts: string[] | null }) {
+  if (choice.categories !== null) params.set('categories', choice.categories.join(','))
+  if (choice.verdicts !== null) params.set('verdicts', choice.verdicts.join(','))
+}
+
+// One page of a result's flagged rows, from its findings index. Read-only.
+export function getFlaggedPage(
+  datasetId: string,
+  scanner: string,
+  page: number,
+  pageSize: number,
+  filters: FlaggedFilters,
+): Promise<FlaggedPage> {
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
+  if (filters.reason !== null) params.set('reason', filters.reason)
+  if (filters.name !== null) params.set('name', filters.name)
+  toxicityParams(params, filters)
+  return request<FlaggedPage>(
+    `/api/datasets/${encodeURIComponent(datasetId)}/results/${encodeURIComponent(scanner)}/flagged?${params.toString()}`,
+  )
+}
+
+// One flagged row: its Prepared text, what was found and where, and for a duplicate the copy it
+// matched. Read-only.
+export function getFlaggedRow(
+  datasetId: string,
+  scanner: string,
+  file: string,
+  line: number,
+  choice: { categories: string[] | null; verdicts: string[] | null },
+): Promise<FlaggedRowDetail> {
+  const params = new URLSearchParams({ file, line: String(line) })
+  toxicityParams(params, choice)
+  return request<FlaggedRowDetail>(
+    `/api/datasets/${encodeURIComponent(datasetId)}/results/${encodeURIComponent(scanner)}/flagged/row?${params.toString()}`,
   )
 }

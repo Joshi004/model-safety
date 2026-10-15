@@ -17,15 +17,25 @@ import {
   scannerNote,
   settingsToRepeat,
 } from '../scans'
-import type { Dataset, ScanSubmitResponse, ScannerResult } from '../types'
+import type { AnalysisState, Dataset, ScanSubmitResponse, ScannerResult } from '../types'
 import { useRefreshing } from '../useRefreshing'
 import Chip from './Chip'
 import CommandBox from './CommandBox'
 import CoverageBadge from './CoverageBadge'
+import FlaggedRows from './FlaggedRows'
 import ScanDialog from './ScanDialog'
 import ToxicityFilter from './ToxicityFilter'
 
 const POLL_MS = 4000
+
+// Why the table of flagged rows isn't there: it is made by the same check as the coverage verdict.
+function flaggedRowsNote(state: AnalysisState): string {
+  if (isAnalysisGoing(state)) return 'The flagged rows are listed once the check of this scan has finished.'
+  if (state === 'succeeded') {
+    return 'This scan was checked before flagged rows were listed. Use "Check again" above to list them.'
+  }
+  return "The check of this scan didn't finish, so its flagged rows can't be listed. Use \"Check again\" above."
+}
 
 // The categories and verdicts chosen on the page. Null: the ones the scan was started with.
 interface Choice {
@@ -357,6 +367,22 @@ export default function ResultPage({
                   {breakdown.note !== null && <p className="muted small">{breakdown.note}</p>}
                 </div>
               ))}
+            </div>
+          )}
+
+          {result.has_index ? (
+            // A new scan, or a new choice of toxicity categories and verdicts, starts the table again.
+            <FlaggedRows
+              key={`${result.scan_id}|${JSON.stringify(choice)}`}
+              datasetId={dataset.id}
+              scanner={scanner}
+              categories={choice.categories}
+              verdicts={choice.verdicts}
+            />
+          ) : (
+            <div className="card">
+              <h3 className="scan-heading">Flagged rows</h3>
+              <p className="muted small">{flaggedRowsNote(result.analysis.state)}</p>
             </div>
           )}
 

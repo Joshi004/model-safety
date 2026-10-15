@@ -5,23 +5,26 @@ When a scan has become a dataset's result (scans.py), this module runs one CPU S
 it, the *analysis* (`launchers/slurm/run_result_analysis.sbatch`, which runs
 `modelsafety/results/analyse.py`). It checks the scan's coverage and counts what the scanner's
 small summary files don't hold (toxicity by verdict and category, rows flagged by NER, where the
-kept copy of a duplicate is). Everything it makes is in the scan's folder:
+kept copy of a duplicate is), and makes each dataset's findings index: one line for each flagged
+row, which flagged.py pages through. Everything it makes is in the scan's folder:
 
     <service root>/scans/<scan id>/
         analysis.json   what was submitted: the exact command, the job, when
         coverage.json   the coverage report for this scan (modelsafety/results/coverage.py)
         tally.json      the counts (for the scanners that need them)
+        index/<dataset id>.jsonl         the flagged rows of each dataset
+        index/<dataset id>.counts.json   and the counts a page filters by
         _logs/analysis-<job id>.out|.err
 
-The pages then read only those small files and the scanner's own summary files, never a whole
-result file.
+The pages then read only those small files, the index, and the scanner's own summary files,
+never a whole result file.
 
 Rules this module keeps:
 
-* The only thing written is `analysis.json` (here), `coverage.json` and `tally.json` (by the job),
-  all inside the scan's folder, and two numbers on a dataset's result in datasets.json: its
-  count and its coverage verdict (`registry.update_result`). Nothing is deleted. Prepared
-  versions, scan results and original data are only read.
+* The only thing written is `analysis.json` (here), `coverage.json`, `tally.json` and the index
+  (by the job), all inside the scan's folder, and two numbers on a dataset's result in
+  datasets.json: its count and its coverage verdict (`registry.update_result`). Nothing is
+  deleted. Prepared versions, scan results and original data are only read.
 * Every SLURM call goes through jobs.py and scans.py's readers: an argument list, `shell=False`,
   a 30 second timeout. The job states its partition, CPUs, memory and time limit.
 * Job state is never stored. It is read live from SLURM and from the files the job writes. What
@@ -55,6 +58,9 @@ from reader_imports import REPO_ROOT, read_json_or_none
 ANALYSIS_FILE = "analysis.json"
 COVERAGE_FILE = "coverage.json"
 TALLY_FILE = "tally.json"
+# Where the job writes each dataset's findings index, in the scan's folder: `<dataset id>.jsonl`
+# and `<dataset id>.counts.json`.
+INDEX_FOLDER = "index"
 ANALYSIS_SCRIPT = REPO_ROOT / "launchers" / "slurm" / "run_result_analysis.sbatch"
 # What the job asks for (the partition is the default one). The counts keep every flagged row of
 # the scan in memory, hence the 32G.
@@ -110,6 +116,9 @@ def _is_analysis(data: Any, scan_id: str) -> bool:
     job_id = data.get("job_id")
     if job_id is not None and not (isinstance(job_id, str) and scans.SLURM_JOB_ID.fullmatch(job_id)):
         return False
+    # A record made before the findings index existed has neither of these two.
+    if any(key in data and not isinstance(data[key], bool) for key in ("writes_index", "has_index")):
+        return False
     return isinstance(data.get("writes_tally"), bool) and isinstance(data.get("has_tally"), bool)
 
 
@@ -125,6 +134,15 @@ def _write_analysis(record: dict[str, Any]) -> None:
 def _needs_tally(scan: dict[str, Any]) -> bool:
     needs = scanners.SCANNERS[scan["scanner"]].needs_tally
     return needs is not None and needs(scan["mode"])
+
+
+def index_files(scan_folder: Path, dataset_id: str) -> tuple[Path, Path]:
+    """The paths of a dataset's findings index in a scan's folder: the flagged rows, and the
+    counts. `dataset_id` has to be a registry id, which is what makes it safe in a file name."""
+    if registry.DATASET_ID.fullmatch(dataset_id) is None:
+        raise ResultsError(f"'{dataset_id}' isn't a dataset id.")
+    folder = scan_folder / INDEX_FOLDER
+    return folder / f"{dataset_id}.jsonl", folder / f"{dataset_id}.counts.json"
 
 
 def _is_across(scan: dict[str, Any]) -> bool:
@@ -165,6 +183,8 @@ def _command(scan: dict[str, Any], kind: str) -> list[str]:
     if not isinstance(versions, dict):
         raise ResultsError("The scan's record doesn't say which Prepared versions it read.")
     for dataset_id in scan["datasets"]:
+        if registry.DATASET_ID.fullmatch(dataset_id) is None:
+            raise ResultsError(f"The scan's record names '{dataset_id}', which isn't a dataset id.")
         _version_folder(dataset_id, versions.get(dataset_id))
 
     args = ["--scanner", COVERAGE_NAMES[scan["scanner"]]]
@@ -175,16 +195,21 @@ def _command(scan: dict[str, Any], kind: str) -> list[str]:
         files_from = folder / scanners.INPUTS_FOLDER / scanners.DEDUP_MANIFEST
         args += ["--root", str(root), "--results-dir", str(folder / scanners.RESULTS_FOLDER)]
         args += ["--out-dir", str(folder), "--files-from", str(files_from)]
-        if kind == KIND_FULL and _needs_tally(scan):
+        if kind == KIND_FULL:
+            # The groups name each dataset's files, for the tally and for the index.
             for dataset_id in scan["datasets"]:
                 args += ["--group", f"{dataset_id}={dataset_id}/prepared/{versions[dataset_id]['version_id']}/"]
     elif len(scan["datasets"]) == 1:
         root = _version_folder(scan["datasets"][0], versions.get(scan["datasets"][0]))
         args += ["--root", str(root), "--results-dir", str(folder / scanners.RESULTS_FOLDER), "--out-dir", str(folder)]
+        if kind == KIND_FULL:
+            args += ["--index-name", scan["datasets"][0]]
     else:
         raise ResultsError("A scan over several datasets that isn't a comparison across them can't be analysed.")
     if kind == KIND_COVERAGE:
         args.append("--coverage-only")
+    else:
+        args += ["--index-dir", str(folder / INDEX_FOLDER)]
 
     scanners._check_export_values({"ANALYSE_REPO": str(REPO_ROOT)})
     logs = folder / scanners.LOGS_FOLDER
@@ -204,18 +229,22 @@ def _command(scan: dict[str, Any], kind: str) -> list[str]:
     ]
 
 
-def _submit(scan: dict[str, Any], kind: str, earlier_tally: bool = False) -> dict[str, Any]:
+def _submit(scan: dict[str, Any], kind: str, earlier: dict[str, Any] | None = None) -> dict[str, Any]:
     """Write the analysis record and run `sbatch` for it. Call it while holding `_LOCK`. What
     goes wrong is noted in the record's `submit_error` instead of raised, so one scan that
-    can't be analysed doesn't stop the others. `earlier_tally` is whether a tally from an
-    earlier job is already there (a check of the coverage only keeps it)."""
+    can't be analysed doesn't stop the others. `earlier` is the record of an analysis that
+    succeeded before, whose tally and index are still there (a check of the coverage only
+    keeps them)."""
     writes_tally = kind == KIND_FULL and _needs_tally(scan)
+    writes_index = kind == KIND_FULL
     record: dict[str, Any] = {
         "scan_id": scan["id"],
         "scanner": scan["scanner"],
         "kind": kind,
         "writes_tally": writes_tally,
-        "has_tally": writes_tally or earlier_tally,
+        "writes_index": writes_index,
+        "has_tally": writes_tally or bool(earlier and earlier.get("has_tally")),
+        "has_index": writes_index or bool(earlier and earlier.get("has_index")),
         "submitted_at": None,
         "command": None,
         "command_text": None,
@@ -259,8 +288,15 @@ def _submit(scan: dict[str, Any], kind: str, earlier_tally: bool = False) -> dic
 # -------------------------------------------------------------------------
 
 
-def _expected_files(record: dict[str, Any]) -> list[str]:
-    return [COVERAGE_FILE, *([TALLY_FILE] if record["writes_tally"] else [])]
+def _expected_files(scan: dict[str, Any], record: dict[str, Any]) -> list[str]:
+    """The files, relative to the scan's folder, that the analysis in `record` has to write."""
+    expected = [COVERAGE_FILE]
+    if record["writes_tally"]:
+        expected.append(TALLY_FILE)
+    if record.get("writes_index"):
+        for dataset_id in scan["datasets"]:
+            expected += [f"{INDEX_FOLDER}/{dataset_id}.jsonl", f"{INDEX_FOLDER}/{dataset_id}.counts.json"]
+    return expected
 
 
 def _outcome(
@@ -278,7 +314,7 @@ def _outcome(
         return scans.STATE_FAILED, record.get("submit_error") or "The job was never submitted."
     state, reason = scans._slurm_outcome(job_id, active, accounted)
     if state == scans.STATE_SUCCEEDED:
-        missing = [name for name in _expected_files(record) if not (_folder(scan) / name).is_file()]
+        missing = [name for name in _expected_files(scan, record) if not (_folder(scan) / name).is_file()]
         if missing:
             return scans.STATE_FAILED, f"The job finished but didn't write {', '.join(missing)}. See its log."
     return state, reason
@@ -462,6 +498,9 @@ def _scanner_view(
         "settings": scan["settings"],
         "datasets": [{"id": other, "name": names[other]} for other in scan["datasets"] if other in names],
         "analysis": _analysis_view(scan, record, state, reason, active, accounted, detail),
+        # Whether the flagged rows of this dataset can be listed (flagged.py): only once the
+        # analysis that wrote the index has succeeded.
+        "has_index": state == scans.STATE_SUCCEEDED and record is not None and bool(record.get("has_index")),
         "coverage": None if coverage is None else {name: value for name, value in coverage.items() if name != "row"},
         "rows": {
             "scanned": row.get("rows_read") if row is not None else None,
@@ -533,15 +572,22 @@ def check_again(dataset_id: str, scanner_key: Any) -> dict[str, Any]:
         if key not in found:
             raise ResultsError(f"This dataset has no finished {scanners.SCANNERS[key].label} scan to check.")
         scan, record = found[key]
-        earlier_tally = False
+        # An earlier analysis that succeeded and has everything a full one writes: only the
+        # coverage is checked again, and the tally and the index it made are kept.
+        earlier: dict[str, Any] | None = None
         if record is not None:
             active, accounted, _error = _slurm_for(found)
             state, _reason = _outcome(scan, record, active, accounted)
             if state in GOING_STATES:
                 raise ResultsError("The check of this result is still going. Wait for it to finish.")
-            earlier_tally = state == scans.STATE_SUCCEEDED and bool(record.get("has_tally"))
+            complete = (
+                state == scans.STATE_SUCCEEDED
+                and bool(record.get("has_index"))
+                and (bool(record.get("has_tally")) or not _needs_tally(scan))
+            )
+            earlier = record if complete else None
         try:
-            new = _submit(scan, KIND_COVERAGE if earlier_tally else KIND_FULL, earlier_tally)
+            new = _submit(scan, KIND_COVERAGE if earlier is not None else KIND_FULL, earlier)
         except OSError as exc:
             raise ResultsError(f"Couldn't write the scan's record of the check ({exc}).") from exc
     return {"scan_id": scan["id"], "job_id": new.get("job_id"), "submit_error": new.get("submit_error")}
@@ -591,7 +637,13 @@ def _maintain() -> None:
 
     submitted = 0
     for scan in current:
-        if records[scan["id"]] is not None or submitted >= MAX_SUBMITS_PER_PASS:
+        record = records[scan["id"]]
+        # No analysis yet, or one that finished before the findings index existed (its record
+        # has no `has_index` at all): a full one makes the index. A record that says it has no
+        # index, or whose job failed, is left for "Check again", so a scan whose index can't
+        # be made isn't submitted again every 30 seconds.
+        needs = record is None or (record.get("applied_at") is not None and "has_index" not in record)
+        if not needs or submitted >= MAX_SUBMITS_PER_PASS:
             continue
         try:
             records[scan["id"]] = _submit(scan, KIND_FULL)

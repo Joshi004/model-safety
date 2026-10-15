@@ -62,7 +62,11 @@ modelsafety/results/analyse.py). It writes `coverage.json` (the coverage report 
 `tally.json` (counts the summary files don't hold) in the scan's own folder, and the service
 copies the dataset's count and its coverage verdict into its result in datasets.json
 (results.py). GET /api/datasets/{id}/results[/{scanner}] only read those small files and the
-scanner's summary files. Nothing is deleted. Every other route is read-only, and none of them
+scanner's summary files. Nothing is deleted. The same job also writes each dataset's findings
+index (`index/<dataset id>.jsonl`, one line for each flagged row, and its counts file):
+GET /api/datasets/{id}/results/{scanner}/flagged pages that index, and .../flagged/row opens one
+row, reading one line of its Prepared file at the byte offset the index holds (flagged.py). They
+only read the index and single Prepared lines. Every other route is read-only, and none of them
 ever writes to or deletes original data.
 
 This process never writes to the data it inspects: /api/inspect and
@@ -95,6 +99,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import conversions
 import detect
+import flagged
 import jobs
 import preview
 import registry
@@ -629,6 +634,45 @@ def dataset_result_check(dataset_id: str, scanner: str) -> dict[str, Any]:
     """Run the dataset's result analysis for a scanner again: one CPU SLURM job that checks the
     scan's coverage (and counts, if they aren't there yet). Refused while one is going."""
     return _results_call(results.check_again, dataset_id, scanner)
+
+
+# -------------------------------------------------------------------------
+# A dataset's flagged rows (flagged.py): page through the findings index of a result, and open
+# one row. Read-only.
+# -------------------------------------------------------------------------
+
+
+@app.get("/api/datasets/{dataset_id}/results/{scanner}/flagged")
+def dataset_flagged(
+    dataset_id: str,
+    scanner: str,
+    page: int = 1,
+    page_size: int = flagged.DEFAULT_PAGE_SIZE,
+    reason: str | None = None,
+    name: str | None = None,
+    categories: str | None = None,
+    verdicts: str | None = None,
+) -> dict[str, Any]:
+    """One page of the result's flagged rows, from its findings index. `reason` and `name` (a NER
+    label, a regex category, or the dataset a kept copy is in) filter the others; toxicity
+    takes `categories` and `verdicts` (comma-separated; empty means none) instead."""
+    return _results_call(
+        flagged.flagged_page, dataset_id, scanner, page, page_size, reason, name, categories, verdicts
+    )
+
+
+@app.get("/api/datasets/{dataset_id}/results/{scanner}/flagged/row")
+def dataset_flagged_row(
+    dataset_id: str,
+    scanner: str,
+    file: str,
+    line: int,
+    categories: str | None = None,
+    verdicts: str | None = None,
+) -> dict[str, Any]:
+    """One flagged row: its Prepared text, what was found and where in it, and for a duplicate
+    the copy it matched. `file` and `line` are the row's place in the dataset's Prepared version."""
+    return _results_call(flagged.flagged_row, dataset_id, scanner, file, line, categories, verdicts)
 
 
 # Serves the built frontend (validator/frontend/dist, built by run.sh) at

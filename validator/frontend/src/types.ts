@@ -868,6 +868,9 @@ export interface ScannerResult {
   // Null until the analysis has succeeded.
   coverage: ResultCoverage | null
   rows: { scanned: number | null; with_text: number | null; without_text: number | null }
+  // Whether the flagged rows of this dataset can be listed: the check that makes the index has
+  // finished (GET .../flagged).
+  has_index: boolean
   flagged: ResultFlagged
   breakdowns: ResultBreakdown[]
   facts: ResultFact[]
@@ -906,4 +909,131 @@ export interface CheckAgainResponse {
   scan_id: string
   job_id: string | null
   submit_error: string | null
+}
+
+// ---- Flagged rows ----
+
+// One row of the table of flagged rows (GET .../flagged). `file` and `line` are its place in the
+// dataset's Prepared version.
+export interface FlaggedEntry {
+  file: string
+  line: number
+  preview: string
+  // Why it was flagged: "ner", "regex_pii", "duplicate" or "toxicity_<outcome>".
+  reasons: string[]
+  // NER labels or regex categories in the row, each with how many findings it has.
+  names: Record<string, number>
+  // Toxicity: the parts of the row that count as flagged under the choice of categories and
+  // verdicts: "error", or "<verdict>|<category>" ("<verdict>|" for a verdict with no category).
+  atoms: string[]
+  // Duplicates: the name of the dataset that holds the copy the row matched.
+  kept_in: string | null
+}
+
+// A choice for a filter, with the number of rows that have it.
+export interface FlaggedOption {
+  name: string
+  // What to show instead of the name (a dataset's name, for duplicates).
+  label?: string
+  count: number
+}
+
+export interface FlaggedPage {
+  page: number
+  page_size: number
+  // The rows that pass the filters.
+  total: number
+  has_next: boolean
+  entries: FlaggedEntry[]
+  // Empty for toxicity, whose table follows its categories and verdicts.
+  options: { reasons: FlaggedOption[]; names: FlaggedOption[] }
+}
+
+// What a page of flagged rows is asked for. `categories` and `verdicts` are toxicity's choice
+// (null leaves the scan's own); the other two filter every other scanner's rows.
+export interface FlaggedFilters {
+  reason: string | null
+  name: string | null
+  categories: string[] | null
+  verdicts: string[] | null
+}
+
+// A message of a row, or its `text`: what a scanner read, cut the way the scans cut it.
+export interface RowSegment {
+  // Null for a row's `text`.
+  message_index: number | null
+  role: string
+  text: string
+  length: number
+  truncated: boolean
+}
+
+// A mark in a message's text: an NER span, or a place a regex PII value was found.
+export interface RowHighlight {
+  scanner: 'ner' | 'regex_pii'
+  message_index: number | null
+  start: number
+  end: number
+  // NER
+  label?: string | null
+  tier?: string | null
+  confidence?: number | null
+  matched?: string
+  // Regex PII
+  category?: string | null
+  value?: string | null
+}
+
+// A message the toxicity guard judged. `counts` is whether it counts as flagged under the choice.
+export interface RowMessageFlag {
+  message_index: number | null
+  role: string | null
+  verdict: string | null
+  error: string | null
+  categories: string[]
+  detoxify_score: number | null
+  detoxify_category: string | null
+  counts: boolean
+}
+
+// A finding that couldn't be placed in the text, and why.
+export interface RowUnplaced {
+  scanner: string
+  why: string
+  label?: string | null
+  category?: string | null
+  value?: string | null
+  message_index?: number | null
+  verdict?: string | null
+}
+
+// For a duplicate: the copy it matched.
+export interface KeptCopy {
+  dataset_id: string | null
+  dataset: string | null
+  file: string | null
+  line: number | null
+  run_dir: string | null
+  segments: RowSegment[] | null
+  origin: Origin | null
+  problem: string | null
+}
+
+// GET .../flagged/row.
+export interface FlaggedRowDetail {
+  dataset_id: string
+  scanner: string
+  location: { file: string; line: number }
+  reasons: string[]
+  prepared: { run_dir: string; fingerprint_ok: boolean | null; problem: string | null }
+  // The `_origin` note of the Prepared line, for "Show original".
+  origin: Origin | null
+  segments: RowSegment[] | null
+  highlights: RowHighlight[]
+  message_flags: RowMessageFlag[]
+  unplaced: RowUnplaced[]
+  // More findings than are shown.
+  findings_cut: boolean
+  findings_total: number | null
+  duplicate_of: KeptCopy | null
 }

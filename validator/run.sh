@@ -37,12 +37,15 @@
 #   never one that is going, failed or was cancelled.
 #
 #   Results: when a scan has become a dataset's result, this service submits one more
-#   CPU-only SLURM job for it (within about a minute), which checks the scan's coverage
-#   and counts what the scanner's summary files don't hold. It writes coverage.json and
-#   tally.json in the scan's own folder (and its logs in the scan's _logs), and the service
-#   copies the dataset's count and coverage verdict into its result in datasets.json. The
-#   Results tab's "Check again" submits that job again. Nothing is deleted, and the jobs only
-#   read the Prepared versions and the scan's results.
+#   CPU-only SLURM job for it (within about a minute), which checks the scan's coverage,
+#   counts what the scanner's summary files don't hold, and makes the findings index of each
+#   dataset: one line for each flagged row, which the result page lists and opens. It writes
+#   coverage.json, tally.json and index/ in the scan's own folder (and its logs in the scan's
+#   _logs), and the service copies the dataset's count and coverage verdict into its result
+#   in datasets.json. A result checked before the index existed gets that job again by itself.
+#   The Results tab's "Check again" submits it again. Opening a flagged row reads one line of
+#   the dataset's Prepared version. Nothing is deleted, and the jobs and the pages only read
+#   the Prepared versions and the scan's results.
 #
 #   Dataset registry: registering, editing and unregistering a dataset write
 #   <service root>/registry/datasets.json, where the service root is

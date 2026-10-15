@@ -7,12 +7,13 @@
 #SBATCH --output=logs/slurm/result_analysis_%j.out
 #SBATCH --error=logs/slurm/result_analysis_%j.err
 
-# The coverage check and the counts of one finished scan, CPU only. Every argument is
-# passed straight through to modelsafety/results/analyse.py:
+# The coverage check, the counts and the findings index of one finished scan, CPU only. Every
+# argument is passed straight through to modelsafety/results/analyse.py:
 #
 #   sbatch launchers/slurm/run_result_analysis.sbatch \
 #     --scanner toxicity --root R --results-dir D --out-dir O [--files-from F] \
-#     [--group NAME=PREFIX ...] [--coverage-only]
+#     [--group NAME=PREFIX ...] [--coverage-only] \
+#     [--index-dir I (--index-name NAME | with --group)]
 #
 # --mem, --cpus-per-task and --time are all set above on purpose: this
 # cluster gives a job without --mem the whole node's memory (which leaves the
@@ -20,8 +21,8 @@
 # override every #SBATCH line above on the command line, including
 # --output and --error (the validator UI logs inside the scan's folder).
 #
-# The counts keep every flagged row in memory (a few GB for millions of NER
-# spans), which the 32G above covers.
+# The counts and the index keep every flagged row in memory (a few GB for millions
+# of NER spans), which the 32G above covers.
 
 set -euo pipefail
 

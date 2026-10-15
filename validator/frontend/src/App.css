@@ -1339,6 +1339,57 @@ div.scan-setting > p {
   font-weight: 600;
 }
 
+/* A choice of method: each with a line saying what it is. */
+.scan-method {
+  align-items: flex-start;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.scan-method-text {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A group of checkboxes in a setting, such as the NER categories of one tier. */
+.scan-group {
+  margin: 8px 0 0;
+  padding: 6px 10px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.scan-group legend {
+  padding: 0 4px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.scan-group > p {
+  margin: 0 0 4px;
+}
+
+.scan-group-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 6px;
+}
+
+.scan-labels {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 2px 12px;
+}
+
+.scan-detects {
+  margin: 4px 0;
+  padding-left: 20px;
+  columns: 2;
+}
+
 /* ---- Scan chips (Datasets table) ---- */
 
 .scans-cell .chip {

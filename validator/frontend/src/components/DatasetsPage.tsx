@@ -34,7 +34,7 @@ export default function DatasetsPage() {
 
   const [registering, setRegistering] = useState(false)
   const [converting, setConverting] = useState(false)
-  // The key of the scanner whose dialog is open, or null.
+  // The key (in SCAN_ACTIONS) of the scan action whose dialog is open, or null.
   const [scanning, setScanning] = useState<string | null>(null)
   const [unregistering, setUnregistering] = useState<Dataset | null>(null)
   const [notice, setNotice] = useState<ReactNode>(null)
@@ -162,9 +162,9 @@ export default function DatasetsPage() {
     reload()
   }
 
-  function handleScan(scannerKey: string) {
+  function handleScan(action: string) {
     setNotice(null)
-    setScanning(scannerKey)
+    setScanning(action)
   }
 
   function handleScansStarted(result: ScanSubmitResponse) {
@@ -322,7 +322,7 @@ export default function DatasetsPage() {
 
       {scanning !== null && datasets !== null && (
         <ScanDialog
-          scannerKey={scanning}
+          action={scanning}
           datasets={datasets.filter((dataset) => selected.has(dataset.id))}
           onClose={() => setScanning(null)}
           onStarted={handleScansStarted}

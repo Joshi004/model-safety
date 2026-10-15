@@ -810,7 +810,8 @@ SCANNERS: dict[str, Scanner] = {
                 "Size",
                 list(NER_SIZES),
                 "full",
-                "full uses 8 GPUs on one node for up to 7 days; one_gpu uses one GPU for up to 12 hours.",
+                "full uses every GPU of one node, for a big dataset; one_gpu uses a single GPU. "
+                "What each asks for is shown below.",
             ),
             _ner_label_field(),
         ],

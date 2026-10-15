@@ -3,21 +3,29 @@ import { checkScans, errorMessage, submitScans } from '../api'
 import { formatCount } from '../format'
 import { hrefFor } from '../route'
 import {
+  METHOD_INFO,
+  SCAN_ACTIONS,
   choiceLabel,
   defaultSettings,
   dropNote,
+  groupHelp,
+  groupTitle,
   isToggle,
   modeLabel,
   modeNote,
+  ruleCategoryName,
   scannerLabel,
+  scannerNote,
   visibleFields,
 } from '../scans'
 import type {
   Dataset,
   ScanCheckResponse,
+  ScanSettings,
   ScanSubmitResponse,
   ScanUnitDataset,
   ScannerField,
+  SettingValue,
 } from '../types'
 import { useScanResources } from '../useScanResources'
 import CommandBox from './CommandBox'
@@ -107,7 +115,8 @@ function DatasetItem({
   )
 }
 
-// One setting of the scanner: a checkbox when it is on or off, otherwise a choice of radio buttons.
+// One setting of the scanner: a checkbox when it is on or off, a choice of radio buttons, a box
+// for a number, or checkboxes for a list (grouped, when the scanner groups them).
 function SettingControl({
   scannerKey,
   field,
@@ -116,16 +125,96 @@ function SettingControl({
 }: {
   scannerKey: string
   field: ScannerField
-  value: string
-  onChange: (value: string) => void
+  value: SettingValue
+  onChange: (value: SettingValue) => void
 }) {
   const id = useId()
 
+  if (field.type === 'integer') {
+    // What was typed is sent as it is: the backend turns digits into the number, an empty box
+    // into the default, and refuses anything else in words.
+    const text = value === null ? '' : String(value)
+    return (
+      <div className="scan-setting start-field">
+        <label htmlFor={`${id}-${field.name}`}>{field.label}</label>
+        <input
+          id={`${id}-${field.name}`}
+          type="text"
+          inputMode="numeric"
+          value={text}
+          onChange={(event) => onChange(event.target.value)}
+          autoComplete="off"
+        />
+        <p className="muted small">{field.help}</p>
+      </div>
+    )
+  }
+
+  if (field.type === 'multi') {
+    const selected = new Set(Array.isArray(value) ? value : field.default)
+    // In the order of the field's choices, so the same selection is always the same value.
+    const choose = (next: Set<string>) => onChange(field.choices.filter((choice) => next.has(choice)))
+    const setGroup = (choices: string[], on: boolean) => {
+      const next = new Set(selected)
+      for (const choice of choices) {
+        if (on) next.add(choice)
+        else next.delete(choice)
+      }
+      choose(next)
+    }
+    const groups = field.groups ?? [{ key: '', choices: field.choices }]
+    return (
+      <fieldset className="scan-setting">
+        <legend>{field.label}</legend>
+        <p className="muted small">{field.help}</p>
+        {groups.map((group) => {
+          const help = groupHelp(group.key)
+          const count = group.choices.filter((choice) => selected.has(choice)).length
+          return (
+            <fieldset key={group.key} className="scan-group">
+              {group.key !== '' && <legend>{groupTitle(group.key)}</legend>}
+              {help !== null && <p className="muted small">{help}</p>}
+              <div className="scan-group-tools small">
+                <span className="muted">
+                  {count} of {group.choices.length} chosen
+                </span>
+                <button type="button" className="link-button" onClick={() => setGroup(group.choices, true)}>
+                  All
+                </button>
+                <button type="button" className="link-button" onClick={() => setGroup(group.choices, false)}>
+                  None
+                </button>
+              </div>
+              <div className="scan-labels">
+                {group.choices.map((choice) => (
+                  <label key={choice} className="scan-choice">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(choice)}
+                      onChange={(event) => {
+                        const next = new Set(selected)
+                        if (event.target.checked) next.add(choice)
+                        else next.delete(choice)
+                        choose(next)
+                      }}
+                    />
+                    {choiceLabel(scannerKey, field.name, choice)}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )
+        })}
+      </fieldset>
+    )
+  }
+
+  const current = typeof value === 'string' ? value : field.default
   if (isToggle(field)) {
     return (
       <div className="scan-setting">
         <label className="scan-choice">
-          <input type="checkbox" checked={value === '1'} onChange={(event) => onChange(event.target.checked ? '1' : '0')} />
+          <input type="checkbox" checked={current === '1'} onChange={(event) => onChange(event.target.checked ? '1' : '0')} />
           {field.label}
         </label>
         <p className="muted small">{field.help}</p>
@@ -137,7 +226,7 @@ function SettingControl({
       <legend>{field.label}</legend>
       {field.choices.map((choice) => (
         <label key={choice} className="scan-choice">
-          <input type="radio" name={`${id}-${field.name}`} checked={value === choice} onChange={() => onChange(choice)} />
+          <input type="radio" name={`${id}-${field.name}`} checked={current === choice} onChange={() => onChange(choice)} />
           {choiceLabel(scannerKey, field.name, choice)}
         </label>
       ))}
@@ -146,25 +235,33 @@ function SettingControl({
   )
 }
 
-// "Find duplicates" and the other scans: the dialog every scan is started from. It is built
-// from what GET /api/scanners says about the scanner, and checks (POST /api/scans/check)
-// whenever a choice changes, so what it shows (what each dataset needs first, the cost, the
-// exact commands, what stops the start) is what the start will do. Start is only possible
-// when the check of the choices as they are now has passed, and anything that will be deleted
-// is asked about first.
+// "Find duplicates", "Scan for PII" and the other scans: the dialog every scan is started from.
+// It is built from what GET /api/scanners says about the scanner, and checks
+// (POST /api/scans/check) whenever a choice changes, so what it shows (what each dataset needs
+// first, the cost, the exact commands, what stops the start) is what the start will do. Start
+// is only possible when the check of the choices as they are now has passed, and anything that
+// will be deleted is asked about first.
+//
+// An action can be one scanner or a choice between several (PII is the NER model or rules):
+// the choice is the "Method". Each method keeps its own settings and resource boxes.
 //
 // Everything shown is plain text.
 export default function ScanDialog({
-  scannerKey,
+  action,
   datasets,
   onClose,
   onStarted,
 }: {
-  scannerKey: string
+  // The key of the action in SCAN_ACTIONS. One that isn't there is taken for a scanner's key.
+  action: string
   datasets: Dataset[]
   onClose: () => void
   onStarted: (result: ScanSubmitResponse) => void
 }) {
+  const info = SCAN_ACTIONS[action] ?? { title: 'Scan', scannerKeys: [action] }
+  // Null until the user picks: the first method of the action.
+  const [methodChoice, setMethodChoice] = useState<string | null>(null)
+  const scannerKey = methodChoice ?? info.scannerKeys[0]
   const resources = useScanResources(scannerKey)
   const scanner = resources.scanner
 
@@ -174,8 +271,9 @@ export default function ScanDialog({
   const [again, setAgain] = useState<Set<string>>(new Set())
   // Null until the user picks: the scanner's own default applies.
   const [modeChoice, setModeChoice] = useState<string | null>(null)
-  // Only the settings the user changed; the others are the scanner's defaults.
-  const [overrides, setOverrides] = useState<Record<string, string>>({})
+  // Only the settings the user changed, by scanner; the others are the scanner's defaults.
+  const [overridesByScanner, setOverridesByScanner] = useState<Record<string, ScanSettings>>({})
+  const overrides = overridesByScanner[scannerKey] ?? {}
   const [confirmGpu, setConfirmGpu] = useState(false)
 
   // The newest answer of the check, and the choices (`key`) it was for.
@@ -192,14 +290,14 @@ export default function ScanDialog({
   })
 
   const mode = scanner !== null && scanner.modes !== null ? (modeChoice ?? scanner.default_mode) : null
-  const settings: Record<string, string> = scanner === null ? {} : { ...defaultSettings(scanner), ...overrides }
+  const settings: ScanSettings = scanner === null ? {} : { ...defaultSettings(scanner), ...overrides }
   const items = rows.map((dataset) => ({ id: dataset.id, reconvert: again.has(dataset.id) }))
   // A scan of one dataset is always that dataset on its own, whatever the mode says.
   const effectiveMode = mode !== null && rows.length <= 1 ? 'within' : mode
   const modeText = modeNote(scannerKey, effectiveMode, rows.length)
   const dropText = dropNote(scannerKey)
   const requestKey = JSON.stringify(
-    scanner === null || rows.length === 0 ? null : [items, mode, settings, resources.requestResources],
+    scanner === null || rows.length === 0 ? null : [scannerKey, items, mode, settings, resources.requestResources],
   )
 
   // Checks again whenever a choice or a resource changes. The first check is immediate;
@@ -307,7 +405,16 @@ export default function ScanDialog({
     }
   }
 
-  const title = `Scan for ${(scanner?.label ?? scannerLabel(scannerKey)).toLowerCase()}`
+  // Another method has its own settings, cost and commands, and a GPU confirmation was for
+  // the cost of the one before: ask again.
+  function chooseMethod(key: string) {
+    if (key === scannerKey) return
+    setMethodChoice(key)
+    setModeChoice(null)
+    setConfirmGpu(false)
+    setChecked(null)
+    setCheckError(null)
+  }
 
   function startLabel(): string {
     if (starting) return 'Starting…'
@@ -352,7 +459,27 @@ export default function ScanDialog({
   }
 
   return (
-    <Dialog key="main" title={title} onClose={onClose} busy={starting} wide>
+    <Dialog key="main" title={info.title} onClose={onClose} busy={starting} wide>
+      {info.scannerKeys.length > 1 && (
+        <fieldset className="scan-setting">
+          <legend>Method</legend>
+          {info.scannerKeys.map((key) => (
+            <label key={key} className="scan-choice scan-method">
+              <input
+                type="radio"
+                name="scan-method"
+                checked={scannerKey === key}
+                onChange={() => chooseMethod(key)}
+                disabled={starting}
+              />
+              <span className="scan-method-text">
+                <strong>{METHOD_INFO[key]?.title ?? scannerLabel(key)}</strong>
+                {METHOD_INFO[key] !== undefined && <span className="muted small">{METHOD_INFO[key].blurb}</span>}
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      )}
       {resources.response === null && resources.error === null && <p className="muted">Loading…</p>}
       {resources.response === null && resources.error !== null && (
         <div className="banner banner-error" role="alert">
@@ -410,9 +537,26 @@ export default function ScanDialog({
               scannerKey={scannerKey}
               field={field}
               value={settings[field.name] ?? field.default}
-              onChange={(value) => setOverrides((current) => ({ ...current, [field.name]: value }))}
+              onChange={(value) =>
+                setOverridesByScanner((current) => ({
+                  ...current,
+                  [scannerKey]: { ...current[scannerKey], [field.name]: value },
+                }))
+              }
             />
           ))}
+
+          {scanner.detects.length > 0 && (
+            <div className="scan-setting">
+              <h3 className="scan-heading">What it looks for</h3>
+              <ul className="scan-detects small">
+                {scanner.detects.map((category) => (
+                  <li key={category}>{ruleCategoryName(category)}</li>
+                ))}
+              </ul>
+              {scannerNote(scannerKey) !== null && <p className="small">{scannerNote(scannerKey)}</p>}
+            </div>
+          )}
 
           {modeText !== null && <p className="small">{modeText}</p>}
           {dropText !== null && <p className="small">{dropText}</p>}
@@ -427,10 +571,11 @@ export default function ScanDialog({
               onResourcesChange={resources.change}
               jobWord="Scanning"
               usesGpu={scanner.gpu}
+              partitionOnly={scanner.resources_fixed}
             />
             <p className="muted small">
-              These are the resources of the scan. A conversion that has to run first uses the default conversion
-              resources.
+              {scanner.resources_fixed ? "The partition is the scan's." : 'These are the resources of the scan.'} A
+              conversion that has to run first uses the default conversion resources.
             </p>
             {converting.length === 0 && units.every((unit) => unit.command_text === null) && (
               <p className="muted small">The commands appear here once the check has passed.</p>

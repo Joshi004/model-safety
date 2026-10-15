@@ -524,6 +524,23 @@ def _filtered_name(parent_name: str, removed: int, taken: set[str]) -> str:
     raise RegistryError(f"Couldn't find a free name for a filtered version of '{parent_name}'.")
 
 
+def filtered_name(parent_id: str, removed_rows: int) -> str:
+    """The name `register_filtered` would give now. Changes nothing: for the confirmation."""
+    with _LOCK:
+        records = _read_registry()["datasets"]
+        parent = records[_index_of(records, parent_id)]
+        taken = {other["name"].lower() for other in records if other["team"] == parent["team"]}
+        return _filtered_name(parent["name"], removed_rows, taken)
+
+
+def filtered_without_version() -> list[str]:
+    """The ids of the filtered datasets that have no Prepared version yet: their filter job is
+    going, or it failed."""
+    with _LOCK:
+        records = _read_registry()["datasets"]
+    return [record["id"] for record in records if record.get("parent") and record.get("prepared") is None]
+
+
 def register_filtered(parent_id: str, removed_rows: int, description: str) -> dict[str, Any]:
     """Register the dataset a drop will make (D11): in the parent's team, named
     "<parent name>, filtered (N removed)", with `parent` set. It copies the parent's path and

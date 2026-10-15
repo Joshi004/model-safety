@@ -69,7 +69,12 @@ from modelsafety.data_screening.pii.regex.pii_output import (  # noqa: E402
     SUCCESS_FILENAME as PII_SUCCESS_FILENAME,
     SUMMARY_FILENAME as PII_SUMMARY_FILENAME,
 )
-from modelsafety.filter.rules import GUARD_ERROR_CHOICES, TOXICITY_REMOVABLE_VERDICTS  # noqa: E402
+from modelsafety.filter.rules import (  # noqa: E402
+    DROP_LIST_REASON,
+    GUARD_ERROR_CHOICES,
+    MAX_DROP_LIST_REASONS,
+    TOXICITY_REMOVABLE_VERDICTS,
+)
 
 # The text of one message as the NER scan cut it: its spans' start and end are positions in it.
 from modelsafety.data_screening.pii.model.common import content_text, label_tier  # noqa: E402
@@ -141,6 +146,8 @@ __all__ = [
     "PII_SUMMARY_FILENAME",
     "GUARD_ERROR_CHOICES",
     "TOXICITY_REMOVABLE_VERDICTS",
+    "DROP_LIST_REASON",
+    "MAX_DROP_LIST_REASONS",
     "CHAIN_LAYOUT",
     "ChainError",
     "chain_folders",

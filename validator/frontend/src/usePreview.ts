@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { errorMessage, inspectPath, openRun, runPreview } from './api'
-import type { InspectResult, PreviewRequest, PreviewResponse, RunResponse } from './types'
+import type { AnyRunResponse, InspectResult, PreviewRequest, PreviewResponse } from './types'
 
 interface Outcome<T> {
   key: string
@@ -54,7 +54,7 @@ export function useInspect(path: string | null) {
   return useRequest<InspectResult>(path, () => inspectPath(path as string))
 }
 
-// POST /api/run: the summary of a Prepared version's folder. Pass null to load nothing.
+// POST /api/run: the summary of a version's folder (a Prepared run or, for a filtered dataset, a filter run). Pass null to load nothing.
 export function useRun(runDir: string | null) {
-  return useRequest<RunResponse>(runDir, () => openRun(runDir as string))
+  return useRequest<AnyRunResponse>(runDir, () => openRun(runDir as string))
 }

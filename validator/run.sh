@@ -47,6 +47,18 @@
 #   the dataset's Prepared version. Nothing is deleted, and the jobs and the pages only read
 #   the Prepared versions and the scan's results.
 #
+#   Dropping rows: "Review and drop" on a dataset's result pages turns the flagged rows you
+#   chose into a filtered version, a new dataset in the same team. It re-reads the rows from the
+#   scans' findings indexes, marks the dataset's current Prepared version as kept (so "convert
+#   again" sets it aside instead of deleting it), registers the new dataset in datasets.json,
+#   writes <service root>/datasets/<new id>/drop_list.jsonl and submits one CPU-only SLURM job
+#   (modelsafety/filter/filter_rows.py with --drop-list) that copies the other rows byte for
+#   byte into .../<new id>/prepared/<version id>/ (record in .../_jobs/filter.json, logs in
+#   .../_logs). When the job has finished and its checks passed, that folder becomes the new
+#   dataset's Prepared version, so it can be scanned like any other. Cancel runs scancel on
+#   that job. The dataset the rows were dropped from, its Prepared rows and its results are
+#   never changed, and a dataset that has filtered versions can't be unregistered.
+#
 #   Dataset registry: registering, editing and unregistering a dataset write
 #   <service root>/registry/datasets.json, where the service root is
 #   $VALIDATOR_SERVICE_ROOT, or <repo>/output/service. The first start with no

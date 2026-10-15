@@ -43,6 +43,8 @@ export default function UnregisterDialog({
       </ul>
       <p>
         The original data at <code>{dataset.path}</code> is not touched.
+        {dataset.parent !== null &&
+          ` This is a filtered version, so the dataset it was made from keeps its converted data and its results.`}
       </p>
 
       {error !== null && (

@@ -19,9 +19,15 @@ Nothing is changed in the input folder. The filter refuses to start unless every
 run under it finished, every scanner result passes the coverage checks for
 exactly those runs, and every finding points at a line whose fingerprint matches.
 
+``--drop-list FILE`` removes exactly the rows a list names (one JSON line each: file, line,
+fingerprint, and the scanner they came from, see ``rules.read_drop_list``), with the reason
+``manual``. It can stand alone, or be combined with scanner results. It is held to the same
+checks: every line must be a line of a finished run, and its fingerprint must match.
+
 Usage:
     python3 modelsafety/filter/filter_rows.py --input-root R --output-root O \\
         [--pii-run-dir D] [--ner-run-dir D] [--toxicity-run-dir D] [--dedup-run-dir D] \\
+        [--drop-list FILE] \\
         [--regex-ignore-category C] [--ner-ignore-label L] [--toxicity-remove-verdict V] \\
         [--toxicity-guard-errors remove|refuse] [--dedup-mode global|cross]
 
@@ -67,6 +73,7 @@ from modelsafety.contract.run_identity import (  # noqa: E402
 from modelsafety.data_screening.pii.regex.pii_output import PII_CATEGORIES  # noqa: E402
 from modelsafety.filter.rules import (  # noqa: E402
     DEDUP_MODES,
+    DROP_LIST,
     GUARD_ERROR_CHOICES,
     READERS,
     REASON_SCANNERS,
@@ -75,6 +82,7 @@ from modelsafety.filter.rules import (  # noqa: E402
     FindingsError,
     FindingsRead,
     HitIndex,
+    read_drop_list,
 )
 from modelsafety.results.coverage import LABELS, LOADERS, SCANNERS, check_scanner  # noqa: E402
 
@@ -91,6 +99,11 @@ RESULTS_OPTIONS = {
     "toxicity": "--toxicity-run-dir",
     "dedup": "--dedup-run-dir",
 }
+
+
+def _label(name: str) -> str:
+    """What a message calls a source of findings: a scanner, or the drop list."""
+    return "drop list" if name == DROP_LIST else LABELS[name]
 
 
 class FilterError(RuntimeError):
@@ -127,6 +140,8 @@ class FilterPlan:
     scanners: dict[str, dict[str, Any]]
     index: HitIndex
     reads: dict[str, FindingsRead]
+    # {"path", "sha256"} of the drop list, or None when none was given.
+    drop_list: dict[str, str] | None = None
 
 
 @dataclass
@@ -155,7 +170,9 @@ def _overlaps(first: Path, second: Path) -> bool:
     return first == second or first in second.parents or second in first.parents
 
 
-def _path_problems(input_root: Path, output_root: Path, results: dict[str, Path]) -> list[str]:
+def _path_problems(
+    input_root: Path, output_root: Path, results: dict[str, Path], drop_list: Path | None = None
+) -> list[str]:
     problems = []
     if not input_root.is_dir():
         problems.append(f"The input folder isn't a directory: {input_root}")
@@ -164,10 +181,17 @@ def _path_problems(input_root: Path, output_root: Path, results: dict[str, Path]
             f"The output folder ({output_root}) and the input folder ({input_root}) must not be "
             "the same, or inside one another."
         )
+    if drop_list is not None:
+        if not drop_list.is_file():
+            problems.append(f"The drop list isn't a file: {drop_list}")
+        if _overlaps(output_root, drop_list):
+            problems.append(
+                f"The drop list ({drop_list}) must not be the output folder ({output_root}), or inside it."
+            )
     for name, folder in results.items():
         if _overlaps(output_root, folder):
             problems.append(
-                f"The output folder ({output_root}) and the {LABELS[name]} results ({folder}) must "
+                f"The output folder ({output_root}) and the {_label(name)} results ({folder}) must "
                 "not be the same, or inside one another."
             )
     return problems
@@ -198,17 +222,25 @@ def _run_plans(selection: ScanSelection, input_root: Path, output_root: Path) ->
 
 
 def _identity(
-    run: RunPlan, input_root: Path, rules: FilterRules, scanners: dict[str, dict[str, Any]]
+    run: RunPlan,
+    input_root: Path,
+    rules: FilterRules,
+    scanners: dict[str, dict[str, Any]],
+    drop_list: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    settings = {
+        "scan_root": str(input_root),
+        "parent_run": run.run,
+        "rules": rules.to_dict(),
+        "scanner_results": scanners,
+    }
+    if drop_list is not None:
+        # Only when given, so a filter run without one keeps the identity it always had.
+        settings["drop_list"] = drop_list
     return make_identity(
         tool=FILTER_ROWS_IDENTITY_TOOL,
         mode=None,
-        settings={
-            "scan_root": str(input_root),
-            "parent_run": run.run,
-            "rules": rules.to_dict(),
-            "scanner_results": scanners,
-        },
+        settings=settings,
         input_root=str(run.parent_dir),
         input_files=sorted(
             (
@@ -226,7 +258,11 @@ def _identity(
 
 
 def _run_problems(
-    runs: list[RunPlan], input_root: Path, rules: FilterRules, scanners: dict[str, dict[str, Any]]
+    runs: list[RunPlan],
+    input_root: Path,
+    rules: FilterRules,
+    scanners: dict[str, dict[str, Any]],
+    drop_list: dict[str, str] | None = None,
 ) -> list[str]:
     """Each run's output folder is empty, or already holds this same filter run."""
     problems = []
@@ -239,7 +275,7 @@ def _run_problems(
                 )
         try:
             state, differences = compare_run_identity(
-                run.output_dir, _identity(run, input_root, rules, scanners)
+                run.output_dir, _identity(run, input_root, rules, scanners, drop_list)
             )
         except RunIdentityError as exc:
             problems.append(str(exc))
@@ -276,7 +312,7 @@ def _count_problems(
     if not off:
         return []
     return [
-        f"{LABELS[name]}: the findings file doesn't match the scan's own count of findings for "
+        f"{_label(name)}: the findings file doesn't match the scan's own count of findings for "
         f"{len(off):,} file(s): {_listed(off, len(off))}."
     ]
 
@@ -286,10 +322,11 @@ def check_filter_inputs(
     output_root: str | Path,
     results_dirs: dict[str, str | Path | None],
     rules: FilterRules,
+    drop_list: str | Path | None = None,
 ) -> FilterPlan:
     """Check everything that must hold before a row is written, and read every
-    scanner's findings. Returns the plan, or raises `FilterError` naming every
-    problem found at that point. Writes nothing."""
+    scanner's findings and the drop list. Returns the plan, or raises `FilterError`
+    naming every problem found at that point. Writes nothing."""
     root = Path(input_root).expanduser().resolve()
     output = Path(output_root).expanduser().resolve()
     unknown = sorted(set(results_dirs) - set(SCANNERS))
@@ -300,13 +337,16 @@ def check_filter_inputs(
         for name, folder in results_dirs.items()
         if folder is not None
     }
+    drop = Path(drop_list).expanduser().resolve() if drop_list is not None else None
 
     problems = rules.validate()
-    if not given:
-        problems.append("No scanner results folder was given, so there is nothing to filter by.")
-    problems.extend(_path_problems(root, output, given))
+    if not given and drop is None:
+        problems.append("No scanner results folder and no drop list was given, so there is nothing to filter by.")
+    problems.extend(_path_problems(root, output, given, drop))
     if problems:
         raise FilterError(problems)
+    # Read once here, so the identity pins the exact list that is filtered by.
+    drop_info = {"path": str(drop), "sha256": file_sha256(drop)} if drop is not None else None
 
     try:
         selection = select_scan_files(root)
@@ -339,7 +379,7 @@ def check_filter_inputs(
 
     scanners = {name: _scanner_info(name, folder) for name, folder in given.items()}
     runs = _run_plans(selection, root, output)
-    problems.extend(_run_problems(runs, root, rules, scanners))
+    problems.extend(_run_problems(runs, root, rules, scanners, drop_info))
     if problems:
         raise FilterError(problems)
 
@@ -369,10 +409,19 @@ def check_filter_inputs(
                 f"  Guard errors or verdicts not given: {sum(read.details['guard_errors_by_slice'].values()):,}.",
                 flush=True,
             )
+    if drop is not None:
+        print(f"Reading the drop list {drop} ...", flush=True)
+        try:
+            read = read_drop_list(drop, index, rows_by_file)
+        except FindingsError as exc:
+            raise FilterError(f"{_label(DROP_LIST)}: {exc}") from exc
+        reads[DROP_LIST] = read
+        problems.extend(read.problems)
+        print(f"  {read.hit_findings:,} line(s) in the drop list.", flush=True)
     problems.extend(index.conflicts[:MAX_LISTED])
     if problems:
         raise FilterError(problems)
-    return FilterPlan(root, output, rules, selection, runs, scanners, index, reads)
+    return FilterPlan(root, output, rules, selection, runs, scanners, index, reads, drop_info)
 
 
 # -------------------------------------------------------------------------
@@ -433,9 +482,13 @@ def _filter_file(
             fingerprint = line_fingerprint(raw)
             said = expected.get(number)
             if said is not None and said[0] != fingerprint:
+                if said[1] == DROP_LIST:
+                    who, made = "the drop list says", "The drop list was made from"
+                else:
+                    who, made = f"the {LABELS[said[1]]} results say", "The results were made from"
                 raise FilterError(
-                    f"{item.path} line {number}: the {LABELS[said[1]]} results say its fingerprint is "
-                    f"{said[0]}, but the line is {fingerprint}. The results were made from a "
+                    f"{item.path} line {number}: {who} its fingerprint is "
+                    f"{said[0]}, but the line is {fingerprint}. {made} a "
                     "different version of this line."
                 )
             reasons = hits.get(number)
@@ -570,7 +623,9 @@ def _filter_run(plan: FilterPlan, run: RunPlan) -> dict[str, Any]:
     `summary["checks"]["passed"]` (then `_SUCCESS` is there)."""
     output_dir = run.output_dir
     try:
-        check_run_identity(output_dir, _identity(run, plan.input_root, plan.rules, plan.scanners))
+        check_run_identity(
+            output_dir, _identity(run, plan.input_root, plan.rules, plan.scanners, plan.drop_list)
+        )
     except RunIdentityError as exc:
         raise FilterError(str(exc)) from exc
     # A marker or summary from an earlier try must not look like this run's.
@@ -668,6 +723,9 @@ def _filter_run(plan: FilterPlan, run: RunPlan) -> dict[str, Any]:
         },
         "checks": {"passed": not failures, "failures": failures, "warnings": warnings},
     }
+    if plan.drop_list is not None:
+        # Only when given: a run without a drop list keeps the summary it always had.
+        summary["drop_list"] = {**plan.drop_list, "entries": plan.reads[DROP_LIST].hit_findings}
     _write_json_atomic(output_dir / SUMMARY_FILENAME, summary)
     if summary["checks"]["passed"]:
         (output_dir / SUCCESS_FILENAME).touch()
@@ -679,16 +737,18 @@ def filter_runs(
     output_root: str | Path,
     results_dirs: dict[str, str | Path | None],
     rules: FilterRules | None = None,
+    drop_list: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     """Filter every run under `input_root` into `output_root`.
 
     `results_dirs` is ``{scanner: results folder or None}`` with the scanners
     named as in ``modelsafety/results/coverage.py`` (regex_pii, ner, toxicity,
-    dedup). Returns each run's `summary.json` as a dict. It stops after the
-    first run whose checks failed, which is the last item. Raises `FilterError`
-    when it refuses to start or can't write a run.
+    dedup). `drop_list` is a file of rows to remove too (see `rules.read_drop_list`);
+    either that or a scanner's results is needed. Returns each run's `summary.json`
+    as a dict. It stops after the first run whose checks failed, which is the last
+    item. Raises `FilterError` when it refuses to start or can't write a run.
     """
-    plan = check_filter_inputs(input_root, output_root, results_dirs, rules or FilterRules())
+    plan = check_filter_inputs(input_root, output_root, results_dirs, rules or FilterRules(), drop_list)
     summaries = []
     for run in plan.runs:
         print(f"Filtering {run.run} ({len(run.files):,} files) ...", flush=True)
@@ -728,8 +788,14 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument(
             RESULTS_OPTIONS[name],
             type=Path,
-            help=f"{LABELS[name]} results made on the input folder. At least one scanner is required.",
+            help=f"{LABELS[name]} results made on the input folder. At least one scanner, or --drop-list, is required.",
         )
+    parser.add_argument(
+        "--drop-list",
+        type=Path,
+        help="A JSONL file of rows to remove, each with its file, line, fingerprint and the scanner it "
+        "came from. They are removed with the reason 'manual'. Can be used alone.",
+    )
     parser.add_argument(
         "--regex-ignore-category",
         action="append",
@@ -778,7 +844,7 @@ def main(argv: list[str] | None = None) -> int:
         "dedup": args.dedup_run_dir,
     }
     try:
-        summaries = filter_runs(args.input_root, args.output_root, results_dirs, rules)
+        summaries = filter_runs(args.input_root, args.output_root, results_dirs, rules, args.drop_list)
     except FilterError as exc:
         print("error:", file=sys.stderr)
         for problem in exc.problems:

@@ -12,8 +12,14 @@ Rules this module keeps:
   unregistered, after checking the id and that the folder really is that path.
   (conversions.py deletes the Prepared version folders inside it, with its own checks.)
 * `prepared` (the current Prepared version) and `kept_versions` (versions kept on disk
-  after a re-conversion) are only changed by `set_prepared` and `clear_prepared`, which
-  conversions.py calls. They are not part of `update`.
+  after a re-conversion) are only changed by `set_prepared`, `clear_prepared` and `mark_kept`,
+  which conversions.py and filters.py call. They are not part of `update`.
+* `parent` is only set by `register_filtered` (filters.py): a filtered dataset is a new
+  dataset made by dropping rows from its parent's Prepared version. It copies the parent's
+  `path` and `conversion` (so its overview and original rows still work) but is never
+  converted, so it is left out of the "same input twice" check, and its `conversion` can't be
+  edited. A dataset that has filtered versions can't be unregistered: they trace their rows
+  back through its Prepared version.
 * `results` (the scan that is the dataset's current result, for each scanner) is only
   changed by `set_result`, which scans.py calls, and emptied by `clear_prepared`: every
   result was made from the version that is being replaced. `update_result` (results.py)
@@ -55,7 +61,9 @@ TEAMS = [
 ]
 
 DATASET_ID = re.compile(r"^ds-[0-9a-f]{12}$")
-NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$")
+# A filtered version is named "<parent name>, filtered (N removed)" (D11), so the rule has to
+# allow ',' '(' and ')'. A name only ever reaches a command through `jobs.slug`.
+NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._,()-]{0,99}$")
 SPLIT = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 HF_CONFIG = re.compile(r"^[A-Za-z0-9_.-]{0,100}$")
 
@@ -66,6 +74,9 @@ MAX_FILE_CHARS = 500
 MAX_SETTING_CHARS = 200
 MAX_MAP_ENTRIES = 50
 MAX_COLUMN_LIST = 100
+MAX_CHILDREN_LISTED = 5
+# How many numbered names ("... 2", "... 3") are tried before giving up on a filtered version's name.
+MAX_NAME_ATTEMPTS = 1000
 
 CONVERSION_FIELDS = {"input_type", "file", "split", "hf_config", "map", "require", "exclude_metadata"}
 UPDATABLE_FIELDS = ("team", "name", "description", "notes", "conversion")
@@ -195,7 +206,7 @@ def make_record(
     created_at: str,
 ) -> dict[str, Any]:
     """One registry entry. `prepared` is set when a conversion finishes (Phase 3), `results`
-    when a scan finishes (Phase 4) and `parent` by Phase 10."""
+    when a scan finishes (Phase 4) and `parent` by `register_filtered` (Phase 10)."""
     return {
         "id": dataset_id,
         "team": team,
@@ -230,7 +241,7 @@ def _name(value: Any) -> str:
     name = value.strip()
     if NAME.fullmatch(name) is None:
         raise RegistryError(
-            "The name must be 1 to 100 characters: letters, digits, spaces, '.', '_' and '-', "
+            "The name must be 1 to 100 characters: letters, digits, spaces, '.', '_', '-', ',', '(' and ')', "
             "and it must start with a letter or digit."
         )
     return name
@@ -398,7 +409,8 @@ def _check_input_free(
 ) -> None:
     key = _input_key(path, conversion)
     for other in records:
-        if other["id"] == ignore_id:
+        # A filtered dataset shares its parent's path on purpose, and is never converted.
+        if other["id"] == ignore_id or other.get("parent"):
             continue
         if _input_key(other["path"], other.get("conversion")) == key:
             split = f" (split {key[1]})" if key[1] else ""
@@ -456,6 +468,15 @@ def dataset_names() -> dict[str, str]:
     return {record["id"]: record["name"] for record in records}
 
 
+def filtered_versions(dataset_id: str) -> list[dict[str, Any]]:
+    """The datasets made from this one by dropping rows (their `parent` is it), newest first,
+    as the registry has them. A malformed or unknown id gives an empty list."""
+    with _LOCK:
+        records = _read_registry()["datasets"]
+    children = [record for record in records if record.get("parent") == dataset_id]
+    return sorted(children, key=lambda record: record["created_at"], reverse=True)
+
+
 # -------------------------------------------------------------------------
 # Changing the registry
 # -------------------------------------------------------------------------
@@ -491,6 +512,65 @@ def register(fields: dict[str, Any]) -> dict[str, Any]:
     return _with_availability(record)
 
 
+def _filtered_name(parent_name: str, removed: int, taken: set[str]) -> str:
+    """D11's name, "<parent name>, filtered (N removed)", cut short enough to fit the name rule,
+    and numbered (" 2", " 3", ...) if the team already has a dataset of that name."""
+    suffix = f", filtered ({removed} removed)"
+    for attempt in range(1, MAX_NAME_ATTEMPTS + 1):
+        tail = suffix if attempt == 1 else f"{suffix} {attempt}"
+        candidate = parent_name[: NAME_MAX_CHARS - len(tail)].rstrip() + tail
+        if candidate.lower() not in taken:
+            return _name(candidate)
+    raise RegistryError(f"Couldn't find a free name for a filtered version of '{parent_name}'.")
+
+
+def filtered_name(parent_id: str, removed_rows: int) -> str:
+    """The name `register_filtered` would give now. Changes nothing: for the confirmation."""
+    with _LOCK:
+        records = _read_registry()["datasets"]
+        parent = records[_index_of(records, parent_id)]
+        taken = {other["name"].lower() for other in records if other["team"] == parent["team"]}
+        return _filtered_name(parent["name"], removed_rows, taken)
+
+
+def filtered_without_version() -> list[str]:
+    """The ids of the filtered datasets that have no Prepared version yet: their filter job is
+    going, or it failed."""
+    with _LOCK:
+        records = _read_registry()["datasets"]
+    return [record["id"] for record in records if record.get("parent") and record.get("prepared") is None]
+
+
+def register_filtered(parent_id: str, removed_rows: int, description: str) -> dict[str, Any]:
+    """Register the dataset a drop will make (D11): in the parent's team, named
+    "<parent name>, filtered (N removed)", with `parent` set. It copies the parent's path and
+    conversion settings, so its overview and original rows work, but has no Prepared version
+    until the filter job has finished (filters.py sets it with `set_prepared`)."""
+    if isinstance(removed_rows, bool) or not isinstance(removed_rows, int) or removed_rows < 1:
+        raise RegistryError("A filtered version has to drop at least one row.")
+    with _LOCK:
+        data = _read_registry()
+        records = data["datasets"]
+        parent = records[_index_of(records, parent_id)]
+        if not isinstance(parent.get("prepared"), dict):
+            raise RegistryError(f"'{parent['name']}' isn't converted, so no rows can be dropped from it.")
+        taken = {other["name"].lower() for other in records if other["team"] == parent["team"]}
+        record = make_record(
+            dataset_id=new_id({item["id"] for item in records}),
+            team=parent["team"],
+            name=_filtered_name(parent["name"], removed_rows, taken),
+            path=parent["path"],
+            description=_optional_text(description, "description", MAX_DESCRIPTION),
+            notes="",
+            conversion=json.loads(json.dumps(parent["conversion"])),
+            created_at=_now(),
+        )
+        record["parent"] = parent_id
+        records.append(record)
+        _save(data)
+    return _with_availability(record)
+
+
 def update(dataset_id: str, fields: dict[str, Any]) -> dict[str, Any]:
     """Change team, name, description, notes or conversion of a dataset. Only the keys
     in `fields` change; `conversion` is replaced as a whole (None clears it)."""
@@ -507,6 +587,11 @@ def update(dataset_id: str, fields: dict[str, Any]) -> dict[str, Any]:
         records = data["datasets"]
         index = _index_of(records, dataset_id)
         record = records[index]
+        if "conversion" in fields and record.get("parent"):
+            raise RegistryError(
+                f"'{record['name']}' is a filtered version, which is never converted, so its conversion "
+                "settings can't be changed."
+            )
         changed = dict(record)
 
         if "team" in fields:
@@ -572,6 +657,25 @@ def clear_prepared(dataset_id: str, version_id: str) -> bool:
         if current.get("kept"):
             record["kept_versions"] = [*(record.get("kept_versions") or []), current]
         _save(data)
+    return True
+
+
+def mark_kept(dataset_id: str, version_id: str) -> bool:
+    """Mark the dataset's current Prepared version `kept`: a filtered dataset is being made from
+    it, so "convert again" sets the folder aside instead of deleting it (D6). Returns whether
+    `version_id` is the current version (False: it changed, and nothing was marked). Called by
+    filters.py when a drop starts, before the filter job can read the folder. It stays marked
+    for good: unregistering the filtered dataset doesn't unmark it."""
+    with _LOCK:
+        data = _read_registry()
+        records = data["datasets"]
+        record = records[_index_of(records, dataset_id)]
+        current = record.get("prepared")
+        if not isinstance(current, dict) or current.get("version_id") != version_id:
+            return False
+        if not current.get("kept"):
+            current["kept"] = True
+            _save(data)
     return True
 
 
@@ -664,6 +768,15 @@ def unregister(dataset_id: str) -> dict[str, Any]:
         records = data["datasets"]
         index = _index_of(records, dataset_id)
         record = records[index]
+
+        children = [other["name"] for other in records if other.get("parent") == dataset_id]
+        if children:
+            listed = ", ".join(f"'{name}'" for name in children[:MAX_CHILDREN_LISTED])
+            more = f" and {len(children) - MAX_CHILDREN_LISTED} more" if len(children) > MAX_CHILDREN_LISTED else ""
+            raise RegistryError(
+                f"'{record['name']}' has filtered versions ({listed}{more}). They trace their rows back "
+                "through its converted data, so unregister them first."
+            )
 
         folder = service_root() / "datasets" / dataset_id
         removed_folder: str | None = None

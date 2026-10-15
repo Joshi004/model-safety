@@ -401,8 +401,9 @@ def _state_of(
         # The scan's own job waits for these. One that failed or was cancelled means the scan
         # did too, whatever became of the job waiting for it.
         if earlier_state in (STATE_FAILED, STATE_CANCELLED):
+            what = "failed" if earlier_state == STATE_FAILED else "was cancelled"
             detail = f": {earlier_reason}" if earlier_reason else "."
-            return _state(earlier_state, f"The {role} job ({earlier_id}) {earlier_state}{detail}", elapsed=elapsed)
+            return _state(earlier_state, f"The {role} job ({earlier_id}) {what}{detail}", elapsed=elapsed)
     if state == STATE_QUEUED:
         for role, earlier_id, earlier_state, _earlier_reason in earlier:
             if earlier_state == STATE_RUNNING:

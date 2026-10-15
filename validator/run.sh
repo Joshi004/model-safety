@@ -22,9 +22,12 @@
 #   folder. When a conversion has finished and passed its checks, it is saved as the
 #   dataset's current Prepared version in datasets.json.
 #
-#   Scans: "Find duplicates" (and Cancel). A scan first converts the datasets that need it
-#   (as above), then submits one CPU-only SLURM job that reads the datasets' Prepared
-#   versions and writes into <service root>/scans/<scan id>/. A scan waiting for a
+#   Scans: "Find duplicates" and "Scan for PII" (and Cancel). A scan first converts the
+#   datasets that need it (as above), then submits a SLURM job that reads the datasets'
+#   Prepared versions and writes into <service root>/scans/<scan id>/. Duplicates and the
+#   rule-based PII scan are CPU-only. The NER PII scan uses GPUs (one, or a whole node):
+#   it asks for confirmation first, and submits two jobs, one that plans the work and the
+#   GPU job behind it; its own SLURM logs are in the repo's logs/slurm/. A scan waiting for a
 #   conversion is started by this service itself, within 30 seconds of the conversion
 #   finishing. A finished scan is saved in datasets.json as its datasets' current result,
 #   and the scan it replaces is deleted -- only a folder under <service root>/scans, and

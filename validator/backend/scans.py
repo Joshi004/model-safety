@@ -9,10 +9,10 @@ and its logs in `_logs/`. The scan ID has the same shape as a batch ID (`jobs.BA
 
 How a scan starts (D3, D4): the chosen datasets are grouped into scans (one for all of them,
 or one for each, as the scanner and the mode say). A dataset that isn't converted, or that
-the user chose to convert again, gets a conversion job first (conversions.start_conversion
-through `conversions.submit`). The scan's own job can only be made once every dataset has a
-Prepared version, so a scan that has to wait is saved without a command, and `refresh` starts
-it as soon as its conversions have finished. A conversion that fails or is cancelled means
+the user chose to convert again, gets a conversion job first (`conversions.submit`). The
+scan's own job can only be made once every dataset has a Prepared version, so a scan that
+has to wait is saved without a command, and `refresh` starts it as soon as its conversions
+have finished. A conversion that fails or is cancelled means
 the scan is never started ("not started: conversion failed").
 
 Rules this module keeps:

@@ -53,9 +53,6 @@ LOGS_FOLDER = "_logs"
 VERSION_PLACEHOLDER = "<version-id>"
 MAX_ITEMS = 200
 
-# A dataset in one of these statuses can't be started as it is.
-BLOCKING_STATUSES = ("converted", "filtered", "unavailable", "no_settings", "invalid", "slurm_error", "active")
-
 _LOCK = threading.Lock()
 
 
@@ -370,7 +367,7 @@ def _plan_item(
         return refuse("converted", 'Already converted. Choose "Convert again" to replace it.')
     # A filtered version is made by dropping rows from another dataset's converted data (its
     # filter job writes the Prepared version), never by converting the original data again.
-    # This one gate covers check, submit, start_conversion and the scan dialog.
+    # This one gate covers check, submit and the scan dialog.
     if dataset.get("parent"):
         return refuse(
             "filtered",
@@ -554,30 +551,6 @@ def _launch(dataset: dict[str, Any], plan: dict[str, Any], resources: dict[str, 
     jobs._submit_one(logs, resources, record)
     jobs._write_json_atomic(record_path, record)
     return record
-
-
-def start_conversion(
-    dataset_id: str, reconvert: bool = False, resources: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    """Start the conversion of one dataset with its saved settings and return its record
-    (`job_id` and `dataset_id` identify it for `conversion_status`; `submit_error` is set
-    when `sbatch` failed). Phase 4 calls this too, so a scan can wait for the job.
-
-    Raises ConversionError, saying why, when the dataset has no saved settings ("Set up
-    conversion first"), is already converted and `reconvert` is false, is unavailable,
-    has a conversion queued or running, or its input can't be read. SlurmUnavailable
-    when SLURM can't be asked. With `reconvert`, the current version is deleted first,
-    or kept in place when it is marked `kept` (D6). Failed attempts are deleted too.
-    `resources` defaults to jobs.DEFAULT_RESOURCES."""
-    with _LOCK:
-        checked = jobs.validate_resources(_resources_or_default(resources))
-        active = jobs.active_jobs()
-        _finalize(dataset_id, lambda: active)
-        dataset = registry.get_dataset(dataset_id)
-        plan = _plan_item(dataset, reconvert is True, checked, active, None)
-        if not plan["can_start"]:
-            raise ConversionError(f"'{plan['name']}': {plan['reason']}")
-        return _launch(dataset, plan, checked)
 
 
 def submit(items_in: Any, resources_in: dict[str, Any] | None) -> dict[str, Any]:

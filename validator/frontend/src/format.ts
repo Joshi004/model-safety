@@ -27,12 +27,6 @@ export function secondsBetween(start: string | null, end: string | null): number
   return Number.isNaN(from) || Number.isNaN(to) ? null : (to - from) / 1000
 }
 
-// "47.6%": `part` as a share of `whole`, or a dash when there is no whole.
-export function formatPercent(part: number | null | undefined, whole: number | null | undefined): string {
-  if (part === null || part === undefined || !whole) return '—'
-  return `${((part / whole) * 100).toFixed(1)}%`
-}
-
 // "1.5 MB", "12 KB", "0 B": a byte count in the biggest unit that keeps the
 // number small.
 export function formatBytes(bytes: number): string {

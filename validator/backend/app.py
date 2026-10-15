@@ -1,40 +1,45 @@
-"""FastAPI backend for the input validator UI.
+"""FastAPI backend of the dataset scan service.
 
 Started via ../run.sh, which sets VALIDATOR_FRONTEND_DIST and binds this
 process to 127.0.0.1 only. There is no per-request auth and no path
-allowlist: any absolute path the running user can read can be inspected,
-and anyone who can already reach this machine's localhost (e.g. another
-user logged into the same login node) can reach this too. That's a
+allowlist: any absolute path the running user can read can be registered or
+inspected, and anyone who can already reach this machine's localhost (e.g.
+another user logged into the same login node) can reach this too. That's a
 deliberate choice for a trusted-network deployment.
 
-Only these routes act on anything: the dataset registry ones (registry.py), the
-conversion ones (conversions.py), the scan ones (scans.py), the result "check" one (results.py)
-and the drop ones (filters.py).
+The service root is $VALIDATOR_SERVICE_ROOT, or <repo>/output/service. Everything this
+process writes is under it, plus the NER and toxicity scans' own SLURM logs in the repo's
+logs/slurm/. It never writes to, moves or deletes original data (the paths datasets point
+at); it only checks that they exist and can be read, and reads bounded samples of them.
+The routes below that act on anything are the registry, conversion, scan, result "check"
+and drop ones. Every other route is read-only, apart from the background tasks described
+with each group.
 
-The dataset registry routes: POST /api/datasets and PATCH /api/datasets/{id} write
+Dataset registry (registry.py): POST /api/datasets and PATCH /api/datasets/{id} write
 <service root>/registry/datasets.json, and POST /api/datasets/{id}/unregister removes an
 entry and deletes that dataset's own folder <service root>/datasets/<id>, after checking
-the id and the folder's location (it is refused while a conversion, a scan or a filter job of
-the dataset is going, and while the dataset has filtered versions; the scan results only that
-dataset used are deleted afterwards, see the scan routes below). The first read of a new service root also writes datasets.json, from
-the catalog in registry_seed.py. The service root is $VALIDATOR_SERVICE_ROOT, or
-<repo>/output/service. GET /api/teams, GET /api/datasets and GET /api/datasets/{id} only
-check that a dataset's path exists and can be read.
+the id and the folder's location. Unregistering is refused while a conversion, a scan or
+a filter job of the dataset is going, and while the dataset has filtered versions; the scan
+results only that dataset used are deleted afterwards (see the scan routes). The first read
+of a new service root also writes datasets.json, from the catalog in registry_seed.py.
+GET /api/teams, GET /api/datasets and GET /api/datasets/{id} only check that a dataset's
+path exists and can be read.
 
-The conversion routes: POST /api/conversions/submit starts one SLURM job per dataset (one
-`prepare_rows.py` run each, CPU only), writing into <service root>/datasets/<id>/prepared/
-<version id>/, with the job's record in .../_jobs and its logs in .../_logs. With "convert
-again" it first deletes the dataset's current Prepared version, and it always deletes the
-folders of failed or cancelled attempts, both only inside that dataset's `prepared`
-folder (conversions.py). POST /api/datasets/{id}/conversions/{job_id}/cancel runs `scancel`
-on the one SLURM job the record lists. When a conversion has finished and passed its
-checks, reading a dataset or a conversion saves it as the dataset's current Prepared
-version in datasets.json. GET /api/conversions/settings, POST /api/conversions/check, GET
-/api/conversions and GET /api/datasets/{id}/conversions[/{job_id}] only read, apart from that.
+Conversions (conversions.py): POST /api/conversions/submit starts one SLURM job per dataset
+(one `prepare_rows.py` run each, CPU only), writing into
+<service root>/datasets/<id>/prepared/<version id>/, with the job's record in .../_jobs and
+its logs in .../_logs. With "convert again" it first deletes the dataset's current Prepared
+version (setting it aside instead when a filtered dataset was made from it), and it always
+deletes the folders of failed or cancelled attempts, both only inside that dataset's
+`prepared` folder. POST /api/datasets/{id}/conversions/{job_id}/cancel runs `scancel` on the
+one SLURM job the record lists. When a conversion has finished and passed its checks, reading
+a dataset or a conversion saves it as the dataset's current Prepared version in
+datasets.json. GET /api/conversions[/settings], POST /api/conversions/check and
+GET /api/datasets/{id}/conversions[/{job_id}] only read, apart from that.
 
-The scan routes: POST /api/scans/submit first starts the conversions the chosen datasets need
-(as above, one job each), then the scans: duplicates and the rule-based PII scan are one
-SLURM job each (`sbatch` on launchers/slurm/run_dedup_scan.sbatch or
+Scans (scans.py, scanners.py): POST /api/scans/submit first starts the conversions the
+chosen datasets need (as above, one job each), then the scans. Duplicates and the rule-based
+PII scan are one SLURM job each (`sbatch` on launchers/slurm/run_dedup_scan.sbatch or
 run_pii_scan_and_extract.sbatch, CPU only); the NER PII scan runs
 launchers/slurm/submit_privacy_filter.sh, which submits a CPU job that plans the work and the
 GPU job that waits for it (only the partition is chosen: the job scripts fix the rest); the
@@ -42,70 +47,56 @@ toxicity scan runs scripts/tool_team_toxicity_scan.sh, which submits a CPU job t
 shards and, behind it, an array job with one GPU task for each shard (the CPUs, memory and
 time of a shard are chosen). A GPU scan is refused without the confirmation it asks for. Each
 scan writes into <service root>/scans/<scan id>/ (its `scan.json`, `inputs/`, `results/` and
-`_logs/`; the NER and toxicity scans' own SLURM logs are in the repo's logs/slurm/). A scan that has to wait for a
-conversion is saved without a job and started by the service itself, within 30 seconds of the
-conversion finishing (a background task, and whenever scans or datasets are read); one whose
-conversion failed is never started. POST /api/scans/{id}/cancel runs `scancel` on the jobs
-the scan's record lists (and only those), or stops a waiting scan from ever starting. When a scan has
-finished, reading scans or datasets saves it in datasets.json as the current result of each
-of its datasets for that scanner, replacing the earlier one. A scan folder is deleted only
-when it was a result and nothing points at it any more (replaced, or its dataset converted
-again or unregistered), only inside <service root>/scans, and never one that is going, failed
-or was cancelled. A scan only reads Prepared versions; it never writes to them or to original
-data. A conversion that replaces a Prepared version (convert again) is refused while a scan
-that reads or waits for the dataset is going. GET /api/scanners, POST /api/scans/check, GET
-/api/scans[/{id}] only read, apart from starting and finishing scans as above.
+`_logs/`). A scan that has to wait for a conversion is saved without a job and started by the
+service itself, within 30 seconds of the conversion finishing (a background task, and whenever
+scans or datasets are read); one whose conversion failed is never started. POST
+/api/scans/{id}/cancel runs `scancel` on the jobs the scan's record lists (and only those), or
+stops a waiting scan from ever starting. When a scan has finished, reading scans or datasets
+saves it in datasets.json as the current result of each of its datasets for that scanner,
+replacing the earlier one. A scan folder is deleted only when it was a result and nothing
+points at it any more (replaced, or its dataset converted again or unregistered), only inside
+<service root>/scans, and never one that is going, failed or was cancelled. A scan only reads
+Prepared versions. A conversion that replaces a Prepared version (convert again) is refused
+while a scan that reads or waits for the dataset is going. GET /api/scanners,
+POST /api/scans/check and GET /api/scans[/{id}] only read, apart from starting and finishing
+scans as above.
 
-The results routes: when a scan has become a dataset's result, a background task (and POST
-/api/datasets/{id}/results/{scanner}/check) submits one CPU SLURM job over it
+Results (results.py, flagged.py): when a scan has become a dataset's result, a background
+task (and POST /api/datasets/{id}/results/{scanner}/check) submits one CPU SLURM job over it
 (`sbatch` on launchers/slurm/run_result_analysis.sbatch, which runs
-modelsafety/results/analyse.py). It writes `coverage.json` (the coverage report for that scan) and
-`tally.json` (counts the summary files don't hold) in the scan's own folder, and the service
-copies the dataset's count and its coverage verdict into its result in datasets.json
-(results.py). GET /api/datasets/{id}/results[/{scanner}] only read those small files and the
-scanner's summary files. Nothing is deleted. The same job also writes each dataset's findings
-index (`index/<dataset id>.jsonl`, one line for each flagged row, and its counts file):
-GET /api/datasets/{id}/results/{scanner}/flagged pages that index, and .../flagged/row opens one
-row, reading one line of its Prepared file at the byte offset the index holds (flagged.py). They
-only read the index and single Prepared lines.
+modelsafety/results/analyse.py). It writes `coverage.json` (the coverage report for that
+scan), `tally.json` (counts the summary files don't hold) and each dataset's findings index
+(`index/<dataset id>.jsonl`, one line for each flagged row, and its counts file) in the scan's
+own folder, and the service copies the dataset's count and its coverage verdict into its
+result in datasets.json. GET /api/datasets/{id}/results[/{scanner}] only read those small
+files and the scanner's summary files. GET .../results/{scanner}/flagged pages the index, and
+.../flagged/row opens one row, reading one line of its Prepared file at the byte offset the
+index holds. Nothing is deleted.
 
-The drop routes: POST /api/datasets/{id}/drop/submit turns the rows chosen on a dataset's result
-pages into a filtered version (filters.py). It resolves the rows again from the scans' findings
-indexes, marks the dataset's current Prepared version `kept` (so "convert again" sets it aside
-instead of deleting it), registers a new dataset in the same team with `parent` set, writes
-<service root>/datasets/<new id>/drop_list.jsonl and submits one CPU SLURM job
-(`sbatch` on launchers/slurm/filter_rows.sbatch, which runs modelsafety/filter/filter_rows.py with
---drop-list) that copies the other rows byte for byte into .../<new id>/prepared/<version id>/.
-The job's record is .../_jobs/filter.json and its logs are in .../_logs. When the job has
-finished and its checks passed, that folder becomes the new dataset's Prepared version (a
-background task, and whenever datasets or filter jobs are read). POST .../drop/check only counts.
-POST /api/datasets/{id}/filter/cancel runs `scancel` on the one job the record lists. A filtered
-version is unregistered like any dataset (refused while its job is going); the dataset it was made
-from can't be unregistered while it has filtered versions. The dataset itself, its Prepared rows
-and its results are never changed.
+Dropping rows (filters.py, autodrop.py): POST /api/datasets/{id}/drop/submit turns the rows
+chosen on a dataset's result pages into a filtered version. It resolves the rows again from
+the scans' findings indexes, marks the dataset's current Prepared version `kept` (so "convert
+again" sets it aside instead of deleting it), registers a new dataset in the same team with
+`parent` set, writes <service root>/datasets/<new id>/drop_list.jsonl and submits one CPU SLURM
+job (`sbatch` on launchers/slurm/filter_rows.sbatch, which runs
+modelsafety/filter/filter_rows.py with --drop-list) that copies the other rows byte for byte
+into .../<new id>/prepared/<version id>/. The job's record is .../_jobs/filter.json and its
+logs are in .../_logs. When the job has finished and its checks passed, that folder becomes
+the new dataset's Prepared version (a background task, and whenever datasets or filter jobs
+are read). POST .../drop/check only counts. POST /api/datasets/{id}/filter/cancel runs
+`scancel` on the one job the record lists. The dataset the rows came from, its Prepared rows
+and its results are never changed. A duplicates scan started with "auto_drop" does the same by
+itself (a background task): when the scan's analysis has finished, if the coverage check
+passed it makes one filtered version for every dataset that has flagged rows (never a
+protected one), with every flagged row of the dataset, and the drop list says the rows were
+dropped automatically; if the check failed, nothing is dropped. The decision is saved once in
+the scan's own folder (auto_drop.json).
 
-A duplicates scan started with "auto_drop" does that by itself (autodrop.py, a background task):
-when the scan's analysis has finished, if the coverage check passed it makes one filtered
-version for every dataset that has flagged rows, exactly as above with every flagged row of the
-dataset (the drop list says the rows were dropped automatically); if it failed, nothing is
-dropped. The decision is saved once in the scan's own folder (auto_drop.json). Every other route
-is read-only, and none of them ever writes to or deletes original data.
-
-This process never writes to the data it inspects: /api/inspect and
-/api/preview only read a bounded sample and report what would happen,
-they never run prepare_rows.py's actual write step. The Prepared-run routes
-(/api/runs, /api/run, /api/run/progress, /api/run/skipped, /api/origin)
-are read-only too: /api/runs lists the run folders (Prepared and filter runs)
-under the runs root and the folders of each chain (runs.read_roots), reading
-only each one's run_identity.json, summary.json and progress.json;
-/api/run/progress reads one run's progress.json and checks whether its
-summary.json and _SUCCESS exist; the others read a run's summary.json and
-skipped_rows.ndjson, and look up one original row, and only open a file
-the run's own summary.json says it read. /api/prepared-row goes the other way
-(from an Original row to its Prepared row): it reads the summary.json of the
-runs under the folders the validator reads, and the Prepared and skipped-rows
-files of the runs that read that file. (The Prepared rows tab reuses
-/api/preview on a run's own written files.)
+Looking at data: /api/inspect and /api/preview only read a bounded sample and report what
+would happen; they never run prepare_rows.py's actual write step. /api/run and
+/api/run/skipped read a Prepared version's (or a filter run's) summary.json and
+skipped_rows.ndjson, and /api/origin looks up one original row from an `_origin` note. They
+only open a file the version's own summary.json says it read.
 """
 
 from __future__ import annotations
@@ -386,14 +377,6 @@ def run_preview(body: PreviewRequest) -> dict[str, Any]:
     }
 
 
-@app.get("/api/runs")
-def list_runs() -> dict[str, Any]:
-    """Every folder the validator reads (the runs root, and the folders of each
-    chain; see runs.read_roots), whether it exists, and every prepare_rows.py or
-    filter_rows.py run folder under it (see runs.list_runs)."""
-    return runs.list_all_runs()
-
-
 class RunRequest(BaseModel):
     run_dir: str
 
@@ -405,16 +388,6 @@ def open_run(body: RunRequest) -> dict[str, Any]:
     try:
         return runs.open_any_run(detect.resolve_input_path(body.run_dir))
     except (detect.InvalidPath, runs.RunError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/run/progress")
-def run_progress(body: RunRequest) -> dict[str, Any]:
-    """How far a run has got: its progress.json (or null), whether its
-    summary.json and _SUCCESS exist, and whether it may have stopped."""
-    try:
-        return runs.run_progress(detect.resolve_input_path(body.run_dir))
-    except detect.InvalidPath as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -463,32 +436,6 @@ def lookup_origin(body: OriginRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # a real reader failure -- surface it to the UI, don't 500 blindly
         raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}") from exc
-
-
-class PreparedRowRequest(BaseModel):
-    # The Original file as the runs recorded it (an Arrow folder, for one), and the
-    # row in it: a JSONL file's rows are named by `line` (from 1), every other
-    # kind's by `row` (from 0).
-    original_path: str
-    row: int | None = None
-    line: int | None = None
-    split: str | None = None
-    # Ask one run (a Prepared run, or a filter run, which stands for the Prepared
-    # run it came from) instead of every Prepared run that read the file.
-    run_dir: str | None = None
-
-
-@app.post("/api/prepared-row")
-def prepared_row(body: PreparedRowRequest) -> dict[str, Any]:
-    """Where an Original row is in the Prepared data: found (with the file and
-    line), skipped, left out by --max-rows, or not in the file. Each answer says
-    whether it was worked out (and checked) or searched for."""
-    try:
-        original_path = detect.resolve_input_path(body.original_path)
-        run_dir = detect.resolve_input_path(body.run_dir) if body.run_dir else None
-        return runs.find_prepared(original_path, body.row, body.line, body.split, run_dir)
-    except (detect.InvalidPath, runs.RunError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # -------------------------------------------------------------------------

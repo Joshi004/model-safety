@@ -1,8 +1,8 @@
 """Which text of a row the toxicity scan scores.
 
-Standard library only, so the per-row status can ask the same question the
-scan asked without importing Detoxify or accelerate. `run.py` uses this too,
-so the two can't disagree.
+Standard library only, so other code can ask the same question the scan asked
+without importing Detoxify or accelerate. `run.py` uses this too, so the two
+can't disagree.
 """
 
 from __future__ import annotations

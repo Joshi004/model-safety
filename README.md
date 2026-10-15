@@ -41,9 +41,16 @@ run, same as before -- there is no shared root venv or `pip install -e .`
 step. `pii/model` (the Privacy Filter) uses a separate isolated venv on
 purpose; see the note in `docs/data-screening/pii-model.md`.
 
-One accepted gap: `modelsafety/readers/prepare_rows.py` is missing a sibling
-file (`chunked_writer.py`) and cannot be imported. No launcher calls it, so
-it doesn't block anything here -- see `docs/porting-checklist.md`.
+## The dataset scan service
+
+`validator/` holds a small web service on top of these tools: register
+datasets, convert them with `modelsafety/readers/prepare_rows.py`, scan them
+for duplicates, PII and toxicity, review the flagged rows, and drop chosen
+rows into a filtered version. It submits SLURM jobs that run the tools in
+`modelsafety/`, `scripts/` and `launchers/`, and never writes to the original
+data. Start it with `./validator/run.sh`;
+that script's header comment says what it reads, writes, deletes and asks
+confirmation for.
 
 ## Why this repo exists
 

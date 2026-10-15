@@ -71,10 +71,6 @@ export function partFor(selection: DropSelection, source: SelectionSource): Scan
   return part !== undefined && matches(part, source) ? part : null
 }
 
-export function partCount(part: ScannerSelection): number {
-  return part.all !== null ? part.all.total : part.rows.size
-}
-
 function withPart(selection: DropSelection, scanner: string, part: ScannerSelection): DropSelection {
   const next = { ...selection }
   if (part.all === null && part.rows.size === 0) delete next[scanner]

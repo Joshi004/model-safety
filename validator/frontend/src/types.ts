@@ -229,7 +229,7 @@ export interface PreviewRequest {
   output_dir?: string
 }
 
-// ---- A Prepared version on disk (POST /api/run, /api/run/progress, /api/run/skipped, /api/origin) ----
+// ---- A Prepared version on disk (POST /api/run, /api/run/skipped, /api/origin) ----
 
 // An `_origin` note (modelsafety/contract/origin.py): where a Prepared row came from. A
 // JSONL note has `line` and `byte`; every other format has `row`; an Arrow folder also has

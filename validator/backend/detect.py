@@ -7,7 +7,7 @@ whole file, so this stays cheap to run from a web backend against real,
 large production data. Nothing here writes anything.
 
 Reading one original row back from an `_origin` note lives in
-`modelsafety/trace/original.py`, which the trace tool uses too.
+`modelsafety/trace/original.py`.
 """
 
 from __future__ import annotations

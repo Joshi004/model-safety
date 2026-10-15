@@ -1,9 +1,8 @@
 """Look an original row up from an `_origin` note: one note, or many at once.
 
-The validator's "Show original" (`validator/backend/runs.py`) and the trace
-tool (`modelsafety/trace/trace_findings.py`) both call this code, so they can't
-disagree. `lookup()` is one note; `lookup_notes()` is many notes of one run,
-and reads each original file once.
+The validator's "Show original" (`validator/backend/runs.py`) calls this code.
+`lookup()` is one note; `lookup_notes()` is many notes of one run, and reads
+each original file once.
 
 Everything here is read-only. A lookup only opens a file that the run's own
 `summary.json` says it read, because the `_origin` note it starts from is

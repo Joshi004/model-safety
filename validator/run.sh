@@ -1,84 +1,95 @@
 #!/bin/bash
-# Starts the input validator UI for the current user, on the current
-# machine, on localhost only.
+# Starts the dataset scan service for the current user, on the current machine, on
+# localhost only. The service keeps a registry of datasets (each under one team), converts
+# them, scans them for duplicates, PII and toxicity, shows what the scans found, and lets
+# you drop chosen rows into a filtered version. Scans never remove anything by themselves.
 #
-# This is a personal tool, not a shared service: run it from your own
-# terminal on a login node (or anywhere with access to the data you want to
-# inspect). It reads files with your own permissions and never writes
-# anything to the data it looks at. Any absolute path your account can
-# read can be inspected -- there's no folder allowlist. If your account
-# can't read the folder of a registered dataset, it just shows up as
-# unavailable in the Datasets list; nothing fails.
+# This is a personal tool, not a shared service: run it from your own terminal on a login
+# node. It acts as you (sbatch, squeue, sacct, sinfo and scancel must be on your PATH), with
+# your own file permissions. Any absolute path your account can read can be registered --
+# there's no folder allowlist. If your account can't read a dataset's folder, the dataset
+# shows up as unavailable in the Datasets list; nothing fails.
 #
-# Looking at data is read-only. Only these act on anything, and they act as
-# you (sbatch, squeue, sacct, sinfo and scancel must be on your PATH):
+# What it reads
+#   - The original data a dataset points at: its existence, whether it can be read, and
+#     bounded samples for the preview and "Show original". It never writes to, moves or
+#     deletes original data.
+#   - Its own files under the service root (below), and each SLURM job's state, read live
+#     from squeue and sacct (job state is never stored).
 #
-#   Conversions: a dataset's "Convert" and "Convert again", "More -> Convert only",
-#   and Cancel. Convert submits a CPU-only SLURM job per dataset, which writes into
-#   <service root>/datasets/<id>/prepared/<version id>/ (job records in .../_jobs,
-#   logs in .../_logs). Cancel runs scancel on that job. "Convert again" deletes the
-#   dataset's current Prepared version first, and every start deletes the folders of
-#   that dataset's failed or cancelled attempts -- only inside its own prepared/
-#   folder. When a conversion has finished and passed its checks, it is saved as the
-#   dataset's current Prepared version in datasets.json.
+# What it writes, and where
+#   The service root is $VALIDATOR_SERVICE_ROOT, or <repo>/output/service. The first start
+#   with no datasets.json creates it (and registry/, datasets/ and scans/) from the catalog
+#   in validator/backend/registry_seed.py. Everything else is written under it:
 #
-#   Scans: "Find duplicates", "Scan for PII" and "Scan for toxicity" (and Cancel). A scan first converts the
-#   datasets that need it (as above), then submits a SLURM job that reads the datasets'
-#   Prepared versions and writes into <service root>/scans/<scan id>/. Duplicates and the
-#   rule-based PII scan are CPU-only. The NER PII scan uses GPUs (one, or a whole node):
-#   it asks for confirmation first, and submits two jobs, one that plans the work and the
-#   GPU job behind it; its own SLURM logs are in the repo's logs/slurm/. The toxicity scan
-#   uses GPUs too, up to one for each shard that runs at once: it asks for confirmation
-#   first, and submits a CPU job that plans the shards and an array job behind it (one task
-#   for each shard); its SLURM logs are in logs/slurm/ as well. A scan waiting for a
-#   conversion is started by this service itself, within 30 seconds of the conversion
-#   finishing. A finished scan is saved in datasets.json as its datasets' current result,
-#   and the scan it replaces is deleted -- only a folder under <service root>/scans, and
-#   never one that is going, failed or was cancelled.
+#     registry/datasets.json            every registered dataset, its saved conversion
+#                                       settings, current Prepared version and results
+#     datasets/<id>/prepared/<version>/ the converted rows (one current Prepared version)
+#     datasets/<id>/_jobs/, _logs/      conversion and filter job records and logs
+#     datasets/<id>/drop_list.jsonl     a filtered dataset only: the rows dropped
+#     scans/<scan id>/                  scan.json, inputs/, results/, _logs/, and what the
+#                                       result analysis adds: coverage.json, tally.json,
+#                                       index/ (the flagged rows of each dataset) and, for
+#                                       an automatic drop, auto_drop.json
 #
-#   Results: when a scan has become a dataset's result, this service submits one more
-#   CPU-only SLURM job for it (within about a minute), which checks the scan's coverage,
-#   counts what the scanner's summary files don't hold, and makes the findings index of each
-#   dataset: one line for each flagged row, which the result page lists and opens. It writes
-#   coverage.json, tally.json and index/ in the scan's own folder (and its logs in the scan's
-#   _logs), and the service copies the dataset's count and coverage verdict into its result
-#   in datasets.json. A result checked before the index existed gets that job again by itself.
-#   The Results tab's "Check again" submits it again. Opening a flagged row reads one line of
-#   the dataset's Prepared version. Nothing is deleted, and the jobs and the pages only read
-#   the Prepared versions and the scan's results.
+#   The NER and toxicity scans' own SLURM logs are written to the repo's logs/slurm/.
+#   Registering, editing and unregistering a dataset change datasets.json. Every job is
+#   submitted with sbatch as an argument list (never through a shell), and the command the
+#   UI shows is the command that runs.
 #
-#   Dropping rows: "Review and drop" on a dataset's result pages turns the flagged rows you
-#   chose into a filtered version, a new dataset in the same team. It re-reads the rows from the
-#   scans' findings indexes, marks the dataset's current Prepared version as kept (so "convert
-#   again" sets it aside instead of deleting it), registers the new dataset in datasets.json,
-#   writes <service root>/datasets/<new id>/drop_list.jsonl and submits one CPU-only SLURM job
-#   (modelsafety/filter/filter_rows.py with --drop-list) that copies the other rows byte for
-#   byte into .../<new id>/prepared/<version id>/ (record in .../_jobs/filter.json, logs in
-#   .../_logs). When the job has finished and its checks passed, that folder becomes the new
-#   dataset's Prepared version, so it can be scanned like any other. Cancel runs scancel on
-#   that job. The dataset the rows were dropped from, its Prepared rows and its results are
-#   never changed, and a dataset that has filtered versions can't be unregistered.
-#   A duplicates scan started with "Drop duplicates automatically" does the same by itself,
-#   once, when its coverage check has passed: one filtered version for every dataset that has
-#   duplicates (never for a protected one), with the reason "automatic". If the check failed it
-#   drops nothing. What it decided is written to <service root>/scans/<scan id>/auto_drop.json.
-#
-#   Dataset registry: registering, editing and unregistering a dataset write
-#   <service root>/registry/datasets.json, where the service root is
-#   $VALIDATOR_SERVICE_ROOT, or <repo>/output/service. The first start with no
-#   datasets.json creates it (and registry/, datasets/ and scans/) from the catalog
-#   in validator/backend/registry_seed.py. Unregistering also deletes that dataset's own
-#   folder, <service root>/datasets/<id>, and nothing else: the original data a
-#   dataset points at is only checked for existing and being readable.
-#
-# The runs list reads more than the runs root: also the Prepared folder and
-# each filter step's output folder of every chain recorded in
-# <repo>/output/*/chain.json ($VALIDATOR_CHAINS_ROOT replaces <repo>/output).
-# Set $VALIDATOR_READ_ROOTS to a list of folders, separated like PATH, to read
-# exactly those instead. Reading never writes; only the runs root can be
-# deleted from or started into.
+# How to run it
 #
 #   ./validator/run.sh
+#
+# What it does
+#   Conversions: a dataset's "Convert", "Convert again" and "More -> Convert only" submit one
+#   CPU-only job per dataset (modelsafety/readers/prepare_rows.py, with the settings saved on
+#   the dataset). When it has finished and passed its checks, it becomes the dataset's
+#   current Prepared version.
+#
+#   Scans: "Find duplicates", "Scan for PII" (NER or rule-based) and "Scan for toxicity". A
+#   scan first converts the datasets that need it, then runs a job that only reads the
+#   datasets' Prepared versions. A scan waiting for a conversion is started by this service
+#   itself, within 30 seconds of the conversion finishing. Duplicates and the rule-based PII
+#   scan are CPU-only. The NER scan plans on a CPU job and scans on GPUs (one, or a whole
+#   node). The toxicity scan plans on a CPU job and scans with an array job, one GPU task
+#   for each shard. A finished scan becomes its datasets' current result for that scanner.
+#
+#   Results: for each finished scan this service submits one more CPU-only job (within about
+#   a minute) that checks the scan's coverage, counts what the scanner's summary files don't
+#   hold, and writes the findings index. The result page and the flagged-rows list read
+#   those small files; opening a flagged row reads one line of the Prepared version.
+#   "Check again" on the Results tab submits that job again.
+#
+#   Dropping rows: "Review and drop" on a dataset's result pages turns the rows you chose
+#   into a filtered version, a new dataset in the same team with a link to its parent. One
+#   CPU-only job (modelsafety/filter/filter_rows.py with --drop-list) copies the other rows
+#   byte for byte. The dataset the rows came from, its Prepared rows and its results are
+#   never changed, and a dataset that has filtered versions can't be unregistered. A
+#   duplicates scan started with "Drop duplicates automatically" does the same by itself,
+#   once, when its coverage check has passed (never for a protected dataset); if the check
+#   failed it drops nothing.
+#
+# What it deletes (only inside the service root, after checking the path)
+#   - Unregister: the dataset's entry and its own folder datasets/<id>, and scan results
+#     only that dataset used. Refused while a conversion, scan or filter job of the dataset
+#     is going, and while it has filtered versions.
+#   - Convert again: the dataset's current Prepared version and the scans that only read it.
+#     A version a filtered dataset was made from is set aside and kept instead.
+#   - Every conversion start: the folders of that dataset's failed or cancelled attempts,
+#     inside its own prepared/ folder.
+#   - A scan that was replaced by a newer one (or whose datasets were converted again or
+#     unregistered), once no dataset uses it. A failed or cancelled scan is never deleted
+#     automatically.
+#
+# What asks for confirmation
+#   - Unregister: names what will be removed, then asks.
+#   - Convert, Convert again, or a scan that has to convert again: when something will be
+#     deleted, lists it dataset by dataset first ("Delete and convert").
+#   - A GPU scan (NER, toxicity): shows the cost and needs a ticked confirmation.
+#   - Drop: shows how many rows will be dropped, by scanner and reason, and the exact
+#     command, before "Drop N rows".
+#   Cancel (Activity page) runs scancel on the jobs a record lists, right away.
 #
 # The first run creates validator/backend/.venv (installing FastAPI/uvicorn
 # plus modelsafety/readers' own pandas/pyarrow/datasets/numpy versions) and

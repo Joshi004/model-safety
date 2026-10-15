@@ -11,6 +11,7 @@ const SCANNER_LABELS: Record<string, string> = {
   dedup: 'Duplicates',
   pii_ner: 'PII (NER)',
   pii_regex: 'PII (rules)',
+  toxicity: 'Toxicity',
 }
 
 // What a finished scan's headline count counts, by scanner.
@@ -18,6 +19,7 @@ const SCANNER_COUNT_LABELS: Record<string, string> = {
   dedup: 'duplicate rows',
   pii_ner: 'PII findings',
   pii_regex: 'PII findings',
+  toxicity: 'messages',
 }
 
 export function scannerLabel(key: string): string {
@@ -91,6 +93,21 @@ export function visibleFields(scanner: ScannerInfo): ScannerField[] {
   return scanner.fields.filter((field) => !hidden.includes(field.name))
 }
 
+// Settings that are shown under "Advanced" in the dialog, not with the others.
+const ADVANCED_SETTINGS: Record<string, string[]> = {
+  toxicity: ['shards', 'concurrency'],
+}
+
+export function mainFields(scanner: ScannerInfo): ScannerField[] {
+  const advanced = ADVANCED_SETTINGS[scanner.key] ?? []
+  return visibleFields(scanner).filter((field) => !advanced.includes(field.name))
+}
+
+export function advancedFields(scanner: ScannerInfo): ScannerField[] {
+  const advanced = ADVANCED_SETTINGS[scanner.key] ?? []
+  return visibleFields(scanner).filter((field) => advanced.includes(field.name))
+}
+
 // A choice whose only two values are "0" and "1" is a checkbox.
 export function isToggle(field: ChoiceField): boolean {
   return field.choices.length === 2 && field.choices.includes('0') && field.choices.includes('1')
@@ -110,6 +127,11 @@ const CHOICE_LABELS: Record<string, Record<string, string>> = {
   'pii_ner/size': {
     full: 'Full node (every GPU of one node)',
     one_gpu: 'One GPU',
+  },
+  // Qwen3Guard's verdicts. Its categories are named as the guard names them, so they are shown as they are.
+  'toxicity/verdicts': {
+    Unsafe: 'Unsafe',
+    Controversial: 'Controversial (borderline)',
   },
 }
 
@@ -203,6 +225,7 @@ export interface ScanActionInfo {
 export const SCAN_ACTIONS: Record<string, ScanActionInfo> = {
   dedup: { title: 'Scan for duplicates', scannerKeys: ['dedup'] },
   pii: { title: 'Scan for PII', scannerKeys: ['pii_ner', 'pii_regex'] },
+  toxicity: { title: 'Scan for toxicity', scannerKeys: ['toxicity'] },
 }
 
 // How the methods of an action with a choice are named and told apart, by scanner.
@@ -217,11 +240,19 @@ export const METHOD_INFO: Record<string, { title: string; blurb: string }> = {
   },
 }
 
-// What a scanner can't do, shown with the list of what it finds.
+// A note on what a scanner can't do or how it counts (D9), shown with its settings. For the rule-based
+// PII scan it goes with the list of what it finds.
 export function scannerNote(scannerKey: string): string | null {
-  return scannerKey === 'pii_regex'
-    ? "Rules can't find names, or ID numbers that have no fixed pattern. Use the model for those."
-    : null
+  if (scannerKey === 'pii_regex') {
+    return "Rules can't find names, or ID numbers that have no fixed pattern. Use the model for those."
+  }
+  if (scannerKey === 'toxicity') {
+    return (
+      'Every message the Detoxify screen flags is judged by Qwen3Guard. A message the judge gives no usable verdict ' +
+      '(a guard error) counts as flagged. Nothing is dropped by this scan: you choose what to drop from the results.'
+    )
+  }
+  return null
 }
 
 // ---- Modes (D4): one scan over all the chosen datasets, or one for each ----

@@ -5,18 +5,19 @@ import { hrefFor } from '../route'
 import {
   METHOD_INFO,
   SCAN_ACTIONS,
+  advancedFields,
   choiceLabel,
   defaultSettings,
   dropNote,
   groupHelp,
   groupTitle,
   isToggle,
+  mainFields,
   modeLabel,
   modeNote,
   ruleCategoryName,
   scannerLabel,
   scannerNote,
-  visibleFields,
 } from '../scans'
 import type {
   Dataset,
@@ -141,6 +142,28 @@ function SettingControl({
           id={`${id}-${field.name}`}
           type="text"
           inputMode="numeric"
+          value={text}
+          onChange={(event) => onChange(event.target.value)}
+          autoComplete="off"
+        />
+        <p className="muted small">{field.help}</p>
+      </div>
+    )
+  }
+
+  if (field.type === 'decimal') {
+    // Like the whole number: what was typed is sent as it is, and the backend checks it (from
+    // `min` to `max`, in steps of `step`).
+    const text = value === null || Array.isArray(value) ? '' : String(value)
+    return (
+      <div className="scan-setting start-field">
+        <label htmlFor={`${id}-${field.name}`}>{field.label}</label>
+        <input
+          id={`${id}-${field.name}`}
+          type="number"
+          min={field.min}
+          max={field.max}
+          step={field.step}
           value={text}
           onChange={(event) => onChange(event.target.value)}
           autoComplete="off"
@@ -370,6 +393,13 @@ export default function ScanDialog({
     (gpuUnit === undefined || confirmGpu) &&
     !starting
 
+  function changeSetting(name: string, value: SettingValue) {
+    setOverridesByScanner((current) => ({
+      ...current,
+      [scannerKey]: { ...current[scannerKey], [name]: value },
+    }))
+  }
+
   function chooseAgain(datasetId: string, value: boolean) {
     setAgain((current) => {
       const next = new Set(current)
@@ -531,18 +561,13 @@ export default function ScanDialog({
             </fieldset>
           )}
 
-          {visibleFields(scanner).map((field) => (
+          {mainFields(scanner).map((field) => (
             <SettingControl
               key={field.name}
               scannerKey={scannerKey}
               field={field}
               value={settings[field.name] ?? field.default}
-              onChange={(value) =>
-                setOverridesByScanner((current) => ({
-                  ...current,
-                  [scannerKey]: { ...current[scannerKey], [field.name]: value },
-                }))
-              }
+              onChange={(value) => changeSetting(field.name, value)}
             />
           ))}
 
@@ -557,12 +582,28 @@ export default function ScanDialog({
               {scannerNote(scannerKey) !== null && <p className="small">{scannerNote(scannerKey)}</p>}
             </div>
           )}
+          {scanner.detects.length === 0 && scannerNote(scannerKey) !== null && (
+            <p className="small">{scannerNote(scannerKey)}</p>
+          )}
 
           {modeText !== null && <p className="small">{modeText}</p>}
           {dropText !== null && <p className="small">{dropText}</p>}
 
           <details>
-            <summary className="small">Advanced: resources and the exact commands</summary>
+            <summary className="small">
+              {advancedFields(scanner).length > 0
+                ? 'Advanced: settings, resources and the exact commands'
+                : 'Advanced: resources and the exact commands'}
+            </summary>
+            {advancedFields(scanner).map((field) => (
+              <SettingControl
+                key={field.name}
+                scannerKey={scannerKey}
+                field={field}
+                value={settings[field.name] ?? field.default}
+                onChange={(value) => changeSetting(field.name, value)}
+              />
+            ))}
             <ResourcesFields
               settings={resources.response}
               settingsError={resources.error}

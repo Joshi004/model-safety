@@ -1384,6 +1384,15 @@ div.scan-setting > p {
   gap: 2px 12px;
 }
 
+/* How far a running scan has got, one bar for each stage (the bars are the conversion's). */
+.scan-progress {
+  margin: 8px 0 12px;
+}
+
+.scan-progress p {
+  margin: 4px 0 0;
+}
+
 .scan-detects {
   margin: 4px 0;
   padding-left: 20px;

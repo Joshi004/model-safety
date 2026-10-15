@@ -36,10 +36,12 @@ The scan routes: POST /api/scans/submit first starts the conversions the chosen 
 SLURM job each (`sbatch` on launchers/slurm/run_dedup_scan.sbatch or
 run_pii_scan_and_extract.sbatch, CPU only); the NER PII scan runs
 launchers/slurm/submit_privacy_filter.sh, which submits a CPU job that plans the work and the
-GPU job that waits for it (only the partition is chosen: the job scripts fix the rest), and
-is refused without the confirmation a GPU scan asks for. Each scan writes into
-<service root>/scans/<scan id>/ (its `scan.json`, `inputs/`, `results/` and `_logs/`; the NER
-scan's own SLURM logs are in the repo's logs/slurm/). A scan that has to wait for a
+GPU job that waits for it (only the partition is chosen: the job scripts fix the rest); the
+toxicity scan runs scripts/tool_team_toxicity_scan.sh, which submits a CPU job that plans the
+shards and, behind it, an array job with one GPU task for each shard (the CPUs, memory and
+time of a shard are chosen). A GPU scan is refused without the confirmation it asks for. Each
+scan writes into <service root>/scans/<scan id>/ (its `scan.json`, `inputs/`, `results/` and
+`_logs/`; the NER and toxicity scans' own SLURM logs are in the repo's logs/slurm/). A scan that has to wait for a
 conversion is saved without a job and started by the service itself, within 30 seconds of the
 conversion finishing (a background task, and whenever scans or datasets are read); one whose
 conversion failed is never started. POST /api/scans/{id}/cancel runs `scancel` on the jobs

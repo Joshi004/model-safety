@@ -39,6 +39,9 @@
 # offered when no stage word is given at all, so scripted/automated calls
 # never prompt).
 #
+# TOX_KILL_ON_INVALID_DEP=1 (environment only, off by default) makes the shard array
+# job cancel itself when the prepare job it waits for fails, rather than stay pending.
+#
 # --run-dir defaults to output/tool_team_toxicity_pilot when --pilot-files is
 # above 0, and to output/tool_team_toxicity_run otherwise, so a pilot never
 # shares a folder with the full scan that follows it.
@@ -463,6 +466,12 @@ submit_array() {
   local -a dep_args=()
   if [[ -n "${dependency}" ]]; then
     dep_args=(--dependency="afterok:${dependency}")
+    # Opt-in (the validator service sets it): when the prepare job fails, SLURM cancels the
+    # array job at once, instead of leaving it pending for ever (this cluster has no
+    # kill_invalid_depend setting).
+    if [[ "${TOX_KILL_ON_INVALID_DEP:-0}" == "1" ]]; then
+      dep_args+=(--kill-on-invalid-dep=yes)
+    fi
   fi
 
   sbatch --parsable --partition="${PARTITION}" \

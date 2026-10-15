@@ -36,11 +36,18 @@ Rules this module keeps:
   record's `prior_jobs`. The scan is going while any of them is, has failed or been cancelled
   when one of them has, and has succeeded when its own job has and its scanner's success
   markers exist. Cancelling it runs `scancel` on all of them.
+* A scan's own job can be an array job, with a task for each shard (the toxicity scan). squeue
+  lists its tasks as `<id>_<task>` and sacct has a row for each, so the job is going while any
+  task is listed, and it has failed when any task has (the reason names it). `scancel` on the
+  array's ID stops every task. Its markers are not a fixed list: the scanner finds them from
+  the results folder (`Scanner.markers_for`, one for each shard). `Scanner.read_progress` says
+  how far it has got, and is only asked while the scan's own job is running.
 * Job state is never stored. It is read live from SLURM and from the files a job writes. What
   is saved is what was started (settings, command, the versions read, job IDs) and, once, the
   fact that a finished scan became the result of its datasets (`result_applied_at`).
-* A scan's success markers (`_SUCCESS`, or the three of the regex PII scan) are only looked
-  for once SLURM no longer lists its job, and the empty
+* A scan's success markers (`_SUCCESS`, the three of the regex PII scan, or a toxicity scan's
+  manifest and the `_SUCCESS` of each shard) are only looked for once SLURM no longer lists
+  its job, and the empty
   `results/` folder is made before `sbatch` (on this cluster's shared disk, asking for a file
   or folder before it exists makes this machine remember "not there" for about a minute).
 * One lock covers every start, cancel and replacement, so two clicks can't start two jobs for
@@ -262,52 +269,131 @@ def _state(
     reason: str | None = None,
     waiting_for: list[dict[str, Any]] | None = None,
     elapsed: str | None = None,
+    own_job_running: bool = False,
 ) -> dict[str, Any]:
-    return {"state": state, "reason": reason, "waiting_for": waiting_for or [], "elapsed": elapsed}
+    # `own_job_running` is whether the scan's own job (not a job it waits for) is running.
+    return {
+        "state": state,
+        "reason": reason,
+        "waiting_for": waiting_for or [],
+        "elapsed": elapsed,
+        "own_job_running": own_job_running,
+    }
+
+
+# A line of `sacct -P`: a job ("123"), one task of an array job ("123_4", or "123_[4-7]" while
+# its tasks are pending), and the steps inside it ("123.batch", "123_4.0"), which are skipped.
+SACCT_JOB = re.compile(r"^(\d+)(?:_(\[[^\]]*\]|\d+))?(?:\.(batch|extern|\d+))?$")
+
+
+def _belongs(key: str, job_id: str) -> bool:
+    """Whether a squeue ID is this job, or one of the tasks of this array job ("123_4")."""
+    return key == job_id or key.startswith(f"{job_id}_")
+
+
+def _is_listed(job_id: str, active: dict[str, dict[str, Any]]) -> bool:
+    return any(_belongs(key, job_id) for key in active)
+
+
+def _sacct_rows(job_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """`sacct` for these jobs: for each, one row for the job, or one for each task of an array
+    job. With explicit IDs it returns jobs that finished on an earlier day too (checked on
+    this cluster), so no start time is passed."""
+    if not job_ids:
+        return {}
+    output = jobs._slurm(["sacct", "-j", ",".join(job_ids), "-n", "-P", "-o", "JobID,State,ExitCode,Elapsed"])
+    wanted = set(job_ids)
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for line in output.splitlines():
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) != 4:
+            continue
+        match = SACCT_JOB.fullmatch(parts[0])
+        if match is None or match.group(1) not in wanted or match.group(3) is not None:
+            continue
+        parent, task, _step = match.groups()
+        state, exit_code, elapsed = parts[1], parts[2], parts[3]
+        rows.setdefault(parent, []).append(
+            {
+                "task": task,
+                "state": state.split()[0] if state else "",
+                "state_text": state,
+                "exit_code": exit_code,
+                "elapsed": elapsed,
+            }
+        )
+    return rows
+
+
+def _read_slurm(
+    job_ids: list[str],
+) -> tuple[dict[str, dict[str, Any]] | None, dict[str, list[dict[str, Any]]] | None, str | None]:
+    """`(squeue jobs, sacct rows, error)`. Either is None when it couldn't be read. sacct is only
+    asked about jobs squeue doesn't list: for an array job, one of whose tasks squeue still
+    lists, the job is still going. This is `jobs._read_slurm` made to understand array jobs."""
+    try:
+        active = jobs.active_jobs()
+    except jobs.SlurmUnavailable as exc:
+        return None, None, str(exc)
+    try:
+        return active, _sacct_rows([job_id for job_id in job_ids if not _is_listed(job_id, active)]), None
+    except jobs.SlurmUnavailable as exc:
+        return active, None, str(exc)
 
 
 def _slurm_outcome(
     job_id: str,
     active: dict[str, dict[str, Any]] | None,
-    accounted: dict[str, dict[str, Any]] | None,
+    accounted: dict[str, list[dict[str, Any]]] | None,
 ) -> tuple[str, str | None]:
-    """`(state, reason)` of one SLURM job. `active` and `accounted` are None when squeue or
-    sacct couldn't be read. This is not jobs._decide_outcome, which is made for conversions
-    (it looks for a progress.json, which a scan doesn't write)."""
+    """`(state, reason)` of one SLURM job, taking all the tasks of an array job together.
+    `active` and `accounted` are None when squeue or sacct couldn't be read. This is not
+    jobs._decide_outcome, which is made for conversions (it looks for a progress.json, which a
+    scan doesn't write)."""
     if active is None:
         return STATE_UNKNOWN, "SLURM couldn't be reached, so this job's state isn't known."
-    listed = active.get(job_id)
-    if listed is not None:
-        if listed["state"] == "PENDING":
-            return STATE_QUEUED, listed["reason"]
-        return STATE_RUNNING, listed["state"]
+    listed = [value for key, value in active.items() if _belongs(key, job_id)]
+    if listed:
+        going = [item for item in listed if item["state"] != "PENDING"]
+        if going:
+            return STATE_RUNNING, going[0]["state"]
+        if all("DependencyNeverSatisfied" in item["reason"] for item in listed):
+            # A job it waits for didn't finish well, so it would sit in the queue for ever.
+            return STATE_FAILED, "A job it waits for didn't finish well, so it will never start. Cancel it."
+        return STATE_QUEUED, listed[0]["reason"]
     if accounted is None:
         return STATE_UNKNOWN, "SLURM couldn't be reached, so this job's state isn't known."
-    record = accounted.get(job_id)
-    if record is None:
+    tasks = accounted.get(job_id)
+    if not tasks:
         return STATE_FAILED, "SLURM has no record of this job: it isn't queued, and accounting doesn't know it."
-    state = record["state"]
-    if state == "COMPLETED":
-        return STATE_SUCCEEDED, None
-    if state == "CANCELLED":
-        return STATE_CANCELLED, record["state_text"]
-    if state in jobs.STILL_GOING_STATES:
-        return jobs.STILL_GOING_STATES[state], f"SLURM accounting says {state}."
-    return STATE_FAILED, f"SLURM state {record['state_text'] or 'unknown'}, exit code {record['exit_code']}."
+    still_going = [task for task in tasks if task["state"] in jobs.STILL_GOING_STATES]
+    if still_going:
+        return jobs.STILL_GOING_STATES[still_going[0]["state"]], f"SLURM accounting says {still_going[0]['state']}."
+    bad = [task for task in tasks if task["state"] not in ("COMPLETED", "CANCELLED")]
+    if bad:
+        which = f"task {bad[0]['task']}: " if bad[0]["task"] is not None else ""
+        return STATE_FAILED, f"{which}SLURM state {bad[0]['state_text'] or 'unknown'}, exit code {bad[0]['exit_code']}."
+    cancelled = [task for task in tasks if task["state"] == "CANCELLED"]
+    if cancelled:
+        return STATE_CANCELLED, cancelled[0]["state_text"]
+    return STATE_SUCCEEDED, None
 
 
 def _slurm_elapsed(
     job_id: str,
     active: dict[str, dict[str, Any]] | None,
-    accounted: dict[str, dict[str, Any]] | None,
+    accounted: dict[str, list[dict[str, Any]]] | None,
 ) -> str | None:
     """How long SLURM says one job has run ("1-02:03:04" or "0:42"): from squeue while it is
-    listed, from sacct once it has left the queue. None when SLURM doesn't know."""
-    listed = (active or {}).get(job_id)
-    if listed is not None:
-        return listed["elapsed"]
-    record = (accounted or {}).get(job_id)
-    return record["elapsed"] if record is not None else None
+    listed, from sacct once it has left the queue. For an array job, the longest of its tasks.
+    None when SLURM doesn't know."""
+    listed = [value for key, value in (active or {}).items() if _belongs(key, job_id)]
+    if listed:
+        return max(listed, key=lambda item: item.get("elapsed_seconds") or 0)["elapsed"]
+    tasks = (accounted or {}).get(job_id)
+    if not tasks:
+        return None
+    return max(tasks, key=lambda task: jobs._parse_duration(task["elapsed"]) or 0)["elapsed"]
 
 
 def _dataset(dataset_id: str, cache: dict[Any, Any]) -> dict[str, Any] | None:
@@ -413,14 +499,16 @@ def _state_of(
         # SLURM no longer lists the job, so it is safe to look for the markers.
         scanner = scanners.SCANNERS[scan["scanner"]]
         results = _scan_folder(scan["id"]) / scanners.RESULTS_FOLDER
-        missing = [marker for marker in scanner.success_markers if not (results / marker).is_file()]
+        missing = [marker for marker in scanners.markers_of(scanner, results) if not (results / marker).is_file()]
         if missing:
+            # A scan with a marker for each shard can miss many: name the first few.
+            shown = ", ".join(missing[:3]) + (f" and {len(missing) - 3} more" if len(missing) > 3 else "")
             return _state(
                 STATE_FAILED,
-                f"The job ended, but its results folder has no {', '.join(missing)}.",
+                f"The job ended, but its results folder has no {shown}.",
                 elapsed=elapsed,
             )
-    return _state(state, reason, elapsed=elapsed)
+    return _state(state, reason, elapsed=elapsed, own_job_running=state == STATE_RUNNING)
 
 
 def _states_of(scans: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], str | None]:
@@ -429,7 +517,7 @@ def _states_of(scans: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], 
     job_ids = [
         job["job_id"] for scan in scans if scan.get("result_applied_at") is None for job in _jobs_of(scan)
     ]
-    active, accounted, slurm_error = jobs._read_slurm(job_ids) if job_ids else ({}, {}, None)
+    active, accounted, slurm_error = _read_slurm(job_ids) if job_ids else ({}, {}, None)
     cache: dict[Any, Any] = {}
     return {scan["id"]: _state_of(scan, active, accounted, cache) for scan in scans}, slurm_error
 
@@ -852,7 +940,7 @@ def _apply_result(scan: dict[str, Any]) -> None:
     scanner = scanners.SCANNERS[scan["scanner"]]
     results = _scan_folder(scan["id"]) / scanners.RESULTS_FOLDER
     # The last marker written is when the scan was complete.
-    stamps = [_modified_at(results / marker) for marker in scanner.success_markers]
+    stamps = [_modified_at(results / marker) for marker in scanners.markers_of(scanner, results)]
     finished_at = max((stamp for stamp in stamps if stamp is not None), default=None)
     versions = scan.get("versions") or {}
     for dataset_id in scan["datasets"]:
@@ -976,6 +1064,14 @@ def _view(
         "conversions": scan["conversions"],
         "folder": str(folder),
         "is_result": scan.get("result_applied_at") is not None,
+        # How far it has got, per stage, for a scanner that can tell. Only looked for while the
+        # scan's own job is running: nothing is looked for on disk before that (see the module
+        # docstring), when a folder asked for early is remembered as "not there".
+        "progress": (
+            scanner.read_progress(folder / scanners.RESULTS_FOLDER)
+            if state["own_job_running"] and scanner.read_progress is not None
+            else None
+        ),
     }
     if not detail:
         return view
@@ -1077,8 +1173,10 @@ def cancel(scan_id: Any) -> dict[str, Any]:
             _write_scan(scan)
             return {"scan_id": scan["id"], "cancelled": [], "not_active": [], "stopped_waiting": True}
         active = jobs.active_jobs()
-        going = [job_id for job_id in job_ids if job_id in active]
-        not_active = [job_id for job_id in job_ids if job_id not in active]
+        # `scancel <array job ID>` stops every task of an array job, so the job is going while
+        # any of its tasks is listed.
+        going = [job_id for job_id in job_ids if _is_listed(job_id, active)]
+        not_active = [job_id for job_id in job_ids if job_id not in going]
         if not going:
             return {"scan_id": scan["id"], "cancelled": [], "not_active": not_active, "stopped_waiting": False}
         result = jobs._run(["scancel", *going])

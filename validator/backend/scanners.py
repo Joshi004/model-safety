@@ -24,6 +24,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
@@ -37,6 +38,7 @@ from reader_imports import (
     PII_SUMMARY_FILENAME,
     REPO_ROOT,
     CandidatePolicy,
+    TOXICITY_REMOVABLE_VERDICTS,
     RunFinderError,
     label_tier,
     read_json_or_none,
@@ -48,12 +50,13 @@ INPUTS_FOLDER = "inputs"
 RESULTS_FOLDER = "results"
 LOGS_FOLDER = "_logs"
 
-# Settings the scans' own scripts read from the environment. They are removed from the
-# environment the scan's command is started with, so a stray export in the shell the service
-# runs in can't change what the command shown does (a DEDUP_REFERENCE_ROOT would even switch
-# the scan to another mode, a PRIVACY_FILTER_POLICY would swap the NER policy). Everything a
-# scan needs is named in its command.
-ENV_PREFIXES = ("DEDUP_", "PII_", "PRIVACY_FILTER_")
+# Settings the scans' own scripts read from the environment (the toxicity wrapper reads
+# `TOX_`, `GUARD_`, `VLLM_` and `QUALITY_` ones). They are removed from the environment the
+# scan's command is started with, so a stray export in the shell the service runs in can't
+# change what the command shown does (a DEDUP_REFERENCE_ROOT would even switch the scan to
+# another mode, a PRIVACY_FILTER_POLICY would swap the NER policy). Everything a scan needs is
+# named in its command. HF_TOKEN and PATH are kept: the scans need them.
+ENV_PREFIXES = ("DEDUP_", "PII_", "PRIVACY_FILTER_", "TOX_", "GUARD_", "VLLM_", "QUALITY_")
 
 # The role of a scan's own job, as opposed to the jobs it has to wait for.
 MAIN_JOB_ROLE = "scan"
@@ -91,7 +94,7 @@ class Scanner:
     stages: tuple[str, ...]
     gpu: bool
     # The settings, in the shape step forms are built from: name, label, type, default, help.
-    # The types are `choice`, `integer` and `multi` (see `_check_field`).
+    # The types are `choice`, `integer`, `decimal` and `multi` (see `_check_field`).
     fields: list[dict[str, Any]]
     default_resources: dict[str, Any]
     # How a scan over several datasets can be made: mode -> what it means. None when the
@@ -124,6 +127,13 @@ class Scanner:
     fixed_resources: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     # What the scanner looks for, when the settings don't choose it: shown as a read-only list.
     detects: tuple[str, ...] = ()
+    # More markers a finished scan has, found from its results folder, for a scan that leaves
+    # one for each piece of its work (a toxicity shard) and so not a fixed list. They are
+    # needed as well as `success_markers`. Use `markers_of`, which puts the two together.
+    markers_for: Callable[[Path], tuple[str, ...]] | None = None
+    # How far a scan that is running has got, from its results folder: one entry for each stage
+    # that can be counted, `{stage, done, total, unit}`. None when nothing can be told yet.
+    read_progress: Callable[[Path], list[dict[str, Any]] | None] | None = None
 
 
 # -------------------------------------------------------------------------
@@ -138,6 +148,11 @@ def _choice(name: str, label: str, choices: list[str], default: str, help_text: 
 def _integer(name: str, label: str, low: int, high: int, default: int | None, help_text: str) -> dict[str, Any]:
     """A whole number from `low` to `high`. Empty means `default`, which may be None."""
     return {"name": name, "label": label, "type": "integer", "min": low, "max": high, "default": default, "help": help_text}
+
+
+def _decimal(name: str, label: str, low: float, high: float, step: float, default: float, help_text: str) -> dict[str, Any]:
+    """A number from `low` to `high` in steps of `step`, with at most two decimals."""
+    return {"name": name, "label": label, "type": "decimal", "min": low, "max": high, "step": step, "default": default, "help": help_text}
 
 
 def _multi(
@@ -161,6 +176,35 @@ def _shown(text: str) -> str:
     return repr(text if len(text) <= 40 else text[:40] + "...")
 
 
+DECIMAL_TEXT = re.compile(r"^[0-9]{1,3}(?:\.[0-9]{1,2})?$")
+
+
+def _hundredths(value: Any) -> int | None:
+    """A number with at most two decimals, from a number or its text, as a whole number of
+    hundredths (0.35 is 35). Whole numbers are used so that "is it a multiple of the step"
+    isn't decided by float rounding. None for anything else."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if DECIMAL_TEXT.fullmatch(text) is None:
+            return None
+        number = Decimal(text)
+    elif isinstance(value, (int, float)):
+        # str() gives the shortest text that reads back as the same float, so 0.1 + 0.2 is
+        # refused (it is 0.30000000000000004) and 0.35 is accepted.
+        number = Decimal(str(value))
+    else:
+        return None
+    # JSON read by Python accepts NaN and Infinity.
+    if not number.is_finite():
+        return None
+    hundredths = number * 100
+    if hundredths != hundredths.to_integral_value():
+        return None
+    return int(hundredths)
+
+
 def _check_field(field: dict[str, Any], value: Any, problems: list[str]) -> Any:
     """One setting, checked against its field. A wrong value is reported and replaced by the
     default, so every problem in a request is found in one go."""
@@ -180,6 +224,15 @@ def _check_field(field: dict[str, Any], value: Any, problems: list[str]) -> Any:
             problems.append(f"{label} must be a whole number from {field['min']} to {field['max']}.")
             return field["default"]
         return value
+    if kind == "decimal":
+        if value is None or value == "":
+            return field["default"]
+        low, high, step = (round(field[name] * 100) for name in ("min", "max", "step"))
+        hundredths = _hundredths(value)
+        if hundredths is None or not low <= hundredths <= high or (hundredths - low) % step != 0:
+            problems.append(f"{label} must be a number from {field['min']} to {field['max']} in steps of {field['step']}.")
+            return field["default"]
+        return hundredths / 100
     if kind == "multi":
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             problems.append(f"{label} must be a list of names.")
@@ -421,6 +474,12 @@ def dedup_build_command(context: ScanContext) -> list[str]:
         "--export=ALL," + ",".join(f"{name}={value}" for name, value in variables.items()),
         str(DEDUP_JOB_SCRIPT),
     ]
+
+
+def markers_of(scanner: Scanner, results: Path) -> tuple[str, ...]:
+    """Every path in a scan's results folder that a finished scan of this scanner has."""
+    extra = scanner.markers_for(results) if scanner.markers_for is not None else ()
+    return (*scanner.success_markers, *extra)
 
 
 def main_job_id(jobs_started: list[dict[str, str]]) -> str | None:
@@ -766,6 +825,244 @@ def regex_headline_count(results: Path, _mode: str | None, _dataset_id: str, _ve
     return _whole_number(summary.get("kept_total")) if isinstance(summary, dict) else None
 
 
+# -------------------------------------------------------------------------
+# Toxicity (toxicity)
+# -------------------------------------------------------------------------
+
+# The wrapper plans the shards (a prepare job) and submits one array job behind it: a task per
+# shard, which screens it with Detoxify and then judges what was flagged with Qwen3Guard.
+TOXICITY_WRAPPER = REPO_ROOT / "scripts" / "tool_team_toxicity_scan.sh"
+TOXICITY_ARRAY_SCRIPT = "run_toxicity_scan_array.sbatch"
+TOXICITY_MANIFEST = "manifests/manifest.json"
+# Where the array job writes each shard (as modelsafety/results/coverage.py reads them).
+TOXICITY_SHARDS_FOLDER = "scans/toxicity/shards"
+DETOXIFY_SUCCESS_MARKER = "_DETOXIFY_SUCCESS"
+TOXICITY_STAGES = (
+    "Quick screen: Detoxify (Unitary, multilingual model)",
+    "Judge: Qwen3Guard-Gen-8B",
+)
+# What Qwen3Guard names a message's categories (`CATEGORY_RE` in llm_check_guard.py, which needs
+# `openai` and so isn't imported: keep them in step), without the "None" it gives a message
+# that has none.
+GUARD_CATEGORIES = (
+    "Violent",
+    "Non-violent Illegal Acts",
+    "Sexual Content or Sexual Acts",
+    "PII",
+    "Suicide & Self-Harm",
+    "Unethical Acts",
+    "Politically Sensitive Topics",
+    "Copyright Violation",
+    "Jailbreak",
+)
+
+
+def _toxicity_check_shards(settings: dict[str, Any]) -> None:
+    if settings["concurrency"] > settings["shards"]:
+        raise ScannerError("Shards at once can't be more than the shards.")
+
+
+def _toxicity_cost(settings: dict[str, Any], resources: dict[str, Any]) -> dict[str, Any]:
+    _toxicity_check_shards(settings)
+    # One GPU for each shard that runs at once.
+    per_shard = sbatch_header(TOXICITY_ARRAY_SCRIPT)["gpus"]
+    if not per_shard:
+        # Without this a scan that does use GPUs would start without the GPU confirmation.
+        raise ScannerError(f"launchers/slurm/{TOXICITY_ARRAY_SCRIPT} has no GPU request, so its cost can't be shown.")
+    gpus = per_shard * settings["concurrency"]
+    return {
+        "gpus": gpus,
+        "cpus": resources["cpus"],
+        "mem": resources["mem"],
+        "time": resources["time"],
+        "summary": (
+            f"Up to {settings['shards']} shards, {settings['concurrency']} at once: up to {gpus} GPU{'' if gpus == 1 else 's'} "
+            f"at once. Each shard {resources['cpus']} CPUs, {resources['mem']} memory, up to {resources['time']}. "
+            "There are never more shards than the dataset has files. A small CPU job plans the shards first."
+        ),
+    }
+
+
+def toxicity_build_command(context: ScanContext) -> list[str]:
+    """`env TOX_KILL_ON_INVALID_DEP=1 bash scripts/tool_team_toxicity_scan.sh all ...`, which
+    submits the job that plans the shards and, behind it, the array job. Every setting is a
+    flag, after the variables of the shell the service runs in were removed, so the command
+    shown is the command that runs. The categories and verdicts aren't in it: the scan always
+    judges every category, and they only decide what counts as flagged when results are read
+    (D8)."""
+    _toxicity_check_shards(context.settings)
+    (input_root,) = context.version_folders.values()
+    results = context.folder / RESULTS_FOLDER
+    # The wrapper passes these on in an `--export` list, which is separated by commas.
+    _check_export_values({"TOX_INPUT_ROOT": str(input_root), "TOX_RUN_DIR": str(results)})
+    settings = context.settings
+    resources = context.resources
+    return [
+        "env",
+        # So a failed planning job takes the array job behind it with it, instead of leaving it
+        # pending for ever.
+        "TOX_KILL_ON_INVALID_DEP=1",
+        "bash",
+        str(TOXICITY_WRAPPER),
+        "all",
+        "--input-root",
+        str(input_root),
+        "--run-dir",
+        str(results),
+        "--input-mode",
+        "runs",
+        "--pilot-files",
+        "0",
+        "--shards",
+        str(settings["shards"]),
+        "--concurrency",
+        str(settings["concurrency"]),
+        "--threshold",
+        str(settings["threshold"]),
+        "--cpus",
+        str(resources["cpus"]),
+        "--mem",
+        str(resources["mem"]),
+        "--time",
+        str(resources["time"]),
+        "--partition",
+        str(resources["partition"]),
+    ]
+
+
+def toxicity_read_jobs(output: str) -> tuple[list[dict[str, str]], str | None]:
+    return _read_wrapper_jobs(
+        output,
+        ((PLAN_JOB_ROLE, r"Submitted prepare job: (\d+)"),),
+        r"Submitted (?:all )?job: (\d+)",
+    )
+
+
+def toxicity_log_files(folder: Path, _settings: dict[str, Any], jobs_started: list[dict[str, str]]) -> list[tuple[str, Path]]:
+    # The wrapper names its own SLURM logs (`logs/slurm/` in the repo, by job ID). Of the shards,
+    # the first one's are shown.
+    slurm = REPO_ROOT / "logs" / "slurm"
+    files: list[tuple[str, Path]] = []
+    for job in jobs_started:
+        if job["role"] == PLAN_JOB_ROLE:
+            files.append(("Planning output", slurm / f"tool_team_toxicity_prep_{job['job_id']}.out"))
+            files.append(("Planning errors", slurm / f"tool_team_toxicity_prep_{job['job_id']}.err"))
+        elif job["role"] == MAIN_JOB_ROLE:
+            files.append(("Shard 0 output", slurm / f"tool_team_toxicity_all_{job['job_id']}_0.out"))
+            files.append(("Shard 0 errors", slurm / f"tool_team_toxicity_all_{job['job_id']}_0.err"))
+            files.append(("Shard 0 model server", folder / RESULTS_FOLDER / TOXICITY_SHARDS_FOLDER / "shard_00000" / "vllm.log"))
+    return files
+
+
+def _toxicity_shard_names(results: Path) -> list[str] | None:
+    """The names of the scan's shards (`shard_00000`, ...), from the manifest the prepare job
+    wrote. None when it isn't there or doesn't list them."""
+    manifest = read_json_or_none(results / TOXICITY_MANIFEST)
+    shards = manifest.get("shards") if isinstance(manifest, dict) else None
+    if not isinstance(shards, list):
+        return None
+    indexes = [shard.get("index") for shard in shards if isinstance(shard, dict)]
+    return [
+        f"shard_{index:05d}"
+        for index in dict.fromkeys(indexes)
+        if isinstance(index, int) and not isinstance(index, bool) and index >= 0
+    ]
+
+
+def toxicity_markers(results: Path) -> tuple[str, ...]:
+    """The `_SUCCESS` of every shard. The manifest itself is one of the scanner's own
+    `success_markers`, so a missing manifest is reported as that."""
+    return tuple(f"{TOXICITY_SHARDS_FOLDER}/{name}/{SUCCESS_MARKER}" for name in _toxicity_shard_names(results) or ())
+
+
+def toxicity_progress(results: Path) -> list[dict[str, Any]] | None:
+    """Shards screened and shards judged, out of all of them. The shards' folder is listed and
+    only the folders in it are looked into, not each shard's by name: asking for one before a
+    task has made it would be remembered as "not there" for about a minute. (The listing of
+    the shards' folder itself can still hit that for a poll or two when the first task has
+    only just started; then there is simply no progress to show yet.)"""
+    names = _toxicity_shard_names(results)
+    if not names:
+        return None
+    shards_root = results / TOXICITY_SHARDS_FOLDER
+    screened = 0
+    judged = 0
+    try:
+        with os.scandir(shards_root) as entries:
+            present = {entry.name for entry in entries if entry.is_dir()}
+        for name in names:
+            if name not in present:
+                continue
+            with os.scandir(shards_root / name) as files:
+                made = {entry.name for entry in files}
+            screened += DETOXIFY_SUCCESS_MARKER in made
+            judged += SUCCESS_MARKER in made
+    except OSError:
+        return None
+    return [
+        {"stage": TOXICITY_STAGES[0], "done": screened, "total": len(names), "unit": "shards"},
+        {"stage": TOXICITY_STAGES[1], "done": judged, "total": len(names), "unit": "shards"},
+    ]
+
+
+def _add_counts(into: dict[str, int], counts: Any) -> None:
+    if isinstance(counts, dict):
+        for name, count in counts.items():
+            if isinstance(count, int) and not isinstance(count, bool):
+                into[name] = into.get(name, 0) + count
+
+
+def toxicity_read_details(results: Path) -> dict[str, Any]:
+    """What the shards found, added up: from each shard's `detoxify_summary.json` and
+    `guard_results/summary.json`."""
+    names = _toxicity_shard_names(results)
+    if names is None:
+        return {}
+    totals = {"rows_read": 0, "messages_scored": 0, "messages_flagged": 0, "guard_records": 0, "guard_errors": 0, "guard_unknown": 0}
+    verdicts: dict[str, int] = {}
+    categories: dict[str, int] = {}
+    judged = 0
+    for name in names:
+        shard = results / TOXICITY_SHARDS_FOLDER / name
+        detoxify = read_json_or_none(shard / "detoxify_summary.json")
+        if isinstance(detoxify, dict):
+            for key in ("rows_read", "messages_scored", "messages_flagged"):
+                totals[key] += _whole_number(detoxify.get(key)) or 0
+        guard = read_json_or_none(shard / "guard_results" / "summary.json")
+        if isinstance(guard, dict):
+            judged += 1
+            for key, source in (("guard_records", "total_records"), ("guard_errors", "errors"), ("guard_unknown", "unknown")):
+                totals[key] += _whole_number(guard.get(source)) or 0
+            _add_counts(verdicts, guard.get("safety"))
+            _add_counts(categories, guard.get("categories"))
+    return {
+        "shards": len(names),
+        "shards_judged": judged,
+        **totals,
+        "verdicts": _sorted_counts(verdicts),
+        "categories": _sorted_counts(categories),
+    }
+
+
+def toxicity_headline_count(results: Path, _mode: str | None, _dataset_id: str, _version_id: str) -> int | None:
+    """The messages the guard didn't call Safe: Unsafe, Controversial, and the ones with no
+    verdict it could use, which count as flagged (D9). It doesn't depend on the categories and
+    verdicts the user chose, which only apply when the results are read (D8)."""
+    names = _toxicity_shard_names(results)
+    if not names:
+        return None
+    total = 0
+    for name in names:
+        guard = read_json_or_none(results / TOXICITY_SHARDS_FOLDER / name / "guard_results" / "summary.json")
+        records = _whole_number(guard.get("total_records")) if isinstance(guard, dict) else None
+        safety = guard.get("safety") if isinstance(guard, dict) else None
+        if records is None or not isinstance(safety, dict):
+            # A shard that can't be counted would make the total too low.
+            return None
+        total += records - (_whole_number(safety.get("Safe")) or 0)
+    return total
+
+
 SCANNERS: dict[str, Scanner] = {
     "dedup": Scanner(
         key="dedup",
@@ -853,5 +1150,68 @@ SCANNERS: dict[str, Scanner] = {
         read_details=regex_read_details,
         headline_count=regex_headline_count,
         detects=tuple(PII_CATEGORIES),
+    ),
+    "toxicity": Scanner(
+        key="toxicity",
+        label="Toxicity",
+        description=(
+            "Finds toxic messages in two stages: a fast model (Detoxify) screens every message, and "
+            "Qwen3Guard judges the ones it flagged. It needs GPUs."
+        ),
+        stages=TOXICITY_STAGES,
+        gpu=True,
+        fields=[
+            _decimal(
+                "threshold",
+                "Detoxify threshold",
+                0.05,
+                0.95,
+                0.05,
+                0.5,
+                "A message goes to the judge when its highest Detoxify score is above this. A lower value sends "
+                "more messages to the judge, so the scan is slower and finds more. Changing it needs a new scan.",
+            ),
+            _multi(
+                "categories",
+                "Guard categories that count as flagged",
+                list(GUARD_CATEGORIES),
+                list(GUARD_CATEGORIES),
+                "The judge always rates every category. This only decides what counts as flagged when you read the "
+                "results, so you can change it there without scanning again.",
+            ),
+            _multi(
+                "verdicts",
+                "Guard verdicts that count as flagged",
+                list(TOXICITY_REMOVABLE_VERDICTS),
+                list(TOXICITY_REMOVABLE_VERDICTS),
+                "Like the categories, this is applied when you read the results. A message the judge gave no usable "
+                "verdict (a guard error) always counts as flagged.",
+            ),
+            _integer(
+                "shards",
+                "Shards",
+                1,
+                64,
+                8,
+                "How the converted files are split between jobs. There are never more shards than files.",
+            ),
+            _integer("concurrency", "Shards at once", 1, 64, 8, "How many shards run at the same time: one GPU each."),
+        ],
+        # What the wrapper asks for by itself, for each shard.
+        default_resources={"partition": jobs.DEFAULT_RESOURCES["partition"], "cpus": 16, "mem": "96G", "time": "48:00:00"},
+        modes=None,
+        default_mode=None,
+        count_label="messages",
+        cost=_toxicity_cost,
+        write_inputs=lambda _context: None,
+        build_command=toxicity_build_command,
+        read_jobs=toxicity_read_jobs,
+        log_files=toxicity_log_files,
+        # The manifest is what lists the shards; `markers_for` adds the `_SUCCESS` of each.
+        success_markers=(TOXICITY_MANIFEST,),
+        read_details=toxicity_read_details,
+        headline_count=toxicity_headline_count,
+        markers_for=toxicity_markers,
+        read_progress=toxicity_progress,
     ),
 }

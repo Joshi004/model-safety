@@ -541,6 +541,15 @@ export interface IntegerField extends ScannerFieldBase {
   default: number | null
 }
 
+// A number from `min` to `max` in steps of `step`, with at most two decimals ("0.05").
+export interface DecimalField extends ScannerFieldBase {
+  type: 'decimal'
+  min: number
+  max: number
+  step: number
+  default: number
+}
+
 // At least one of `choices`. `groups` only says how to show them together: each group holds
 // some of the choices, and every choice is in one.
 export interface MultiField extends ScannerFieldBase {
@@ -551,9 +560,10 @@ export interface MultiField extends ScannerFieldBase {
 }
 
 // One setting of a scanner. The backend checks every value against its field.
-export type ScannerField = ChoiceField | IntegerField | MultiField
+export type ScannerField = ChoiceField | IntegerField | DecimalField | MultiField
 
-// What a setting holds: a choice, a whole number (null when it is empty), or a list of choices.
+// What a setting holds: a choice, a number (a whole number is null when it is empty; a number
+// being typed is the text as typed), or a list of choices.
 export type SettingValue = string | number | string[] | null
 export type ScanSettings = Record<string, SettingValue>
 
@@ -727,6 +737,17 @@ export interface ScanView {
   folder: string
   // Whether this scan is the current result of its datasets.
   is_result: boolean
+  // How far the scan has got, one entry for each stage that can be counted. Null unless the
+  // scanner can tell and its own job is running.
+  progress: ScanProgress[] | null
+}
+
+// One counted stage of a running scan ("Quick screen: 3 of 8 shards").
+export interface ScanProgress {
+  stage: string
+  done: number
+  total: number
+  unit: string
 }
 
 export interface ScansResponse {

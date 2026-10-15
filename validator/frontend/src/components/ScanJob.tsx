@@ -77,6 +77,34 @@ export default function ScanJob({ scanId }: { scanId: string }) {
         </div>
       )}
 
+      {scan.progress !== null && scan.progress.length > 0 && (
+        <div className="scan-progress">
+          {scan.progress.map((item) => {
+            const percent = item.total > 0 ? Math.round((item.done / item.total) * 100) : 0
+            return (
+              <div key={item.stage}>
+                <p className="small">{item.stage}</p>
+                <div className="progress-bar">
+                  <div
+                    className="progress-bar-track"
+                    role="progressbar"
+                    aria-valuenow={item.done}
+                    aria-valuemin={0}
+                    aria-valuemax={item.total}
+                    aria-label={item.stage}
+                  >
+                    <div className="progress-bar-fill" style={{ width: `${percent}%` }} />
+                  </div>
+                  <span className="progress-bar-count muted small">
+                    {formatCount(item.done)} of {formatCount(item.total)} {item.unit}
+                  </span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
       <dl className="facts">
         <dt>Scan</dt>
         <dd className="mono">{scan.id}</dd>

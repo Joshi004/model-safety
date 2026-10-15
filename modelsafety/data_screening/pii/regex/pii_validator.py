@@ -20,6 +20,7 @@ from pii_output import (
     resolve_stage2_hits_dir,
     stage2_paths,
     write_stage2_metrics,
+    write_stage2_summary,
 )
 
 try:
@@ -126,6 +127,7 @@ def main():
     if not input_hits_dir.is_dir():
         raise FileNotFoundError(f"Missing Stage-1 hits directory: {input_hits_dir}")
     paths["success"].unlink(missing_ok=True)
+    paths["summary_file"].unlink(missing_ok=True)
     if paths["hits_dir"].exists():
         shutil.rmtree(paths["hits_dir"])
     paths["hits_dir"].mkdir(parents=True, exist_ok=True)
@@ -165,6 +167,7 @@ def main():
         processing_time=processing_time,
         num_workers=NUM_WORKERS,
     )
+    write_stage2_summary(paths["summary_file"], output_hits_dir=output_hits_dir, results=results)
 
     paths["success"].touch()
 

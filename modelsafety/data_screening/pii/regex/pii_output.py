@@ -25,6 +25,7 @@ STAGE3_NAME = "stage3_extract"
 HITS_DIRNAME = "hits"
 WORKERS_DIRNAME = "workers"
 METRICS_FILENAME = "metrics.txt"
+SUMMARY_FILENAME = "summary.json"
 INPUT_FILES_FILENAME = "input_files.json"
 SCAN_INPUTS_FILENAME = "scan_inputs.json"
 SUCCESS_FILENAME = "_SUCCESS"
@@ -109,6 +110,7 @@ def stage2_paths(run_dir: Path | None = None) -> dict[str, Path]:
         "stage_dir": stage,
         "hits_dir": stage / HITS_DIRNAME,
         "metrics_file": stage / METRICS_FILENAME,
+        "summary_file": stage / SUMMARY_FILENAME,
         "success": stage / SUCCESS_FILENAME,
     }
 
@@ -278,6 +280,30 @@ def write_stage2_metrics(
             f.write("    --source-root <jsonl-root>\n")
         else:
             f.write("\nNo validated hits — stage 3 (extractor) can be skipped.\n")
+
+
+def write_stage2_summary(
+    summary_file: Path,
+    *,
+    output_hits_dir: Path,
+    results: dict[str, tuple[int, int]],
+) -> None:
+    """The numbers of metrics.txt as JSON, for readers that must not parse text:
+    per category the raw and kept hits, their totals, and the rows with a kept hit."""
+    categories = {
+        filename.removesuffix(".txt"): {"raw": total, "kept": valid}
+        for filename, (total, valid) in sorted(results.items())
+    }
+    summary = {
+        "categories": categories,
+        "raw_total": sum(entry["raw"] for entry in categories.values()),
+        "kept_total": sum(entry["kept"] for entry in categories.values()),
+        "unique_locations": unique_hit_locations(output_hits_dir),
+    }
+    summary_file.parent.mkdir(parents=True, exist_ok=True)
+    temp = summary_file.with_name(f".{summary_file.name}.partial")
+    temp.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp, summary_file)
 
 
 def print_run_summary(run_dir: Path) -> None:

@@ -80,6 +80,11 @@ if [[ ! -f "${manifest}" ]]; then
       "${SCRIPT_DIR}/prepare_privacy_filter.sbatch"
   )"
   dependency=(--dependency="afterok:${prepare_job}")
+  # Opt in: without it, a failed manifest job leaves the scan job pending forever on a
+  # cluster that doesn't remove jobs whose dependency can never be met.
+  if [[ "${PRIVACY_FILTER_KILL_ON_INVALID_DEP:-0}" == "1" ]]; then
+    dependency+=(--kill-on-invalid-dep=yes)
+  fi
   echo "Manifest job: ${prepare_job}"
 fi
 

@@ -28,11 +28,19 @@ Rules this module keeps:
   A scan that failed or was cancelled is kept, so the failure can be read; so is a scan that
   is still going. A scan shared with other datasets stays while any of them still uses it.
 * Every SLURM call goes through jobs.py: an argument list, `shell=False`, a 30 second timeout.
-  Every job states its partition, CPUs, memory and time limit.
+  Every job states its partition, CPUs, memory and time limit: in its command, or, for a
+  scanner whose job scripts fix them (scanners.Scanner.fixed_resources), in the script's own
+  `#SBATCH` lines, with only the partition chosen.
+* A scan can start more than one job: the NER scan's command submits a job that plans the work
+  and then the GPU job that waits for it. The ones the scan's own job waits for are the
+  record's `prior_jobs`. The scan is going while any of them is, has failed or been cancelled
+  when one of them has, and has succeeded when its own job has and its scanner's success
+  markers exist. Cancelling it runs `scancel` on all of them.
 * Job state is never stored. It is read live from SLURM and from the files a job writes. What
   is saved is what was started (settings, command, the versions read, job IDs) and, once, the
   fact that a finished scan became the result of its datasets (`result_applied_at`).
-* A scan's `_SUCCESS` is only looked for once SLURM no longer lists its job, and the empty
+* A scan's success markers (`_SUCCESS`, or the three of the regex PII scan) are only looked
+  for once SLURM no longer lists its job, and the empty
   `results/` folder is made before `sbatch` (on this cluster's shared disk, asking for a file
   or folder before it exists makes this machine remember "not there" for about a minute).
 * One lock covers every start, cancel and replacement, so two clicks can't start two jobs for
@@ -70,6 +78,7 @@ REFRESH_SECONDS = 30
 # scan is made, and the scan's record then holds the exact command that ran.
 SCAN_ID_PLACEHOLDER = "<scan-id>"
 SLURM_JOB_ID = re.compile(r"^[0-9]{1,12}$")
+JOB_ROLE = re.compile(r"^[a-z][a-z_]{0,19}$")
 
 STATE_WAITING = "waiting_for_conversion"
 STATE_CONVERSION_FAILED = "conversion_failed"
@@ -141,6 +150,15 @@ def _is_scan(data: Any, scan_id: str) -> bool:
     job_id = data.get("job_id")
     if job_id is not None and not (isinstance(job_id, str) and SLURM_JOB_ID.fullmatch(job_id)):
         return False
+    # The jobs the scan's own job waits for. A record from before there were any has no list.
+    prior_jobs = data.get("prior_jobs", [])
+    if not isinstance(prior_jobs, list):
+        return False
+    for job in prior_jobs:
+        if not isinstance(job, dict) or not isinstance(job.get("role"), str) or JOB_ROLE.fullmatch(job["role"]) is None:
+            return False
+        if not isinstance(job.get("job_id"), str) or SLURM_JOB_ID.fullmatch(job["job_id"]) is None:
+            return False
     versions = data.get("versions")
     return (
         isinstance(data.get("settings"), dict)
@@ -223,6 +241,15 @@ def _modified_at(path: Path) -> str | None:
     except OSError:
         return None
     return datetime.fromtimestamp(stamp, timezone.utc).isoformat(timespec="seconds")
+
+
+def _jobs_of(scan: dict[str, Any]) -> list[dict[str, str]]:
+    """Every SLURM job the scan started, in the order they were started: the ones its own job
+    waits for (the NER scan plans its pieces of work in a first job), then its own."""
+    started = [dict(job) for job in scan.get("prior_jobs") or []]
+    if scan.get("job_id"):
+        started.append({"role": scanners.MAIN_JOB_ROLE, "job_id": scan["job_id"]})
+    return started
 
 
 # -------------------------------------------------------------------------
@@ -353,27 +380,54 @@ def _state_of(
         if scan.get("submitted_at"):
             # The record is written before `sbatch` runs, and again after. Starting it again
             # could run the scan twice.
+            # A scanner's jobs are only named after the scan when its command says so.
             job_name = f"scan_{scan['scanner']}_{scan['id']}"
-            return _state(STATE_FAILED, f"It was being started when the service stopped. Check `squeue` for a job named {job_name}.")
+            if any(job_name in part for part in scan.get("command") or []):
+                where = f"Check `squeue` for a job named {job_name}."
+            else:
+                where = f"Check `squeue` for jobs submitted at {scan['submitted_at']}."
+            return _state(STATE_FAILED, f"It was being started when the service stopped. {where}")
         if scan.get("cancelled_at"):
             return _state(STATE_CANCELLED, "Cancelled before it started.")
         return _waiting_state(scan, cache)
+
     state, reason = _slurm_outcome(job_id, active, accounted)
+    elapsed = _slurm_elapsed(job_id, active, accounted)
+    earlier = [
+        (job["role"], job["job_id"], *_slurm_outcome(job["job_id"], active, accounted))
+        for job in scan.get("prior_jobs") or []
+    ]
+    for role, earlier_id, earlier_state, earlier_reason in earlier:
+        # The scan's own job waits for these. One that failed or was cancelled means the scan
+        # did too, whatever became of the job waiting for it.
+        if earlier_state in (STATE_FAILED, STATE_CANCELLED):
+            detail = f": {earlier_reason}" if earlier_reason else "."
+            return _state(earlier_state, f"The {role} job ({earlier_id}) {earlier_state}{detail}", elapsed=elapsed)
+    if state == STATE_QUEUED:
+        for role, earlier_id, earlier_state, _earlier_reason in earlier:
+            if earlier_state == STATE_RUNNING:
+                # Queued behind a job that is running: the scan is going.
+                return _state(STATE_RUNNING, f"The {role} job ({earlier_id}) is running.", elapsed=_slurm_elapsed(earlier_id, active, accounted))
     if state == STATE_SUCCEEDED:
-        # SLURM no longer lists the job, so it is safe to look for the marker.
-        if not (_scan_folder(scan["id"]) / scanners.RESULTS_FOLDER / scanners.SUCCESS_MARKER).is_file():
+        # SLURM no longer lists the job, so it is safe to look for the markers.
+        scanner = scanners.SCANNERS[scan["scanner"]]
+        results = _scan_folder(scan["id"]) / scanners.RESULTS_FOLDER
+        missing = [marker for marker in scanner.success_markers if not (results / marker).is_file()]
+        if missing:
             return _state(
                 STATE_FAILED,
-                f"The job ended, but its results folder has no {scanners.SUCCESS_MARKER} marker.",
-                elapsed=_slurm_elapsed(job_id, active, accounted),
+                f"The job ended, but its results folder has no {', '.join(missing)}.",
+                elapsed=elapsed,
             )
-    return _state(state, reason, elapsed=_slurm_elapsed(job_id, active, accounted))
+    return _state(state, reason, elapsed=elapsed)
 
 
 def _states_of(scans: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], str | None]:
     """The state of each scan, by ID, and what SLURM said when it couldn't be read. One squeue
     and one sacct for all of them. A scan that became a result is finished: nothing is asked."""
-    job_ids = [scan["job_id"] for scan in scans if scan.get("job_id") and scan.get("result_applied_at") is None]
+    job_ids = [
+        job["job_id"] for scan in scans if scan.get("result_applied_at") is None for job in _jobs_of(scan)
+    ]
     active, accounted, slurm_error = jobs._read_slurm(job_ids) if job_ids else ({}, {}, None)
     cache: dict[Any, Any] = {}
     return {scan["id"]: _state_of(scan, active, accounted, cache) for scan in scans}, slurm_error
@@ -561,7 +615,7 @@ def _plan(
     problems: list[str] = []
     mode = _check_mode(scanner, mode_in, problems)
     settings = scanners.parse_settings(scanner, settings_in, problems)
-    resources = scanners.parse_resources(scanner, resources_in, problems)
+    resources = scanners.parse_resources(scanner, settings, resources_in, problems)
 
     # D3 is already worked out by the conversions' own check, for one dataset at a time.
     conversion_plan = conversions.check(items, jobs.DEFAULT_RESOURCES)
@@ -676,13 +730,18 @@ def _start_scan_job(scan: dict[str, Any]) -> None:
         scan["submit_error"] = f"{exc} The job may or may not have been submitted; check `squeue`."
     else:
         scan["wrapper_output"] = (result.stdout + result.stderr)[-MAX_OUTPUT_CHARS:]
-        job_id = result.stdout.strip().split(";")[0]
+        prior, job_id = scanner.read_jobs(result.stdout)
+        # Kept even when the command failed: a job it started first is still there.
+        scan["prior_jobs"] = [job for job in prior if SLURM_JOB_ID.fullmatch(job["job_id"])]
         if result.returncode != 0:
-            scan["submit_error"] = f"sbatch failed: {jobs._failure_detail(result)}"
-        elif SLURM_JOB_ID.fullmatch(job_id) is None:
-            scan["submit_error"] = f"sbatch printed something unexpected: {result.stdout.strip()!r}"
+            scan["submit_error"] = f"The command that starts the scan failed: {jobs._failure_detail(result)}"
+        elif job_id is None or SLURM_JOB_ID.fullmatch(job_id) is None:
+            scan["submit_error"] = f"The command that starts the scan printed something unexpected: {result.stdout.strip()!r}"
         else:
             scan["job_id"] = job_id
+        if scan.get("submit_error") and scan["prior_jobs"]:
+            started = ", ".join(f"the {job['role']} job {job['job_id']}" for job in scan["prior_jobs"])
+            scan["submit_error"] += f" It had already submitted {started}, which may still be running: stop it with scancel."
     _write_scan(scan)
 
 
@@ -705,6 +764,7 @@ def _create_scan(
         "versions": None,
         "command": None,
         "command_text": None,
+        "prior_jobs": [],
         "job_id": None,
         "submitted_at": None,
         "submit_error": None,
@@ -790,7 +850,9 @@ def _apply_result(scan: dict[str, Any]) -> None:
     idempotent), rather than leaving a finished scan nobody ever picks up."""
     scanner = scanners.SCANNERS[scan["scanner"]]
     results = _scan_folder(scan["id"]) / scanners.RESULTS_FOLDER
-    finished_at = _modified_at(results / scanners.SUCCESS_MARKER)
+    # The last marker written is when the scan was complete.
+    stamps = [_modified_at(results / marker) for marker in scanner.success_markers]
+    finished_at = max((stamp for stamp in stamps if stamp is not None), default=None)
     versions = scan.get("versions") or {}
     for dataset_id in scan["datasets"]:
         version = versions.get(dataset_id)
@@ -905,7 +967,9 @@ def _view(
         "submitted_at": scan.get("submitted_at"),
         "finished_at": scan.get("finished_at"),
         "cancelled_at": scan.get("cancelled_at"),
+        # The scan's own job, and all its jobs (the ones it waits for first) with their roles.
         "job_id": scan.get("job_id"),
+        "jobs": _jobs_of(scan),
         "settings": scan["settings"],
         "resources": scan["resources"],
         "conversions": scan["conversions"],
@@ -925,10 +989,10 @@ def _view(
     )
     if state["state"] == STATE_SUCCEEDED:
         view["details"] = scanner.read_details(folder / scanners.RESULTS_FOLDER)
-    job_id = scan.get("job_id")
-    if job_id is not None:
+    started = _jobs_of(scan)
+    if started:
         # Nothing is looked for on disk while the job is queued (see the module docstring).
-        for name, path in scanner.log_files(folder / scanners.LOGS_FOLDER, job_id):
+        for name, path in scanner.log_files(folder, scan["settings"], started):
             tail = jobs._tail_file(path) if state["state"] != STATE_QUEUED else None
             view["logs"].append({"name": name, "path": str(path), "tail": tail})
     return view
@@ -999,24 +1063,27 @@ def dataset_summaries(datasets: list[dict[str, Any]]) -> dict[str, dict[str, dic
 def cancel(scan_id: Any) -> dict[str, Any]:
     """Stop a scan. One that is still waiting for its conversions is stopped without ever
     starting, and the conversions keep running (cancel them too if they aren't wanted). One with
-    a job gets `scancel` on the one job its record lists, if SLURM still has it."""
+    jobs gets `scancel` on the jobs its record lists (and only those), the ones SLURM still has."""
     with _LOCK:
         scan = _load_scan(scan_id)
         states, _error = _states_of([scan])
         state = states[scan["id"]]["state"]
-        job_id = scan.get("job_id")
-        if job_id is None:
+        job_ids = [job["job_id"] for job in _jobs_of(scan)]
+        if not job_ids:
             if state not in (STATE_WAITING, STATE_STARTING):
                 raise ScanError(f"This scan is {state.replace('_', ' ')}, so there is nothing to cancel.")
             scan["cancelled_at"] = jobs._now_iso()
             _write_scan(scan)
             return {"scan_id": scan["id"], "cancelled": [], "not_active": [], "stopped_waiting": True}
-        if job_id not in jobs.active_jobs():
-            return {"scan_id": scan["id"], "cancelled": [], "not_active": [job_id], "stopped_waiting": False}
-        result = jobs._run(["scancel", job_id])
+        active = jobs.active_jobs()
+        going = [job_id for job_id in job_ids if job_id in active]
+        not_active = [job_id for job_id in job_ids if job_id not in active]
+        if not going:
+            return {"scan_id": scan["id"], "cancelled": [], "not_active": not_active, "stopped_waiting": False}
+        result = jobs._run(["scancel", *going])
         if result.returncode != 0:
             raise ScanError(f"scancel failed: {jobs._failure_detail(result)}")
-        return {"scan_id": scan["id"], "cancelled": [job_id], "not_active": [], "stopped_waiting": False}
+        return {"scan_id": scan["id"], "cancelled": going, "not_active": not_active, "stopped_waiting": False}
 
 
 def refuse_if_scanning(items: list[dict[str, Any]]) -> None:

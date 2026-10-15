@@ -65,7 +65,11 @@ from modelsafety.data_screening.pii.regex.pii_output import PII_CATEGORIES  # no
 from modelsafety.filter.rules import GUARD_ERROR_CHOICES, TOXICITY_REMOVABLE_VERDICTS  # noqa: E402
 
 # The text of one message as the NER scan cut it: its spans' start and end are positions in it.
-from modelsafety.data_screening.pii.model.common import content_text  # noqa: E402
+from modelsafety.data_screening.pii.model.common import content_text, label_tier  # noqa: E402
+
+# The NER policy file's reader: the NER scanner checks the policy it writes with it, so a bad
+# file is refused when the scan starts and not by the GPU job.
+from modelsafety.data_screening.pii.model.policy import CandidatePolicy  # noqa: E402
 
 # The lookup behind "Show original", and the helpers the preview shares with it.
 # It lives in modelsafety/trace/original.py so the trace tool uses the same code.
@@ -143,6 +147,8 @@ __all__ = [
     "run_reads_path",
     "extract_record_text",
     "content_text",
+    "label_tier",
+    "CandidatePolicy",
     "json_safe",
     "line_fingerprint",
     "row_fingerprint",

@@ -7,9 +7,10 @@ runs it, where its logs are, what it found. The framework in scans.py (records, 
 starting, waiting for conversions, state, replacing results, cancelling) never names a
 scanner, so another scanner is another entry here.
 
-Nothing here starts, stops or deletes anything. The two things that write are
-`dedup_write_inputs`, which writes the scan's own `inputs/files.txt` inside the scan's
-folder, and the functions that read a scan's output.
+Nothing here starts, stops or deletes anything. The only things that write are
+`dedup_write_inputs`, which writes the scan's own `inputs/files.txt`, and `ner_write_inputs`,
+which writes its `inputs/policy.json`, both inside the scan's folder; the other functions
+read a scan's output or the job scripts.
 
 A scan's folder, as scans.py lays it out:
 
@@ -19,13 +20,23 @@ A scan's folder, as scans.py lays it out:
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 import jobs
-from reader_imports import REPO_ROOT, RunFinderError, read_json_or_none, select_scan_files
+from reader_imports import (
+    PII_CATEGORIES,
+    REPO_ROOT,
+    CandidatePolicy,
+    RunFinderError,
+    label_tier,
+    read_json_or_none,
+    select_scan_files,
+)
 
 SUCCESS_MARKER = "_SUCCESS"
 INPUTS_FOLDER = "inputs"
@@ -33,10 +44,14 @@ RESULTS_FOLDER = "results"
 LOGS_FOLDER = "_logs"
 
 # Settings the scans' own scripts read from the environment. They are removed from the
-# environment `sbatch` is started with, so a stray export in the shell the service runs in
-# can't change what the command shown does (a DEDUP_REFERENCE_ROOT would even switch the
-# scan to another mode). Everything a scan needs is named in its command.
-ENV_PREFIXES = ("DEDUP_",)
+# environment the scan's command is started with, so a stray export in the shell the service
+# runs in can't change what the command shown does (a DEDUP_REFERENCE_ROOT would even switch
+# the scan to another mode, a PRIVACY_FILTER_POLICY would swap the NER policy). Everything a
+# scan needs is named in its command.
+ENV_PREFIXES = ("DEDUP_", "PII_", "PRIVACY_FILTER_")
+
+# The role of a scan's own job, as opposed to the jobs it has to wait for.
+MAIN_JOB_ROLE = "scan"
 
 MODE_ACROSS = "across"
 MODE_WITHIN = "within"
@@ -71,6 +86,7 @@ class Scanner:
     stages: tuple[str, ...]
     gpu: bool
     # The settings, in the shape step forms are built from: name, label, type, default, help.
+    # The types are `choice`, `integer` and `multi` (see `_check_field`).
     fields: list[dict[str, Any]]
     default_resources: dict[str, Any]
     # How a scan over several datasets can be made: mode -> what it means. None when the
@@ -82,13 +98,27 @@ class Scanner:
     cost: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
     write_inputs: Callable[[ScanContext], None]
     build_command: Callable[[ScanContext], list[str]]
-    # `(name, path)` of each log of the job SLURM gave this ID, for the log tails.
-    log_files: Callable[[Path, str], list[tuple[str, Path]]]
+    # The jobs a command started, from what it printed: `(jobs it waits for, its own job ID)`.
+    # Each job it waits for is `{"role": ..., "job_id": ...}`. Called on the output of a
+    # command that failed too: a job started before the failure still has to be found.
+    read_jobs: Callable[[str], tuple[list[dict[str, str]], str | None]]
+    # `(name, path)` of each log, for the log tails: the scan's folder, its settings, and its
+    # jobs (the waited-for ones first, then its own with the role MAIN_JOB_ROLE).
+    log_files: Callable[[Path, dict[str, Any], list[dict[str, str]]], list[tuple[str, Path]]]
+    # What a scan leaves behind when it has finished, as paths in its results folder. The scan
+    # has succeeded when SLURM says its job completed and every one of them exists.
+    success_markers: tuple[str, ...]
     # What a finished scan found, from its results folder, for the scan's own page.
     read_details: Callable[[Path], dict[str, Any]]
     # The headline count of one dataset: the scan's results folder, the scan's mode, the
     # dataset and the Prepared version the scan read for it.
     headline_count: Callable[[Path, str | None, str, str], int | None]
+    # For a scanner whose job scripts fix the CPUs, memory and time (and so the GPUs): what
+    # they ask for, for these settings, as `{cpus, mem, time}`. Only the partition can be
+    # chosen then. None when the user sets all of them.
+    fixed_resources: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    # What the scanner looks for, when the settings don't choose it: shown as a read-only list.
+    detects: tuple[str, ...] = ()
 
 
 # -------------------------------------------------------------------------
@@ -100,16 +130,66 @@ def _choice(name: str, label: str, choices: list[str], default: str, help_text: 
     return {"name": name, "label": label, "type": "choice", "choices": choices, "default": default, "help": help_text}
 
 
+def _integer(name: str, label: str, low: int, high: int, default: int | None, help_text: str) -> dict[str, Any]:
+    """A whole number from `low` to `high`. Empty means `default`, which may be None."""
+    return {"name": name, "label": label, "type": "integer", "min": low, "max": high, "default": default, "help": help_text}
+
+
+def _multi(
+    name: str,
+    label: str,
+    choices: list[str],
+    default: list[str],
+    help_text: str,
+    groups: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """At least one of `choices`. `groups` is only for showing them together: each is
+    `{key, choices}`, and the choices of all of them are the field's."""
+    field: dict[str, Any] = {"name": name, "label": label, "type": "multi", "choices": choices, "default": default, "help": help_text}
+    if groups is not None:
+        field["groups"] = groups
+    return field
+
+
+def _shown(text: str) -> str:
+    """A value from a request, short enough to put in a message."""
+    return repr(text if len(text) <= 40 else text[:40] + "...")
+
+
 def _check_field(field: dict[str, Any], value: Any, problems: list[str]) -> Any:
     """One setting, checked against its field. A wrong value is reported and replaced by the
     default, so every problem in a request is found in one go."""
-    # Only choices so far; a scanner with numbers or lists adds its type here.
-    if field["type"] != "choice":
-        raise ValueError(f"Setting {field['name']} has a type this module doesn't know: {field['type']}.")
-    if value in field["choices"]:
+    kind = field["type"]
+    label = field["label"]
+    if kind == "choice":
+        if value in field["choices"]:
+            return value
+        problems.append(f"{label} must be one of {', '.join(field['choices'])}.")
+        return field["default"]
+    if kind == "integer":
+        if value is None or value == "":
+            return field["default"]
+        if isinstance(value, str) and re.fullmatch(r"[0-9]{1,9}", value.strip()):
+            value = int(value.strip())
+        if isinstance(value, bool) or not isinstance(value, int) or not field["min"] <= value <= field["max"]:
+            problems.append(f"{label} must be a whole number from {field['min']} to {field['max']}.")
+            return field["default"]
         return value
-    problems.append(f"{field['label']} must be one of {', '.join(field['choices'])}.")
-    return field["default"]
+    if kind == "multi":
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            problems.append(f"{label} must be a list of names.")
+            return list(field["default"])
+        unknown = [item for item in dict.fromkeys(value) if item not in field["choices"]]
+        if unknown:
+            problems.append(f"{label}: {', '.join(_shown(item) for item in unknown[:3])} isn't one of the choices.")
+            return list(field["default"])
+        if not value:
+            problems.append(f"{label}: choose at least one.")
+            return list(field["default"])
+        # In the order of the choices, so the same selection is always the same value.
+        chosen = set(value)
+        return [choice for choice in field["choices"] if choice in chosen]
+    raise ValueError(f"Setting {field['name']} has a type this module doesn't know: {kind}.")
 
 
 def parse_settings(scanner: Scanner, raw: Any, problems: list[str]) -> dict[str, Any]:
@@ -128,17 +208,75 @@ def parse_settings(scanner: Scanner, raw: Any, problems: list[str]) -> dict[str,
     }
 
 
-def parse_resources(scanner: Scanner, raw: Any, problems: list[str]) -> dict[str, Any] | None:
-    """The partition, CPUs, memory and time limit: the scanner's defaults, with whatever the
-    request gives on top, checked by jobs.validate_resources. None when they can't be used."""
-    given = raw if isinstance(raw, dict) else {}
-    merged = dict(scanner.default_resources)
-    merged.update({name: given[name] for name in ("partition", "cpus", "mem", "time") if given.get(name) not in (None, "")})
+def sbatch_header(script: str) -> dict[str, Any]:
+    """The `#SBATCH` lines of a job script in launchers/slurm: CPUs, memory, time limit and
+    the GPUs its `--gres` asks for. None for any of the first three it doesn't say."""
+    found: dict[str, str] = {}
     try:
-        return jobs.validate_resources(merged)
-    except (jobs.JobsError, jobs.SlurmUnavailable) as exc:
+        text = (REPO_ROOT / "launchers" / "slurm" / script).read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    for line in text.splitlines():
+        match = re.match(r"^#SBATCH\s+--([a-z-]+)=(\S+)", line)
+        if match:
+            found[match.group(1)] = match.group(2)
+    gres = found.get("gres", "")
+    gpu_count = re.search(r":(\d+)$", gres) if gres.startswith("gpu") else None
+    return {
+        "cpus": int(found["cpus-per-task"]) if found.get("cpus-per-task", "").isdigit() else None,
+        "mem": found.get("mem"),
+        "time": found.get("time"),
+        "gpus": int(gpu_count.group(1)) if gpu_count else (1 if gres.startswith("gpu") else 0),
+    }
+
+
+def script_resources(script: str) -> dict[str, Any]:
+    """`{cpus, mem, time}` a job script asks for in its own `#SBATCH` lines. A job that fixes
+    its resources has to say all three: without a memory or time line SLURM gives it a whole
+    node's memory and no end."""
+    header = sbatch_header(script)
+    missing = [name for name in ("cpus", "mem", "time") if header[name] is None]
+    if missing:
+        raise ScannerError(f"launchers/slurm/{script} has no #SBATCH line for its {', '.join(missing)}.")
+    return {name: header[name] for name in ("cpus", "mem", "time")}
+
+
+def parse_resources(scanner: Scanner, settings: dict[str, Any], raw: Any, problems: list[str]) -> dict[str, Any] | None:
+    """The partition, CPUs, memory and time limit: the scanner's defaults, with whatever the
+    request gives on top, checked by jobs.validate_resources. None when they can't be used.
+    For a scanner whose job scripts fix the resources only the partition is taken (and
+    anything else is refused); the rest are what its scripts ask for, for these settings."""
+    given = raw if isinstance(raw, dict) else {}
+    if scanner.fixed_resources is None:
+        merged = dict(scanner.default_resources)
+        merged.update({name: given[name] for name in ("partition", "cpus", "mem", "time") if given.get(name) not in (None, "")})
+        try:
+            return jobs.validate_resources(merged)
+        except (jobs.JobsError, jobs.SlurmUnavailable) as exc:
+            problems.append(str(exc))
+        return None
+
+    fixed_names = [name for name in ("cpus", "mem", "time") if given.get(name) not in (None, "")]
+    if fixed_names:
+        problems.append(
+            f"{scanner.label} gets its CPUs, memory and time from its job scripts, so only the partition can be "
+            f"chosen ({', '.join(fixed_names)} given)."
+        )
+    partition = given.get("partition")
+    if partition in (None, ""):
+        partition = scanner.default_resources["partition"]
+    try:
+        partitions = jobs.list_partitions()
+        fixed = scanner.fixed_resources(settings)
+    except (jobs.SlurmUnavailable, ScannerError) as exc:
         problems.append(str(exc))
-    return None
+        return None
+    if not isinstance(partition, str) or partition not in partitions:
+        problems.append(f"Partition {_shown(str(partition))} isn't one sinfo lists ({', '.join(partitions)}).")
+        return None
+    if fixed_names:
+        return None
+    return {"partition": partition, **fixed}
 
 
 def describe(scanner: Scanner) -> dict[str, Any]:
@@ -151,10 +289,36 @@ def describe(scanner: Scanner) -> dict[str, Any]:
         "gpu": scanner.gpu,
         "fields": scanner.fields,
         "default_resources": scanner.default_resources,
+        "resources_fixed": scanner.fixed_resources is not None,
+        "detects": list(scanner.detects),
         "modes": scanner.modes,
         "default_mode": scanner.default_mode,
         "count_label": scanner.count_label,
     }
+
+
+# -------------------------------------------------------------------------
+# Reading the jobs a command started
+# -------------------------------------------------------------------------
+
+
+def read_parsable_job(output: str) -> tuple[list[dict[str, str]], str | None]:
+    """The one job of `sbatch --parsable`, which prints "<job id>" or "<job id>;<cluster>".
+    What it printed instead is returned as it is, for scans.py to refuse."""
+    first = output.strip().splitlines()[-1].split(";")[0] if output.strip() else None
+    return [], first
+
+
+def _read_wrapper_jobs(output: str, waited_for: tuple[tuple[str, str], ...], own: str) -> tuple[list[dict[str, str]], str | None]:
+    """The jobs a wrapper script printed: `waited_for` and `own` are patterns with one group
+    for the job ID, the first as `(role, pattern)`."""
+    prior = []
+    for role, pattern in waited_for:
+        match = re.search(pattern, output)
+        if match:
+            prior.append({"role": role, "job_id": match.group(1)})
+    match = re.search(own, output)
+    return prior, match.group(1) if match else None
 
 
 # -------------------------------------------------------------------------
@@ -248,9 +412,18 @@ def dedup_build_command(context: ScanContext) -> list[str]:
     ]
 
 
-def dedup_log_files(logs: Path, job_id: str) -> list[tuple[str, Path]]:
+def main_job_id(jobs_started: list[dict[str, str]]) -> str | None:
+    """The ID of the scan's own job among the jobs of a scan."""
+    return next((job["job_id"] for job in jobs_started if job["role"] == MAIN_JOB_ROLE), None)
+
+
+def dedup_log_files(folder: Path, _settings: dict[str, Any], jobs_started: list[dict[str, str]]) -> list[tuple[str, Path]]:
     # The job script writes its own output into DEDUP_LOG_ROOT (set to `<logs>/dedup`), so the
     # SLURM files only hold what happens before that, such as a failed `cd`.
+    logs = folder / LOGS_FOLDER
+    job_id = main_job_id(jobs_started)
+    if job_id is None:
+        return []
     return [
         ("Scan output", logs / "dedup" / "main" / f"dedup_{job_id}.log"),
         ("Scan errors", logs / "dedup" / "err" / f"dedup_{job_id}.err"),
@@ -318,7 +491,9 @@ SCANNERS: dict[str, Scanner] = {
         cost=_dedup_cost,
         write_inputs=dedup_write_inputs,
         build_command=dedup_build_command,
+        read_jobs=read_parsable_job,
         log_files=dedup_log_files,
+        success_markers=(SUCCESS_MARKER,),
         read_details=dedup_read_details,
         headline_count=dedup_headline_count,
     ),

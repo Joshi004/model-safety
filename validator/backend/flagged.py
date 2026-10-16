@@ -17,8 +17,9 @@ and by name (NER label, regex category, or the dataset a duplicate's kept copy i
 
 Highlights are worked out here, not in the browser: NER spans by message and character range
 (each checked to lie inside its message's text), regex PII by searching for the matched text
-(the scan keeps no positions), toxicity by message. A finding that can't be placed goes in
-`unplaced` with the reason, and is never guessed at.
+(the scan keeps no positions), toxicity by message, and duplicates by a word-by-word comparison
+of the row with its kept copy (dedup_diff.py), over only the messages the scan compared. A
+finding that can't be placed goes in `unplaced` with the reason, and is never guessed at.
 
 Rules this module keeps:
 
@@ -36,11 +37,12 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
+import dedup_diff
 import registry
 import results
 import scanners
 import scans
-from reader_imports import ORIGIN_KEY, content_text, line_fingerprint, read_json_or_none
+from reader_imports import ORIGIN_KEY, compared_messages, content_text, line_fingerprint, read_json_or_none
 
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
@@ -361,6 +363,8 @@ def _read_prepared(folder: Path, file: Any, offset: Any, sha256: Any) -> dict[st
         "segments": None,
         "origin": None,
         "problem": None,
+        # The parsed line, for the server's own use (never copied into a response).
+        "record": None,
     }
     try:
         relative = _inside_version(file)
@@ -389,6 +393,7 @@ def _read_prepared(folder: Path, file: Any, offset: Any, sha256: Any) -> dict[st
     except ValueError as exc:
         result["problem"] = f"The Prepared line isn't JSON: {exc}"
         return result
+    result["record"] = record
     result["segments"] = _segments(record)
     metadata = record.get("metadata") if isinstance(record, dict) else None
     result["origin"] = metadata.get(ORIGIN_KEY) if isinstance(metadata, dict) else None
@@ -514,12 +519,15 @@ def _findings(
     return highlights[:MAX_HIGHLIGHTS], flags, unplaced[:MAX_HIGHLIGHTS], cut
 
 
-def _kept_copy(opened: _Opened, entry: dict[str, Any], names: dict[str, str]) -> dict[str, Any] | None:
+def _kept_copy(
+    opened: _Opened, entry: dict[str, Any], names: dict[str, str]
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """For a duplicate: the copy it matched, which dataset it is in, and its text, read the same
-    way as the row's own (the copy can be in another dataset's Prepared version)."""
+    way as the row's own (the copy can be in another dataset's Prepared version). The second
+    item is the copy's parsed line, kept on the server for the comparison (None if not read)."""
     place = entry.get("duplicate_of")
     if not isinstance(place, dict):
-        return None
+        return None, None
     dataset = place.get("dataset")
     story: dict[str, Any] = {
         "dataset_id": dataset if isinstance(dataset, str) else None,
@@ -533,7 +541,7 @@ def _kept_copy(opened: _Opened, entry: dict[str, Any], names: dict[str, str]) ->
     }
     if not isinstance(dataset, str):
         story["problem"] = "The copy is in a reference set, not in a dataset of this service."
-        return story
+        return story, None
     try:
         if dataset == opened.dataset["id"]:
             folder = opened.version_folder
@@ -542,10 +550,50 @@ def _kept_copy(opened: _Opened, entry: dict[str, Any], names: dict[str, str]) ->
             folder = results._version_folder(dataset, versions.get(dataset) if isinstance(versions, dict) else None)
     except ResultsError as exc:
         story["problem"] = str(exc)
-        return story
+        return story, None
     prepared = _read_prepared(folder, place.get("file"), place.get("byte_offset"), place.get("sha256"))
     story.update({key: prepared[key] for key in ("run_dir", "segments", "origin", "problem")})
-    return story
+    return story, prepared["record"]
+
+
+def _comparison_settings(opened: _Opened) -> tuple[str, bool]:
+    """The text scope and system-message choice a duplicates scan was made with. A scan saved
+    without them was made with the dialog's defaults ("prompt", and system messages left out)."""
+    settings = opened.scan.get("settings")
+    settings = settings if isinstance(settings, dict) else {}
+    scope = settings.get("text_scope")
+    scope = scope if scope in ("prompt", "all") else "prompt"
+    return scope, settings.get("exclude_system", "1") in ("1", 1, True)
+
+
+def _comparison(
+    opened: _Opened, prepared: dict[str, Any], kept: dict[str, Any] | None, kept_record: dict[str, Any] | None
+) -> dict[str, Any]:
+    """For a duplicate: which messages of each row the scan compared, and a word-by-word
+    comparison of the two rows' compared text (dedup_diff.py). When either row's text isn't
+    available only `problem` says so."""
+    empty: dict[str, Any] = {
+        "row_highlights": [],
+        "kept_highlights": [],
+        "row_compared": [],
+        "kept_compared": [],
+        "same_share": None,
+        "cut": False,
+        "problem": None,
+    }
+    if prepared["record"] is None or prepared["segments"] is None:
+        return {**empty, "problem": "This row's text isn't shown, so it can't be compared."}
+    if kept is None or kept_record is None or kept["segments"] is None:
+        return {**empty, "problem": "The kept copy's text isn't shown, so the rows can't be compared."}
+    scope, exclude_system = _comparison_settings(opened)
+    row_compared = compared_messages(prepared["record"], scope, exclude_system)
+    kept_compared = compared_messages(kept_record, scope, exclude_system)
+    return {
+        **empty,
+        **dedup_diff.compare(prepared["segments"], kept["segments"], row_compared, kept_compared, MAX_HIGHLIGHTS),
+        "row_compared": row_compared,
+        "kept_compared": kept_compared,
+    }
 
 
 # -------------------------------------------------------------------------
@@ -595,6 +643,7 @@ def flagged_row(
     prepared = _read_prepared(opened.version_folder, entry.get("file"), entry.get("byte_offset"), entry.get("sha256"))
     highlights, flags, unplaced, cut = _findings(scanner, entry, prepared["segments"] or [], counted)
     total = entry.get("findings_total")
+    kept, kept_record = _kept_copy(opened, entry, names) if scanner == "dedup" else (None, None)
     return {
         "dataset_id": opened.dataset["id"],
         "scanner": scanner,
@@ -608,5 +657,6 @@ def flagged_row(
         "unplaced": unplaced,
         "findings_cut": cut,
         "findings_total": total if isinstance(total, int) and not isinstance(total, bool) else None,
-        "duplicate_of": _kept_copy(opened, entry, names) if scanner == "dedup" else None,
+        "duplicate_of": kept,
+        "comparison": _comparison(opened, prepared, kept, kept_record) if scanner == "dedup" else None,
     }

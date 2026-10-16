@@ -169,7 +169,13 @@ export default function ResultPage({
 
   const result = data?.result ?? null
   const note = result === null ? null : analysisNote(result.analysis)
-  const names = result?.datasets.map((item) => item.name) ?? []
+  // The datasets the scan covered, in the order it read them: this one is marked, and one that
+  // isn't registered any more is said so rather than left out.
+  const names =
+    result?.datasets.map((item) => {
+      if (item.id === dataset.id) return `${item.name ?? dataset.name} (this dataset)`
+      return item.name ?? 'a dataset that is no longer registered'
+    }) ?? []
   const filter = result?.filter
   const selectedCategories = choice.categories ?? filter?.saved_categories ?? []
   const selectedVerdicts = choice.verdicts ?? filter?.saved_verdicts ?? []
@@ -304,6 +310,13 @@ export default function ResultPage({
               </dd>
             </dl>
             {scannerNote(scanner) !== null && <p className="muted small">{scannerNote(scanner)}</p>}
+            {scanner === 'dedup' && result.mode === 'across' && result.datasets.length > 1 && (
+              <p className="muted small">
+                {
+                  "A row here is flagged when it repeats a row that was read earlier, in this dataset or in a dataset that comes before it in the 'Compared' list. Rows of this dataset that other datasets repeat are kept here, and are flagged on those datasets' pages instead. Datasets this scan did not cover are not compared with this one."
+                }
+              </p>
+            )}
             {scanner === 'dedup' && (
               <p className="muted small">
                 {data.auto_drop === null

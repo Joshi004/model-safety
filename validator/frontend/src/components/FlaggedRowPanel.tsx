@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { errorMessage, getFlaggedRow } from '../api'
-import { describeConfidence, whereInRow } from '../flagged'
+import { describeConfidence, describeSameShare, whereInRow } from '../flagged'
 import { nerLabelName, ruleCategoryName } from '../scans'
 import type { FlaggedRowDetail, KeptCopy, RowHighlight, RowMessageFlag, RowUnplaced } from '../types'
 import { ShowOriginal } from './OriginalLookup'
@@ -175,6 +175,11 @@ function Original({ origin, runDir }: { origin: FlaggedRowDetail['origin']; runD
 
 // The row beside the copy of it that was kept.
 function DuplicateSides({ detail, copy }: { detail: FlaggedRowDetail; copy: KeptCopy }) {
+  // The marks and the dimming only apply when the rows were compared; with a problem the lists are empty.
+  const comparison = detail.comparison !== null && detail.comparison.problem === null ? detail.comparison : null
+  const problem = detail.comparison?.problem ?? null
+  // Below this share of the same words, the two rows are alike only loosely.
+  const LOW_SHARE = 0.5
   return (
     <>
       <h4>Duplicate</h4>
@@ -186,11 +191,38 @@ function DuplicateSides({ detail, copy }: { detail: FlaggedRowDetail; copy: Kept
         in {copy.dataset ?? 'a reference set'}. That copy is the one that is kept; this row is flagged.
       </p>
       {copy.problem !== null && <p className="muted small">The kept copy's text isn't shown: {copy.problem}</p>}
+      {problem !== null && <p className="muted small">The rows aren't compared word by word: {problem}</p>}
+      {comparison !== null && comparison.same_share !== null && (
+        <>
+          <p className="small">
+            <mark className="hl hl-dedup-same">Same words</mark> are in both rows;{' '}
+            <mark className="hl hl-dedup-different">other words</mark> are only in that row.{' '}
+            {describeSameShare(comparison.same_share)} of the compared words are the same.
+          </p>
+          {comparison.same_share < LOW_SHARE && (
+            <p className="muted small">
+              This row may have been linked to the kept copy through another similar row, so the two can differ more
+              than expected.
+            </p>
+          )}
+          {comparison.cut && (
+            <p className="muted small">The rows differ in more places than are marked; the first ones are marked.</p>
+          )}
+          <p className="muted small">
+            Marks come from a word-by-word comparison, a guide to how alike the rows are, not the scan's own score.
+            Messages the scan did not compare are dimmed.
+          </p>
+        </>
+      )}
       <div className="duplicate-sides">
         <div>
           <h4>This row (flagged)</h4>
           {detail.segments !== null ? (
-            <RowText segments={detail.segments} />
+            <RowText
+              segments={detail.segments}
+              highlights={comparison?.row_highlights}
+              compared={comparison?.row_compared}
+            />
           ) : (
             <p className="muted small">This row's text isn't shown.</p>
           )}
@@ -199,7 +231,11 @@ function DuplicateSides({ detail, copy }: { detail: FlaggedRowDetail; copy: Kept
         <div>
           <h4>The kept copy</h4>
           {copy.segments !== null ? (
-            <RowText segments={copy.segments} />
+            <RowText
+              segments={copy.segments}
+              highlights={comparison?.kept_highlights}
+              compared={comparison?.kept_compared}
+            />
           ) : (
             <p className="muted small">The kept copy's text isn't shown.</p>
           )}

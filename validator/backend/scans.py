@@ -630,6 +630,70 @@ def _action(item: dict[str, Any]) -> str | None:
     return None
 
 
+def _describe_old_scan(old: dict[str, Any] | None, finished_at: Any, names: dict[str, str]) -> str:
+    """"(across 'A', 'B', finished 2026-10-12)": how an earlier result was made, for a warning."""
+    details: list[str] = []
+    if old is not None and old.get("mode") == scanners.MODE_ACROSS and len(old["datasets"]) > 1:
+        details.append("across " + ", ".join(f"'{names.get(dataset_id, dataset_id)}'" for dataset_id in old["datasets"]))
+    elif old is not None and old.get("mode") == scanners.MODE_WITHIN:
+        details.append("within this dataset only")
+    if isinstance(finished_at, str) and finished_at:
+        details.append(f"finished {finished_at[:10]}")
+    return f" ({', '.join(details)})" if details else ""
+
+
+def _replacement_warnings(
+    scanner: scanners.Scanner, unit: dict[str, Any], settings: dict[str, Any], names: dict[str, str]
+) -> list[str]:
+    """What the scan will do to the datasets' current results, in words (the dialog shows them
+    as warnings). A dataset has one current result for each scanner, so a new scan replaces it,
+    and a dataset that was in the same earlier scan but isn't in this one keeps that result.
+    Read-only: nothing is started or changed."""
+    warnings: list[str] = []
+    in_unit = [dataset["id"] for dataset in unit["datasets"]]
+    references = set(scanner.reference_datasets(settings, unit["mode"])) if scanner.reference_datasets is not None else set()
+    for dataset in unit["datasets"]:
+        name = dataset["name"]
+        if dataset["id"] in references:
+            warnings.append(
+                f"'{name}' is only read as a reference: its current {scanner.label} result stays as it is, and nothing in it is flagged."
+            )
+            continue
+        current = (dataset.get("results") or {}).get(scanner.key)
+        if not isinstance(current, dict):
+            continue
+        old_id = current.get("scan_id")
+        old = _read_scan(old_id) if isinstance(old_id, str) and jobs.BATCH_ID.fullmatch(old_id) else None
+        warnings.append(
+            f"'{name}' already has a {scanner.label} result{_describe_old_scan(old, current.get('finished_at'), names)}. "
+            "This scan replaces it."
+        )
+        if old is None or old.get("mode") != scanners.MODE_ACROSS or len(old["datasets"]) < 2:
+            continue
+        if unit["mode"] == scanners.MODE_WITHIN:
+            warnings.append(f"'{name}' will no longer show {scanner.count_label} against the other datasets of that scan.")
+        # A partner of the earlier scan that this one doesn't cover keeps what it had.
+        for partner_id in old["datasets"]:
+            if partner_id == dataset["id"] or partner_id in in_unit:
+                continue
+            try:
+                kept = (registry.get_dataset(partner_id).get("results") or {}).get(scanner.key)
+            except registry.DatasetNotFound:
+                continue
+            if not isinstance(kept, dict) or kept.get("scan_id") != old_id:
+                continue
+            partner = names.get(partner_id, partner_id)
+            warnings.append(
+                f"'{partner}' keeps its {scanner.label} result from that scan, which compared it with '{name}'. "
+                "This scan does not change it."
+            )
+            if unit["mode"] == scanners.MODE_ACROSS:
+                others = ", ".join(f"'{item['name']}'" for item in unit["datasets"] if item["id"] not in old["datasets"])
+                if others:
+                    warnings.append(f"'{partner}' is not compared with {others}.")
+    return warnings
+
+
 def _plan_unit(
     scanner: scanners.Scanner,
     unit: dict[str, Any],
@@ -638,10 +702,11 @@ def _plan_unit(
     settings: dict[str, Any],
     resources: dict[str, Any] | None,
     request_ok: bool,
+    names: dict[str, str],
 ) -> dict[str, Any]:
     datasets_root = registry.service_root() / "datasets"
     blocked: list[str] = []
-    warnings: list[str] = []
+    warnings: list[str] = _replacement_warnings(scanner, unit, settings, names)
     rows: list[dict[str, Any]] = []
     version_folders: dict[str, Path] = {}
     for dataset in unit["datasets"]:
@@ -770,9 +835,10 @@ def _plan(
         problems.append(conversion_plan["slurm_error"])
     datasets = [registry.get_dataset(item["id"]) for item in items]
     held = _holding_scans()
+    names = registry.dataset_names()
 
     units = [
-        _plan_unit(scanner, unit, conversion_items, held, settings, resources, not problems)
+        _plan_unit(scanner, unit, conversion_items, held, settings, resources, not problems, names)
         for unit in _units(scanner, datasets, mode, settings)
     ]
     needs_conversion = any(row["action"] in CONVERT_ACTIONS for unit in units for row in unit["datasets"])
@@ -1199,6 +1265,18 @@ def dataset_summaries(datasets: list[dict[str, Any]]) -> dict[str, dict[str, dic
     scans, _problems = _all_scans()
     pending = [scan for scan in scans if scan.get("result_applied_at") is None]
     states, _error = _states_of(pending)
+    by_id = {scan["id"]: scan for scan in scans}
+    names = registry.dataset_names()
+
+    def context_of(scan: dict[str, Any] | None, dataset_id: str) -> dict[str, Any]:
+        """What the scan compared this dataset with: the other datasets it read, in the order it
+        read them (a name is None when the dataset isn't registered any more), and the
+        strictness it was started with (only the duplicates scan has one)."""
+        if scan is None:
+            return {"compared_with": [], "strictness": None}
+        others = [{"id": other, "name": names.get(other)} for other in scan["datasets"] if other != dataset_id]
+        strictness = scan["settings"].get("strictness")
+        return {"compared_with": others, "strictness": strictness if isinstance(strictness, str) else None}
 
     def summary(dataset: dict[str, Any], key: str) -> dict[str, Any]:
         empty = {
@@ -1210,18 +1288,29 @@ def dataset_summaries(datasets: list[dict[str, Any]]) -> dict[str, dict[str, dic
             "reason": None,
             # "pass" or "fail" once the result's coverage check has been made (results.py).
             "coverage": None,
+            # The other datasets the scan compared this one with, and its strictness.
+            "compared_with": [],
+            "strictness": None,
         }
         mine = [scan for scan in pending if scan["scanner"] == key and dataset["id"] in scan["datasets"]]  # newest first
         for scan in mine:
             state = states[scan["id"]]
             if state["state"] in HOLDING_STATES:
-                return {**empty, "state": state["state"], "scan_id": scan["id"], "mode": scan["mode"], "reason": state["reason"]}
+                return {
+                    **empty,
+                    "state": state["state"],
+                    "scan_id": scan["id"],
+                    "mode": scan["mode"],
+                    "reason": state["reason"],
+                    **context_of(scan, dataset["id"]),
+                }
         result = dataset["results"].get(key)
         if isinstance(result, dict):
             return {
                 **empty,
                 **{name: result.get(name) for name in ("scan_id", "finished_at", "count", "mode", "coverage")},
                 "state": STATE_SUCCEEDED,
+                **context_of(by_id.get(result.get("scan_id")), dataset["id"]),
             }
         prepared = dataset["prepared"]
         for scan in mine:
@@ -1235,7 +1324,14 @@ def dataset_summaries(datasets: list[dict[str, Any]]) -> dict[str, dict[str, dic
                 current = prepared is None
             if current:
                 state = states[scan["id"]]
-                return {**empty, "state": state["state"], "scan_id": scan["id"], "mode": scan["mode"], "reason": state["reason"]}
+                return {
+                    **empty,
+                    "state": state["state"],
+                    "scan_id": scan["id"],
+                    "mode": scan["mode"],
+                    "reason": state["reason"],
+                    **context_of(scan, dataset["id"]),
+                }
         return empty
 
     return {dataset["id"]: {key: summary(dataset, key) for key in scanners.SCANNERS} for dataset in datasets}

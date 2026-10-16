@@ -71,8 +71,16 @@ export function describeConfidence(confidence: number | null | undefined): strin
   return typeof confidence === 'number' ? `${Math.round(confidence * 100)}%` : '—'
 }
 
+// "About 87%": the part of the compared words that are the same in a duplicate and its kept copy.
+export function describeSameShare(share: number): string {
+  return `About ${Math.round(share * 100)}%`
+}
+
 // One mark in the text: what found it.
 export function describeHighlight(mark: RowHighlight): string {
+  if (mark.scanner === 'dedup') {
+    return mark.kind === 'same' ? 'Same in both rows' : 'Only in this row'
+  }
   if (mark.scanner === 'ner') {
     return `NER: ${nerLabelName(mark.label ?? '')}, ${describeConfidence(mark.confidence)}`
   }

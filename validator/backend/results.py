@@ -500,7 +500,9 @@ def _scanner_view(
         "finished_at": saved.get("finished_at"),
         "mode": scan["mode"],
         "settings": scan["settings"],
-        "datasets": [{"id": other, "name": names[other]} for other in scan["datasets"] if other in names],
+        # A dataset that isn't registered any more is kept, with no name, so "compared with" never
+        # hides a partner.
+        "datasets": [{"id": other, "name": names.get(other)} for other in scan["datasets"]],
         "analysis": _analysis_view(scan, record, state, reason, active, accounted, detail),
         # Whether the flagged rows of this dataset can be listed (flagged.py): only once the
         # analysis that wrote the index has succeeded.

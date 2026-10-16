@@ -1258,6 +1258,21 @@ def _original_note(context: ResultContext) -> dict[str, str] | None:
     return {"label": "Original copy", "text": text}
 
 
+def _text_scope_note(context: ResultContext) -> dict[str, str]:
+    """Which part of each row the scan compared. A scan saved without these settings was made
+    with the dialog's defaults: the prompt only, and system messages left out (as flagged.py
+    assumes when it compares a row with its kept copy)."""
+    scope = context.settings.get("text_scope")
+    scope = scope if scope in ("prompt", "all") else "prompt"
+    left_out = context.settings.get("exclude_system", "1") in ("1", 1, True)
+    if scope == "prompt":
+        text = "The prompt only (a final assistant reply is left out)"
+    else:
+        text = "Every message"
+    text += "; system messages left out." if left_out else "; system messages included."
+    return {"label": "Text compared", "text": text}
+
+
 def dedup_read_result(context: ResultContext) -> dict[str, Any]:
     """The duplicate rows in this dataset (the coverage report's `findings` for its files). For
     a scan across datasets, also where the copy that was kept is: in this dataset or another."""
@@ -1284,7 +1299,9 @@ def dedup_read_result(context: ResultContext) -> dict[str, Any]:
                     "Rows in this dataset that repeat a row kept in the dataset named.",
                 )
             )
-    notes = [item for item in (_original_note(context), _strictness_note(context)) if item is not None]
+    notes = [
+        item for item in (_original_note(context), _text_scope_note(context), _strictness_note(context)) if item is not None
+    ]
     return {"flagged": _flagged(count, "duplicate rows", count), "breakdowns": _known(*breakdowns), "facts": [], "notes": notes}
 
 

@@ -1576,6 +1576,22 @@ a.chip-link:hover .chip {
   border-bottom: 2px solid #d68910;
 }
 
+/* A duplicate and its kept copy, compared word by word. */
+.hl-dedup-same {
+  background: rgba(46, 160, 67, 0.2);
+  border-bottom: 2px solid #2ea043;
+}
+
+.hl-dedup-different {
+  background: rgba(218, 54, 51, 0.2);
+  border-bottom: 2px solid #da3633;
+}
+
+/* A message the duplicates scan left out. */
+.turn-card-dimmed {
+  opacity: 0.6;
+}
+
 .finding-list {
   margin: 4px 0 4px 18px;
   padding: 0;

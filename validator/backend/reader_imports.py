@@ -44,6 +44,9 @@ from modelsafety.contract.textract import extract_record_text  # noqa: E402
 # strictness presets say what the scan will record.
 from modelsafety.data_screening.dedup.lsh import collision_probability_midpoint  # noqa: E402
 
+# Which messages of a row the dedup scan compares, so the row view can mark the ones it left out.
+from modelsafety.data_screening.dedup.row_text import compared_messages  # noqa: E402
+
 # The values the filter's rule flags accept, so the UI offers exactly those.
 from modelsafety.data_screening.pii.regex.pii_output import (  # noqa: E402
     PII_CATEGORIES,
@@ -99,6 +102,7 @@ __all__ = [
     "RunFinderError",
     "select_scan_files",
     "collision_probability_midpoint",
+    "compared_messages",
     "PII_CATEGORIES",
     "PII_STAGE1_NAME",
     "PII_STAGE2_NAME",

@@ -47,17 +47,40 @@ def extract_text(record: dict[str, Any], text_scope: str, exclude_system: bool =
     messages = record.get("messages")
     if not isinstance(messages, list):
         return ""
-    usable = [message for message in messages if isinstance(message, dict)]
+    parts = [
+        content_text(messages[index].get("content"))
+        for index in compared_messages(record, text_scope, exclude_system)
+    ]
+    return "\n".join(part for part in parts if part)
+
+
+def compared_messages(
+    record: dict[str, Any], text_scope: str, exclude_system: bool = False
+) -> list[int | None]:
+    """The messages of a row that ``extract_text`` reads, by their place in ``messages``.
+
+    A plain ``text`` row is one text, written ``[None]`` (like a segment with no message
+    number). Otherwise this is the dict messages left after ``exclude_system`` and the
+    ``prompt`` rule (the final assistant message is dropped when another message remains).
+    ``extract_text`` is built on this, so the scan and anything that marks which messages
+    were compared can't disagree.
+    """
+    if isinstance(record.get("text"), str):
+        return [None]
+
+    messages = record.get("messages")
+    if not isinstance(messages, list):
+        return []
+    usable = [index for index, message in enumerate(messages) if isinstance(message, dict)]
     if exclude_system:
         usable = [
-            message for message in usable if str(message.get("role") or "").lower() != "system"
+            index for index in usable if str(messages[index].get("role") or "").lower() != "system"
         ]
     if text_scope == "prompt" and len(usable) > 1:
-        last_role = str(usable[-1].get("role") or "").lower()
+        last_role = str(messages[usable[-1]].get("role") or "").lower()
         if last_role == "assistant":
             usable = usable[:-1]
-    parts = [content_text(message.get("content")) for message in usable]
-    return "\n".join(part for part in parts if part)
+    return list(usable)
 
 
 def normalize_text(text: str) -> str:

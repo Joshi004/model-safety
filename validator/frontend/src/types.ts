@@ -700,6 +700,11 @@ export interface ScanSummary {
   // Whether the finished scan read exactly this dataset's converted data; null until its
   // coverage check has been made.
   coverage: CoverageVerdict | null
+  // The other datasets the scan compared this one with, in the order it read them (a name is
+  // null when that dataset isn't registered any more). Empty for a scan of this dataset alone.
+  compared_with: { id: string; name: string | null }[]
+  // The strictness the scan was started with; only the duplicates scan has one.
+  strictness: string | null
 }
 
 export interface ScanDatasetRequest {
@@ -950,8 +955,9 @@ export interface ScannerResult {
   finished_at: string | null
   mode: string | null
   settings: ScanSettings
-  // The datasets the scan covered that are still registered, in the order it read them.
-  datasets: { id: string; name: string }[]
+  // The datasets the scan covered, in the order it read them. A name is null when the dataset
+  // isn't registered any more.
+  datasets: { id: string; name: string | null }[]
   analysis: ResultAnalysis
   // Null until the analysis has succeeded.
   coverage: ResultCoverage | null
@@ -1097,12 +1103,15 @@ export interface RowSegment {
   truncated: boolean
 }
 
-// A mark in a message's text: an NER span, or a place a regex PII value was found.
+// A mark in a message's text: an NER span, a place a regex PII value was found, or (for a
+// duplicate) a run of words that are the same in both rows or only in this one.
 export interface RowHighlight {
-  scanner: 'ner' | 'regex_pii'
+  scanner: 'ner' | 'regex_pii' | 'dedup'
   message_index: number | null
   start: number
   end: number
+  // Duplicates
+  kind?: 'same' | 'different'
   // NER
   label?: string | null
   tier?: string | null
@@ -1148,6 +1157,20 @@ export interface KeptCopy {
   problem: string | null
 }
 
+// For a duplicate: the word-by-word comparison of the row with its kept copy. `*_compared` are
+// the messages (null for a row's `text`) the scan compared; the others were left out of the scan.
+export interface DuplicateComparison {
+  row_highlights: RowHighlight[]
+  kept_highlights: RowHighlight[]
+  row_compared: (number | null)[]
+  kept_compared: (number | null)[]
+  // 0 to 1, over the compared words of both rows; null when nothing was compared.
+  same_share: number | null
+  // Some marks were left out.
+  cut: boolean
+  problem: string | null
+}
+
 // GET .../flagged/row.
 export interface FlaggedRowDetail {
   dataset_id: string
@@ -1165,6 +1188,7 @@ export interface FlaggedRowDetail {
   findings_cut: boolean
   findings_total: number | null
   duplicate_of: KeptCopy | null
+  comparison: DuplicateComparison | null
 }
 
 // ---- Dropping rows (backend/filters.py) ----

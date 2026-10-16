@@ -4,7 +4,7 @@
 // The Datasets page doesn't ask GET /api/scanners (that runs `sinfo`), so the few words it
 // needs for a scanner are here. A scanner this file doesn't know is shown by its key.
 import type { ChipTone } from './components/Chip'
-import { formatCount } from './format'
+import { formatCount, formatTimestamp } from './format'
 import type {
   AnalysisState,
   ChoiceField,
@@ -96,17 +96,47 @@ export function chipLabel(summary: ScanSummary): string {
     summary.state === 'succeeded' && summary.count !== null
       ? `Done (${formatCount(summary.count)})`
       : STATE_LABELS[summary.state]
-  return coverageFailed(summary) ? `${label} ⚠` : label
+  const tagged = summary.state === 'succeeded' ? `${label}${comparedTag(summary)}` : label
+  return coverageFailed(summary) ? `${tagged} ⚠` : tagged
 }
 
-// What the chip's tooltip says: why, when there is a reason, or what the count counts, and a
-// failed coverage check.
+// A short tag for a finished scan that has a mode (only the duplicates scan has one): " · within"
+// when it compared the dataset with itself only, " · with 2 others" when other datasets were read
+// with it. Empty for a scan without a mode.
+function comparedTag(summary: ScanSummary): string {
+  if (summary.mode === null) return ''
+  const others = summary.compared_with.length
+  if (others === 0) return ' · within'
+  return ` · with ${others} other${others === 1 ? '' : 's'}`
+}
+
+// "Compared across this dataset and 'B' (read in that order). Standard strictness." or "Compared
+// within this dataset only.", or null for a scan without a mode.
+function comparedSentence(summary: ScanSummary): string | null {
+  if (summary.mode === null) return null
+  const others = summary.compared_with.map((item) => (item.name === null ? 'a dataset that is no longer registered' : `'${item.name}'`))
+  const how =
+    others.length === 0
+      ? 'Compared within this dataset only.'
+      : `Compared across this dataset and ${others.join(', ')}.`
+  const strictness =
+    summary.strictness === null ? '' : ` ${summary.strictness.charAt(0).toUpperCase()}${summary.strictness.slice(1)} strictness.`
+  return `${how}${strictness}`
+}
+
+// What the chip's tooltip says: why, when there is a reason, or what the count counts, what a
+// finished scan compared the dataset with, and a failed coverage check.
 export function chipTitle(scannerKey: string, summary: ScanSummary): string | undefined {
   const parts: string[] = []
   if (summary.reason !== null && summary.reason !== '') {
     parts.push(summary.reason)
   } else if (summary.state === 'succeeded' && summary.count !== null) {
-    parts.push(`${formatCount(summary.count)} ${SCANNER_COUNT_LABELS[scannerKey] ?? 'rows'} flagged`)
+    parts.push(`${formatCount(summary.count)} ${SCANNER_COUNT_LABELS[scannerKey] ?? 'rows'} flagged.`)
+  }
+  if (summary.state === 'succeeded') {
+    const compared = comparedSentence(summary)
+    if (compared !== null) parts.push(compared)
+    if (summary.finished_at !== null) parts.push(`Finished ${formatTimestamp(summary.finished_at)}.`)
   }
   if (coverageFailed(summary)) {
     parts.push("The coverage check failed: the scan may not have read exactly this dataset's converted data.")

@@ -75,7 +75,7 @@ TOX_RUN_DIR="${TOX_RUN_DIR:-}"
 TOX_INPUT_MODE="${TOX_INPUT_MODE:-runs}"   # runs = files of finished conversions only; folder = every .jsonl
 
 # --- SLURM resources, per shard (one shard = one H100) -------------------
-PARTITION="${PARTITION:-health}"    # main | health | toolCall | VLM -- pick_partition lists the real, live set
+PARTITION="${PARTITION:-background}"    # background (low priority, can be preempted) | main | health | toolCall | VLM -- pick_partition lists the real, live set
 TOX_CPUS="${TOX_CPUS:-16}"
 TOX_MEM="${TOX_MEM:-96G}"
 TOX_TIME="${TOX_TIME:-48:00:00}"
@@ -94,15 +94,16 @@ GUARD_CONCURRENCY="${GUARD_CONCURRENCY:-8}"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-8192}"
 
 # --- vLLM image ------------------------------------------------------------
-# Prefer this repo's own image if someone ever adds one; otherwise fall back
-# to the shared image confirmed working against Qwen3Guard-Gen-8B in a real
-# trial run (see TOXICITY_SCAN_EXPLAINED.md).
+# Prefer this repo's own image if someone ever adds one; otherwise use the
+# shared image named in launchers/slurm/defaults.sh (the one confirmed working
+# against Qwen3Guard-Gen-8B in a real trial run).
 default_vllm_image() {
   local repo_image="${REPO}/containers/vllm-openai-v0.24.0-cu129.sqsh"
   if [[ -f "${repo_image}" ]]; then
     printf '%s' "${repo_image}"
   else
-    printf '%s' "/home/shared/containers/vllm-0.22.0-cu129.sqsh"
+    source "${REPO}/launchers/slurm/defaults.sh"
+    printf '%s' "${MODEL_SAFETY_VLLM_IMAGE}"
   fi
 }
 VLLM_IMAGE="${VLLM_IMAGE:-$(default_vllm_image)}"
@@ -481,7 +482,7 @@ submit_array() {
     --error="${REPO}/logs/slurm/tool_team_toxicity_${stage_label}_%A_%a.err" \
     --array="${array_spec}" \
     "${dep_args[@]}" \
-    --export=ALL,REPO="${REPO}",QUALITY_INPUT_ROOT="${TOX_INPUT_ROOT}",QUALITY_MANIFEST_DIR="${TOX_RUN_DIR}/manifests",QUALITY_RUN_ROOT="${TOX_RUN_DIR}",TOX_STAGE1_ONLY="${tox_stage1_only}",TOX_REUSE_STAGE1="${tox_reuse_stage1}",TOX_THRESHOLD="${TOX_THRESHOLD}",TOX_STAGE1_MODEL="${TOX_STAGE1_MODEL}",GUARD_MODEL="${GUARD_MODEL}",TOX_BATCH_SIZE="${TOX_BATCH_SIZE}",GUARD_CONCURRENCY="${GUARD_CONCURRENCY}",VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN}",VLLM_SQUASHFS_PATH="${VLLM_IMAGE}",HF_TOKEN="${HF_TOKEN:-}" \
+    --export=ALL,REPO="${REPO}",QUALITY_INPUT_ROOT="${TOX_INPUT_ROOT}",QUALITY_MANIFEST_DIR="${TOX_RUN_DIR}/manifests",QUALITY_RUN_ROOT="${TOX_RUN_DIR}",TOX_STAGE1_ONLY="${tox_stage1_only}",TOX_REUSE_STAGE1="${tox_reuse_stage1}",TOX_THRESHOLD="${TOX_THRESHOLD}",TOX_STAGE1_MODEL="${TOX_STAGE1_MODEL}",GUARD_MODEL="${GUARD_MODEL}",TOX_BATCH_SIZE="${TOX_BATCH_SIZE}",GUARD_CONCURRENCY="${GUARD_CONCURRENCY}",VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN}",VLLM_SQUASHFS_PATH="${VLLM_IMAGE}" \
     "${REPO}/launchers/slurm/run_toxicity_scan_array.sbatch"
 }
 
@@ -740,13 +741,6 @@ main() {
   preflight_checks
 
   if [[ "${DO_SCREEN}" -eq 1 || "${DO_VERIFY}" -eq 1 ]]; then
-    if [[ -z "${HF_TOKEN:-}" && -f "${REPO}/.env" ]]; then
-      set -a
-      # shellcheck disable=SC1091
-      source "${REPO}/.env"
-      set +a
-    fi
-
     preflight_for_submit
 
     if [[ "${DO_SCREEN}" -eq 1 && "${DO_VERIFY}" -eq 1 ]]; then

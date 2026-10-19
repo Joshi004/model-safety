@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=medpsy_pii_gemma
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
@@ -29,16 +29,14 @@ MAX_MODEL_LEN="${PII_LLM_MAX_MODEL_LEN:-16384}"
 MAX_CONVERSATION_CHARS="${PII_MAX_CONVERSATION_CHARS:-12000}"
 MAX_TOKENS="${PII_LLM_MAX_TOKENS:-4096}"
 VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.95}"
-VLLM_SQUASHFS_PATH="${VLLM_SQUASHFS_PATH:-${REPO}/containers/vllm-openai-v0.24.0-cu129.sqsh}"
+source "${REPO}/launchers/slurm/defaults.sh"
+VLLM_SQUASHFS_PATH="${VLLM_SQUASHFS_PATH:-${MODEL_SAFETY_VLLM_IMAGE}}"
 HF_HOME="${HF_HOME:-${REPO}/cache/hf}"
 HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
 HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 VLLM_ENABLE_CUDA_COMPATIBILITY="${VLLM_ENABLE_CUDA_COMPATIBILITY:-1}"
-if [[ -z "${HF_TOKEN:-}" && -f "${REPO}/.env" ]]; then
-  set -a
-  source "${REPO}/.env"
-  set +a
-fi
+# The token only comes from your own environment (export HF_TOKEN before sbatch); no file in
+# the repo is read for it.
 HF_TOKEN="${HF_TOKEN:-}"
 LOG_DIR="${RUN_ROOT}/logs/pii_llm"
 VLLM_LOG="${LOG_DIR}/vllm_${SLURM_JOB_ID}.log"

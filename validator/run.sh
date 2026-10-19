@@ -95,7 +95,9 @@
 # plus modelsafety/readers' own pandas/pyarrow/datasets/numpy versions) and
 # builds validator/frontend (npm install + npm run build). Both are reused
 # on later runs; delete validator/backend/.venv or validator/frontend/dist
-# to force a rebuild.
+# to force a rebuild. If the machine has no npm, validator/install_node.sh
+# installs a pinned Node.js into validator/.node first (needs access to
+# nodejs.org; nothing outside that folder is written).
 #
 # The first run also picks a free localhost port and remembers it in
 # validator/.validator-state; every later run reuses that exact same port,
@@ -122,6 +124,12 @@
 
 set -euo pipefail
 
+# The clone can be shared by several people (for example under /home/shared): files made by
+# this service, and by the SLURM jobs it submits (they inherit this umask), stay writable
+# for the group, so the next person can use and clean up what you created. Set before
+# anything below creates a file.
+umask 002
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="${SCRIPT_DIR}/backend"
 FRONTEND_DIR="${SCRIPT_DIR}/frontend"
@@ -139,6 +147,19 @@ if [[ ! -d "${FRONTEND_DIR}/dist" ]]; then
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
   # shellcheck disable=SC1091
   [[ -s "${NVM_DIR}/nvm.sh" ]] && source "${NVM_DIR}/nvm.sh"
+  # No npm anywhere (nvm or the system): install Node.js into validator/.node with the
+  # separate install_node.sh, and use that one.
+  if ! command -v npm >/dev/null 2>&1; then
+    NODE_BIN_DIR="${SCRIPT_DIR}/.node/bin"
+    if [[ ! -x "${NODE_BIN_DIR}/npm" ]]; then
+      echo "[validator] npm not found -- installing Node.js into ${SCRIPT_DIR}/.node ..."
+      if ! bash "${SCRIPT_DIR}/install_node.sh"; then
+        echo "[validator] error: couldn't install Node.js, which is needed to build the frontend. Install Node.js yourself so that npm is on your PATH, or fix the error above, then run this again." >&2
+        exit 1
+      fi
+    fi
+    export PATH="${NODE_BIN_DIR}:${PATH}"
+  fi
   if [[ ! -d "${FRONTEND_DIR}/node_modules" ]]; then
     (cd "${FRONTEND_DIR}" && npm install)
   fi

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=medpsy_detoxify_node
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:8
 #SBATCH --cpus-per-task=64

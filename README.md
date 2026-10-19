@@ -16,8 +16,10 @@ left, and [`PROVENANCE.md`](PROVENANCE.md) for where every file came from.
 ## Running something
 
 Every launcher is env-var driven, exactly like medpsy. Submit from the repo
-root on a login node; heavy work always runs through `sbatch` on the `health`
-partition, never on the login node itself.
+root on a login node; heavy work always runs through `sbatch` on the `background`
+partition by default (low priority, jobs there can be preempted and restart; pass
+`--partition` to `sbatch` or set `PARTITION` to use another), never on the login
+node itself.
 
 ```bash
 cd /path/to/qvac-model-safety

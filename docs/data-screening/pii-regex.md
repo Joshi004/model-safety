@@ -205,4 +205,4 @@ Also **not** included: the separate Nemotron token-classifier pipeline (`OpenMed
 - Post-pipeline QA on generated JSONL.
 - Pre-generation scan on seeds.
 - JSONL enrichment step: merge validated hits back as a `pii` field without dropping existing columns.
-- SLURM wrappers under `launchers/` for CPU-heavy stage 1 on the health partition.
+- SLURM wrappers under `launchers/` for CPU-heavy stage 1 on the background partition.

@@ -98,6 +98,12 @@ export default function ResourcesFields({
           </>
         )}
       </div>
+      {resources.partition === 'background' && (
+        <p className="muted small">
+          The background partition has the lowest priority. A job there can be preempted by other jobs and then
+          restarts from the beginning. Pick another partition for work that has to finish on time.
+        </p>
+      )}
       {partitionOnly ? (
         <p className="muted small">
           This scan's job scripts set its CPUs, memory, time limit and GPUs, always with a memory and a time limit, so

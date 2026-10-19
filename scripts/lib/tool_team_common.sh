@@ -26,12 +26,13 @@ die() {
 }
 
 # list_partitions -- one partition name per line, straight from this
-# cluster's live scheduler state (never hardcoded). The `sinfo` default
-# marks the partition with a trailing "*"; that's a display convention, not
-# part of the name, so it's stripped. Prints nothing (not an error) if
-# `sinfo` is unavailable -- callers decide how to fall back.
+# cluster's live scheduler state (never hardcoded). `sinfo -a` includes
+# hidden partitions such as `background`. The `sinfo` default marks the
+# partition with a trailing "*"; that's a display convention, not part of the
+# name, so it's stripped. Prints nothing (not an error) if `sinfo` is
+# unavailable -- callers decide how to fall back.
 list_partitions() {
-  sinfo -h -o "%P" 2>/dev/null | sed 's/\*$//' | sort -u || true
+  sinfo -a -h -o "%P" 2>/dev/null | sed 's/\*$//' | sort -u || true
 }
 
 # pick_partition -- numbered menu over the live partition list; sets the

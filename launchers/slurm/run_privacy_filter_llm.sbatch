@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=privacy_filter_llm
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
@@ -16,7 +16,8 @@ RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT:?PRIVACY_FILTER_RUN_ROOT is required}"
 INPUT="${PRIVACY_FILTER_LLM_INPUT:-${RUN_ROOT}/llm_candidates.csv}"
 MODEL="${PRIVACY_FILTER_LLM_MODEL:-google/gemma-4-31B-it}"
 VENV="${PRIVACY_FILTER_VENV:-${PIPELINE_DIR}/.venv-isolated}"
-VLLM_IMAGE="${PRIVACY_FILTER_LLM_SQUASHFS_PATH:-${REPO}/containers/vllm-openai-v0.24.0-cu129.sqsh}"
+source "${REPO}/launchers/slurm/defaults.sh"
+VLLM_IMAGE="${PRIVACY_FILTER_LLM_SQUASHFS_PATH:-${MODEL_SAFETY_VLLM_IMAGE}}"
 HF_HOME="${HF_HOME:-${REPO}/cache/hf}"
 PORT="${PRIVACY_FILTER_LLM_PORT:-$((20000 + SLURM_JOB_ID % 20000))}"
 LOG_DIR="${RUN_ROOT}/llm_validation"
@@ -39,11 +40,8 @@ if [[ ! -x "${VENV}/bin/python" ]]; then
   exit 2
 fi
 mkdir -p "${REPO}/logs/slurm" "${LOG_DIR}" "${HF_HOME}"
-if [[ -z "${HF_TOKEN:-}" && -f "${REPO}/.env" ]]; then
-  set -a
-  source "${REPO}/.env"
-  set +a
-fi
+# The token only comes from your own environment (export HF_TOKEN before sbatch); no file in
+# the repo is read for it.
 export HF_HOME HF_TOKEN="${HF_TOKEN:-}"
 
 srun --ntasks=1 \

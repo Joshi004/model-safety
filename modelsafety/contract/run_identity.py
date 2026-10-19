@@ -57,13 +57,29 @@ def make_identity(
     input_root: str,
     input_files: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    # Imported here, not at the top: this file is also run as a script, and the folder that
+    # holds `modelsafety` is only put on `sys.path` at the bottom, once it starts.
+    from modelsafety.contract.project_paths import to_saved
+
     return {
         "tool": tool,
         "mode": mode,
         "settings": dict(sorted(settings.items())),
-        "input_root": input_root,
+        # Relative to the project root when inside it, so a moved project still matches.
+        "input_root": to_saved(input_root),
         "input_files": input_files,
     }
+
+
+def _resolved_root(identity: dict[str, Any]) -> dict[str, Any]:
+    """A copy of ``identity`` whose ``input_root`` is a full path, so an identity saved with a
+    relative root and one saved with an absolute root compare by where they point."""
+    from modelsafety.contract.project_paths import from_saved
+
+    root = identity.get("input_root")
+    if not isinstance(root, str) or not root:
+        return identity
+    return {**identity, "input_root": str(from_saved(root))}
 
 
 def _show(value: Any) -> str:
@@ -94,7 +110,7 @@ def _describe_differences(old: dict[str, Any], new: dict[str, Any]) -> list[str]
         if old_value != new_value:
             differences.append(f"{key}: {_show(old_value)} -> {_show(new_value)}")
 
-    if old["input_root"] != new["input_root"]:
+    if _resolved_root(old)["input_root"] != _resolved_root(new)["input_root"]:
         differences.append(f"input root: {old['input_root']} -> {new['input_root']}")
 
     old_files = {item["path"]: item for item in old["input_files"]}
@@ -165,7 +181,9 @@ def compare_run_identity(run_dir: str | Path, identity: dict[str, Any]) -> tuple
     stored = _load_stored_identity(identity_path)
     stored.pop("created_at", None)
     requested = json.loads(json.dumps(identity))
-    if stored == requested:
+    # The roots are compared as full paths: a run folder made before roots were saved
+    # relative, or before the project was moved, still counts as the same run.
+    if _resolved_root(stored) == _resolved_root(requested):
         return "same", []
     return "different", _describe_differences(stored, requested)
 

@@ -128,8 +128,13 @@ Useful overrides:
 | `TOX_BATCH_SIZE` | `32` |
 | `GUARD_MODEL` | `Qwen/Qwen3Guard-Gen-8B` |
 | `GUARD_CONCURRENCY` | `8` |
-| `VLLM_SQUASHFS_PATH` | `containers/vllm-openai-v0.24.0-cu129.sqsh` |
+| `VLLM_SQUASHFS_PATH` | `MODEL_SAFETY_VLLM_IMAGE` from `launchers/slurm/defaults.sh` (`/home/shared/containers/qvac-model-safety__vllm-inference-server__for-toxicity-guard-and-pii-llm-scans/vllm-0.22.0-cu129.sqsh`) |
 | `VLLM_ENABLE_CUDA_COMPATIBILITY` | `1` |
+
+A Hugging Face token, when a model needs one, is only read from your own
+environment: `export HF_TOKEN=...` in your shell or profile before you submit.
+No file in the repo is read for it, and the token is not written into any
+command the scripts print.
 
 ### Stage 1 — Detoxify screen
 

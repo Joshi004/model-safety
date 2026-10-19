@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=privacy_filter_node
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:8
 #SBATCH --cpus-per-task=64
@@ -22,18 +22,16 @@ GPU_COUNT="${PRIVACY_FILTER_GPU_COUNT:-${SLURM_GPUS_ON_NODE:-8}}"
 VENV="${PRIVACY_FILTER_VENV:-${PIPELINE_DIR}/.venv-isolated}"
 BASE_PYTHON="${PRIVACY_FILTER_BASE_PYTHON:-python3}"
 HF_HOME="${HF_HOME:-${REPO}/cache/hf}"
-VLLM_IMAGE="${PRIVACY_VLLM_SQUASHFS_PATH:-${REPO}/containers/vllm-openai-v0.24.0-cu129.sqsh}"
+source "${REPO}/launchers/slurm/defaults.sh"
+VLLM_IMAGE="${PRIVACY_VLLM_SQUASHFS_PATH:-${MODEL_SAFETY_VLLM_IMAGE}}"
 
 if [[ ! -f "${WORK_MANIFEST}" ]]; then
   echo "Missing work manifest: ${WORK_MANIFEST}" >&2
   exit 2
 fi
 mkdir -p "${REPO}/logs/slurm" "${RUN_ROOT}/worker_logs" "${HF_HOME}"
-if [[ -z "${HF_TOKEN:-}" && -f "${REPO}/.env" ]]; then
-  set -a
-  source "${REPO}/.env"
-  set +a
-fi
+# The token only comes from your own environment (export HF_TOKEN before sbatch); no file in
+# the repo is read for it.
 export HF_HOME HF_TOKEN="${HF_TOKEN:-}"
 
 common_args=(

@@ -29,6 +29,7 @@ from reader_imports import (  # noqa: F401
     SKIPPED_ROWS_FILENAME,
     STALE_AFTER_SECONDS,
     RunError,
+    from_saved,
     lookup,
     may_have_stopped,
     open_run,
@@ -58,9 +59,10 @@ def prepared_run_of(run_dir: Path) -> Path:
             return current
         parent = summary.get("parent")
         parent_dir = parent.get("run_dir") if isinstance(parent, dict) else None
-        if not isinstance(parent_dir, str) or not Path(parent_dir).is_absolute():
+        if not isinstance(parent_dir, str) or not parent_dir:
             raise RunError(f"{current / 'summary.json'} doesn't say which run it filtered (parent.run_dir).")
-        current = Path(parent_dir)
+        # Saved relative to the project root when the run is inside it.
+        current = from_saved(parent_dir)
     raise RunError(f"{run_dir} leads back through {MAX_PARENT_HOPS} filter runs without reaching a Prepared run.")
 
 

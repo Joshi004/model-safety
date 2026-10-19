@@ -40,10 +40,12 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+import activity
 import jobs
 import preview
 import registry
 import runs
+from reader_imports import from_saved, to_saved
 
 PREPARED_FOLDER = "prepared"
 JOBS_FOLDER = "_jobs"
@@ -85,6 +87,20 @@ def _record_path(dataset_id: str, job_id: str) -> Path:
 
 def _logs_folder(dataset_id: str) -> Path:
     return _dataset_folder(dataset_id) / LOGS_FOLDER
+
+
+def _write_record(path: Path, record: dict[str, Any]) -> None:
+    """Save a conversion record with the folders and files named in it relative to the project
+    root, so it survives the project being moved. The record in memory keeps absolute paths.
+    Nothing reads them back from the file: `_read_records` and `_load_record` work `run_dir`
+    out from the ids, and `_view` builds the log paths from the SLURM job ID."""
+    saved = dict(record)
+    for key in ("run_dir", "out_log", "err_log"):
+        if isinstance(saved.get(key), str):
+            saved[key] = to_saved(saved[key])
+    if isinstance(saved.get("deleted"), list):
+        saved["deleted"] = [to_saved(item) if isinstance(item, str) else item for item in saved["deleted"]]
+    jobs._write_json_atomic(path, saved)
 
 
 # -------------------------------------------------------------------------
@@ -235,7 +251,7 @@ def _finalize(dataset_id: str, listed: Listed) -> None:
             "rows_read": view["rows_read"],
             "skipped": view["skipped"],
         }
-        jobs._write_json_atomic(_record_path(dataset_id, newest["job_id"]), newest)
+        _write_record(_record_path(dataset_id, newest["job_id"]), newest)
 
 
 def refresh(dataset_id: str, listed: Listed | None = None) -> None:
@@ -473,6 +489,8 @@ def check(items_in: Any, resources_in: dict[str, Any] | None) -> dict[str, Any]:
         "slurm_error": slurm_error,
         "resources": resources,
         "resources_error": resources_error,
+        # Other users' jobs on these datasets that are still queued or running. Only a warning.
+        "warnings": activity.warnings_for([item["id"] for item in items], active),
         "items": planned,
     }
 
@@ -547,9 +565,9 @@ def _launch(dataset: dict[str, Any], plan: dict[str, Any], resources: dict[str, 
     }
     record_path = jobs_folder / f"{version_id}.json"
     # Written before sbatch, so a crash part-way still leaves a record.
-    jobs._write_json_atomic(record_path, record)
+    _write_record(record_path, record)
     jobs._submit_one(logs, resources, record)
-    jobs._write_json_atomic(record_path, record)
+    _write_record(record_path, record)
     return record
 
 
@@ -657,7 +675,7 @@ def _view(
         "resources": record.get("resources"),
         "command": record.get("command"),
         "sbatch_command": record.get("sbatch_command"),
-        "deleted": record.get("deleted") or [],
+        "deleted": [str(from_saved(item)) for item in record.get("deleted") or [] if isinstance(item, str)],
         "result": record.get("result"),
         "slurm_job_id": slurm_id,
         "slurm_state": (listed or {}).get("state") or (sacct or {}).get("state_text"),

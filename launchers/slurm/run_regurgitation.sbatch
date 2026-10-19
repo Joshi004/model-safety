@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=regurgitation
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
@@ -108,12 +108,7 @@ RESULTS_DIR="${RUN_DIR}/results"
 PROBE_INPUT_CSV="${RUN_DIR}/probe_input.csv"
 mkdir -p "${REPO}/logs/slurm" "${LOG_DIR}" "${RESULTS_DIR}" "${HF_HOME}"
 
-if [[ -z "${HF_TOKEN:-}" && -f "${REPO}/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "${REPO}/.env"
-  set +a
-fi
+# The token, if any, only comes from your own environment; no file in the repo is read for it.
 # The checkpoint is always a local directory (vllm_config.py refuses
 # anything else), so serving it needs no network access. Offline mode
 # turns an accidental Hub call into a clear failure instead of a hang.

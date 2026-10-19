@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=pii_scan
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=02:00:00

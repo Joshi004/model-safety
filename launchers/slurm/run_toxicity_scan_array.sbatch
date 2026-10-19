@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=medpsy_toxicity
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=96G
@@ -26,7 +26,8 @@ MODEL="${GUARD_MODEL:-Qwen/Qwen3Guard-Gen-8B}"
 PORT="${GUARD_PORT:-$((20000 + SLURM_JOB_ID % 20000))}"
 BASE_URL="http://127.0.0.1:${PORT}/v1"
 CONCURRENCY="${GUARD_CONCURRENCY:-8}"
-VLLM_SQUASHFS_PATH="${VLLM_SQUASHFS_PATH:-${REPO}/containers/vllm-openai-v0.24.0-cu129.sqsh}"
+source "${REPO}/launchers/slurm/defaults.sh"
+VLLM_SQUASHFS_PATH="${VLLM_SQUASHFS_PATH:-${MODEL_SAFETY_VLLM_IMAGE}}"
 HF_HOME="${HF_HOME:-${REPO}/cache/hf}"
 HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
 HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"

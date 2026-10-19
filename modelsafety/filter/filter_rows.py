@@ -54,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from modelsafety.contract.fingerprints import file_sha256, line_fingerprint  # noqa: E402
 from modelsafety.contract.origin import check_line  # noqa: E402
+from modelsafety.contract.project_paths import to_saved  # noqa: E402
 from modelsafety.contract.run_finder import (  # noqa: E402
     FILTER_ROWS_IDENTITY_TOOL,
     FILTER_ROWS_TOOL,
@@ -684,9 +685,11 @@ def _filter_run(plan: FilterPlan, run: RunPlan) -> dict[str, Any]:
         "tool": FILTER_ROWS_TOOL,
         "parent": {
             "run": run.run,
-            "run_dir": str(run.parent_dir),
+            # Relative to the project root when inside it (see project_paths), so a filtered
+            # dataset can still be traced back to its parent run after the project is moved.
+            "run_dir": to_saved(run.parent_dir),
             "tool": run.parent_tool,
-            "scan_root": str(plan.input_root),
+            "scan_root": to_saved(plan.input_root),
             "files": len(run.files),
         },
         "scanner_results": plan.scanners,

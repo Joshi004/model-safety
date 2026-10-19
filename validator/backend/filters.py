@@ -56,6 +56,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, NamedTuple
 
+import activity
 import flagged
 import jobs
 import registry
@@ -68,6 +69,7 @@ from reader_imports import (
     MAX_DROP_LIST_REASONS,
     REPO_ROOT,
     read_json_or_none,
+    to_saved,
 )
 
 FILTER_FILE = "filter.json"
@@ -495,6 +497,11 @@ def check(dataset_id: str, request: Any) -> dict[str, Any]:
         command_text = shlex.join(_command(parent_folder, folder, VERSION_PLACEHOLDER, NEW_ID_PLACEHOLDER, resources))
 
     warnings: list[str] = []
+    try:
+        active: dict[str, dict[str, Any]] | None = jobs.active_jobs()
+    except jobs.SlurmUnavailable:
+        active = None  # `blocked` already says SLURM can't be asked
+    warnings.extend(activity.warnings_for([dataset_id], active))
     for item in dropped.counts["by_scanner"]:
         result = (dataset.get("results") or {}).get(item["scanner"])
         if isinstance(result, dict) and result.get("coverage") == "fail":
@@ -600,7 +607,12 @@ def submit(dataset_id: str, request: Any, automatic_scan_id: str | None = None) 
         record: dict[str, Any] = {
             "dataset_id": child_id,
             "parent_id": dataset_id,
-            "parent_version": {key: dataset["prepared"].get(key) for key in ("version_id", "folder", "rows")},
+            # The folder is saved relative to the project root, so the record survives a move.
+            "parent_version": {
+                "version_id": dataset["prepared"].get("version_id"),
+                "folder": to_saved(dataset["prepared"]["folder"]),
+                "rows": dataset["prepared"].get("rows"),
+            },
             "version_id": new_version,
             "created_at": jobs._now_iso(),
             # Set when the drop was made by itself after a scan (D17), None when a user chose it.
@@ -644,6 +656,8 @@ def submit(dataset_id: str, request: Any, automatic_scan_id: str | None = None) 
             else:
                 record["job_id"] = slurm_id
         _write_record(record)
+        if record["job_id"]:
+            activity.record("drop", [dataset_id, child_id], [record["job_id"]])
         return {
             "dataset_id": child_id,
             "name": child["name"],

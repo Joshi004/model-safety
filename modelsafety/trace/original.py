@@ -36,6 +36,7 @@ from modelsafety.contract.fingerprints import (  # noqa: E402
     row_fingerprint,
 )
 from modelsafety.contract.origin import json_safe  # noqa: E402
+from modelsafety.contract.project_paths import from_saved  # noqa: E402
 from modelsafety.contract.run_finder import PREPARE_ROWS_TOOL, SHA256_HEX  # noqa: E402
 
 clean_value = prepare_rows._clean_value
@@ -185,7 +186,9 @@ def _files_to_compare(
     files = _source_files(run["summary"])
     if input_type == "huggingface":
         identity = run["run_identity"]
-        if not isinstance(identity, dict) or identity.get("input_root") != path:
+        root = identity.get("input_root") if isinstance(identity, dict) else None
+        # The identity holds the root relative to the project root when it is inside it.
+        if not isinstance(root, str) or (root != path and str(from_saved(root)) != path):
             raise _refuse_unlisted(path)
         return files
     matching = [entry for entry in files if entry.get("path") == path]

@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from modelsafety.contract.project_paths import to_saved
+
 # Bump when the recipe for row_fingerprint() changes, so old _origin notes
 # can still be checked with the recipe they were made with.
 FINGERPRINT_RECIPE_VERSION = 1
@@ -55,8 +57,13 @@ def files_list_fingerprint(files: list[dict[str, Any]]) -> str:
 
 
 def input_block(root: str, files: list[dict[str, Any]]) -> dict[str, Any]:
-    """The "what this run read" block every scan summary carries."""
-    return {"root": root, "files": files, "fingerprint": files_list_fingerprint(files)}
+    """The "what this run read" block every scan summary carries.
+
+    ``root`` is saved relative to the project root when it is inside it (see
+    ``project_paths``), so the summary still matches the folder after the project is moved.
+    Read it back with ``from_saved``.
+    """
+    return {"root": to_saved(root), "files": files, "fingerprint": files_list_fingerprint(files)}
 
 
 def compare_files(expected: dict[str, str], actual: dict[str, str]) -> dict[str, list[str]]:

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=medpsy_filter
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00

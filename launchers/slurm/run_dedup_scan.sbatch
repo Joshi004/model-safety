@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=dedup_scan
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=24:00:00

@@ -49,11 +49,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+import activity
 import jobs
 import registry
 import scanners
 import scans
-from reader_imports import REPO_ROOT, read_json_or_none
+from reader_imports import REPO_ROOT, from_saved, read_json_or_none
 
 ANALYSIS_FILE = "analysis.json"
 COVERAGE_FILE = "coverage.json"
@@ -168,7 +169,9 @@ def _version_folder(dataset_id: str, version: Any) -> Path:
     """The Prepared version folder a scan's record says it read, checked to be where the
     registry puts it: the record is only a file."""
     version_id = version.get("version_id") if isinstance(version, dict) else None
-    folder = Path(str(version.get("folder"))) if isinstance(version, dict) else None
+    # The record holds the folder relative to the project root (or absolute, for a record
+    # made before that), so it is turned back into a path here.
+    folder = from_saved(str(version.get("folder"))) if isinstance(version, dict) else None
     if not isinstance(version_id, str) or jobs.BATCH_ID.fullmatch(version_id) is None or folder is None:
         raise ResultsError(f"The scan's record has no usable Prepared version for dataset {dataset_id}.")
     if folder != registry.service_root() / "datasets" / dataset_id / "prepared" / version_id:
@@ -284,6 +287,8 @@ def _submit(scan: dict[str, Any], kind: str, earlier: dict[str, Any] | None = No
         else:
             record["job_id"] = job_id
     _write_analysis(record)
+    if record["job_id"]:
+        activity.record("result analysis", scan["datasets"], [record["job_id"]])
     return record
 
 

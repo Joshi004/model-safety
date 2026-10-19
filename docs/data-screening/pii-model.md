@@ -83,7 +83,7 @@ run. Never reuse completed work units after changing policy.
 
 ## Submit a pilot
 
-All work runs through the `health` partition:
+All work runs through the `background` partition by default (pass another with `PRIVACY_FILTER_PARTITION`):
 
 ```bash
 export PRIVACY_FILTER_MODE=pilot

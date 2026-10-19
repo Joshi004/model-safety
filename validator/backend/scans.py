@@ -68,11 +68,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import activity
 import conversions
 import jobs
 import registry
 import scanners
-from reader_imports import REPO_ROOT
+from reader_imports import REPO_ROOT, to_saved
 
 SCANS_FOLDER = "scans"
 SCAN_FILE = "scan.json"
@@ -703,10 +704,13 @@ def _plan_unit(
     resources: dict[str, Any] | None,
     request_ok: bool,
     names: dict[str, str],
+    active: dict[str, dict[str, Any]] | None,
 ) -> dict[str, Any]:
     datasets_root = registry.service_root() / "datasets"
     blocked: list[str] = []
     warnings: list[str] = _replacement_warnings(scanner, unit, settings, names)
+    # Other users' jobs on these datasets that are still queued or running. Only a warning.
+    warnings.extend(activity.warnings_for([dataset["id"] for dataset in unit["datasets"]], active))
     rows: list[dict[str, Any]] = []
     version_folders: dict[str, Path] = {}
     for dataset in unit["datasets"]:
@@ -836,9 +840,13 @@ def _plan(
     datasets = [registry.get_dataset(item["id"]) for item in items]
     held = _holding_scans()
     names = registry.dataset_names()
+    try:
+        active: dict[str, dict[str, Any]] | None = jobs.active_jobs()
+    except jobs.SlurmUnavailable:
+        active = None  # `problems` already says SLURM can't be asked
 
     units = [
-        _plan_unit(scanner, unit, conversion_items, held, settings, resources, not problems, names)
+        _plan_unit(scanner, unit, conversion_items, held, settings, resources, not problems, names, active)
         for unit in _units(scanner, datasets, mode, settings)
     ]
     needs_conversion = any(row["action"] in CONVERT_ACTIONS for unit in units for row in unit["datasets"])
@@ -932,7 +940,11 @@ def _start_scan_job(scan: dict[str, Any]) -> None:
         _write_scan(scan)
         return
 
-    scan["versions"] = versions
+    # The record holds each folder relative to the project root, so it still works after the
+    # project is moved; `version_folders` above was made from the absolute ones.
+    scan["versions"] = {
+        dataset_id: {**version, "folder": to_saved(version["folder"])} for dataset_id, version in versions.items()
+    }
     scan["command"] = argv
     scan["command_text"] = shlex.join(argv)
     # Stamped and written before `sbatch` runs: the job can start before it returns, and a
@@ -958,6 +970,11 @@ def _start_scan_job(scan: dict[str, Any]) -> None:
             started = ", ".join(f"the {job['role']} job {job['job_id']}" for job in scan["prior_jobs"])
             scan["submit_error"] += f" It had already submitted {started}, which may still be running: stop it with scancel."
     _write_scan(scan)
+    # Every job it did submit counts, also when the command failed after the first one.
+    job_ids = [job["job_id"] for job in scan["prior_jobs"]]
+    if scan.get("job_id"):
+        job_ids.append(scan["job_id"])
+    activity.record(f"{scanner.label} scan", scan["datasets"], job_ids)
 
 
 def _create_scan(

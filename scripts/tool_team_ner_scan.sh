@@ -52,7 +52,7 @@ PRIVACY_FILTER_INPUT_ROOT="${PRIVACY_FILTER_INPUT_ROOT:-${REPO}/output/prepared/
 # by apply_action_defaults() once that's known.
 PRIVACY_FILTER_RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT:-}"
 PRIVACY_FILTER_INPUT_MODE="${PRIVACY_FILTER_INPUT_MODE:-runs}"   # runs = files of finished conversions only; folder = every .jsonl
-PARTITION="${PARTITION:-health}"
+PARTITION="${PARTITION:-background}"
 
 REVIEW_PAIRS=(
   PRIVACY_FILTER_INPUT_ROOT "Input root"

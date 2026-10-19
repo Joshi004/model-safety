@@ -86,7 +86,7 @@ DEDUP_INPUT_ROOT="${DEDUP_INPUT_ROOT:-${REPO}/output/prepared/tools_team}"
 DEDUP_RUN_DIR="${DEDUP_RUN_DIR:-}"
 
 # --- SLURM resources, filled in per-action by apply_action_defaults -------
-PARTITION="${PARTITION:-health}"    # main | health | toolCall | VLM -- pick_partition lists the real, live set
+PARTITION="${PARTITION:-background}"    # background (low priority, can be preempted) | main | health | toolCall | VLM -- pick_partition lists the real, live set
 DEDUP_CPUS="${DEDUP_CPUS:-}"
 DEDUP_MEM="${DEDUP_MEM:-}"
 DEDUP_TIME="${DEDUP_TIME:-}"
@@ -131,7 +131,7 @@ Flags (each overrides the matching setting for this run only):
                           .jsonl under --input-root.
   --run-dir PATH         Where results go (default: output/tool_team_dedup_pilot
                           for pilot, output/tool_team_dedup_run for full/report)
-  --partition NAME       SLURM partition (default: health)
+  --partition NAME       SLURM partition (default: background)
   --cpus N               Default: 8 for pilot, 16 for full
   --mem SIZE             Default: 32G for pilot, 128G for full
   --time HH:MM:SS        Default: 02:00:00 for pilot, 24:00:00 for full

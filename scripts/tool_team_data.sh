@@ -72,7 +72,7 @@ PII_RUN_DIR="${PII_RUN_DIR:-${REPO}/output/tool_team_pii_run}"     # `scan` and 
 
 # --- SLURM resources ---------------------------------------------------------
 # The partition is shared by the convert jobs and the scan/extract job.
-PARTITION="${PARTITION:-health}"        # main | health | toolCall | VLM -- pick_partition lists the real, live set
+PARTITION="${PARTITION:-background}"        # background (low priority, can be preempted) | main | health | toolCall | VLM -- pick_partition lists the real, live set
 
 # The scan/extract job.
 SCAN_CPUS="${SCAN_CPUS:-32}"

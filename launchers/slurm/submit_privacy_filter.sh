@@ -11,7 +11,7 @@ RUN_ROOT="${PRIVACY_FILTER_RUN_ROOT:-${REPO}/output/medpsy2/privacy_filter_nemot
 MODE="${PRIVACY_FILTER_MODE:-pilot}"
 BACKEND="${PRIVACY_FILTER_BACKEND:-transformers}"
 MODEL="${PRIVACY_FILTER_MODEL:-OpenMed/privacy-filter-nemotron-v2}"
-PARTITION="${PRIVACY_FILTER_PARTITION:-health}"
+PARTITION="${PRIVACY_FILTER_PARTITION:-background}"
 # The default input above (the medpsy filtered folder) isn't a run folder, so
 # this script reads it as a plain folder unless told otherwise. The tool team
 # wrapper passes "runs".

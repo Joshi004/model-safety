@@ -50,7 +50,7 @@ measure memory before increasing the full-run request.
 
 ## Run through SLURM
 
-The job uses the `health` partition and creates a dedicated `.venv` in this
+The job uses the `background` partition by default (low priority, and a job there can be preempted and restarted) and creates a dedicated `.venv` in this
 directory on first use.
 
 ```bash
@@ -149,7 +149,7 @@ Mixed JSONL, CSV, and Parquet benchmark collections must first be normalized
 to prompt-only JSONL:
 
 ```bash
-srun --partition=health --ntasks=1 --cpus-per-task=4 --mem=16G --time=00:30:00 \
+srun --partition=background --ntasks=1 --cpus-per-task=4 --mem=16G --time=00:30:00 \
   modelsafety/data_screening/dedup/.venv/bin/python \
   modelsafety/data_screening/dedup/prepare_benchmarks.py \
   --input-root data/benchmarks/alex_health \

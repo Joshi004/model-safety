@@ -25,6 +25,11 @@ Rules this module keeps:
   result was made from the version that is being replaced. `update_result` (results.py)
   adds the exact count and the coverage verdict once the scan's analysis has finished.
   It is not part of `update`.
+* The `folder` of a Prepared version (`prepared`, `kept_versions`) is saved relative to the
+  project root when it is inside it, so the file still works after the project is moved or
+  cloned somewhere else. `set_prepared` saves it that way, and every read that leaves this
+  module (`_with_availability`, `filtered_versions`) gives it back as an absolute path. A
+  dataset's `path` is the original data, outside the project, and stays absolute.
 * One lock covers every read and write of the file, because FastAPI runs these
   handlers in a thread pool. A write goes to a temp file first and is then moved
   into place with `os.replace`, so the file is never half written.
@@ -42,10 +47,10 @@ import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 import detect
-from reader_imports import ORIGIN_KEY, REPO_ROOT, SUPPORTED_INPUT_TYPES
+from reader_imports import ORIGIN_KEY, REPO_ROOT, SUPPORTED_INPUT_TYPES, from_saved, to_saved
 
 SERVICE_ROOT_ENV = "VALIDATOR_SERVICE_ROOT"
 REGISTRY_VERSION = 1
@@ -433,12 +438,35 @@ def _index_of(records: list[dict[str, Any]], dataset_id: Any) -> int:
     raise DatasetNotFound(f"No dataset has the id {dataset_id}.")
 
 
+def _version_with_folder(version: Any, convert: Callable[[str], str]) -> Any:
+    """A copy of a Prepared version's record with its `folder` passed through `convert`.
+    Anything that isn't such a record is returned as it is."""
+    if isinstance(version, dict) and isinstance(version.get("folder"), str):
+        return {**version, "folder": convert(version["folder"])}
+    return version
+
+
+def _absolute_folder(saved: str) -> str:
+    return str(from_saved(saved))
+
+
+def _with_absolute_folders(record: dict[str, Any]) -> dict[str, Any]:
+    """A copy of `record` whose Prepared versions' folders are absolute paths, as everything
+    outside this module uses them. The file holds them relative to the project root."""
+    return {
+        **record,
+        "prepared": _version_with_folder(record.get("prepared"), _absolute_folder),
+        "kept_versions": [
+            _version_with_folder(version, _absolute_folder) for version in record.get("kept_versions") or []
+        ],
+    }
+
+
 def _with_availability(record: dict[str, Any]) -> dict[str, Any]:
     reason = unavailable_reason(Path(record["path"]))
     return {
-        **record,
+        **_with_absolute_folders(record),
         # Entries saved before Phase 3 have no such list, and before Phase 4 no results.
-        "kept_versions": record.get("kept_versions") or [],
         "results": record.get("results") or {},
         "available": reason is None,
         "unavailable_reason": reason,
@@ -473,7 +501,7 @@ def filtered_versions(dataset_id: str) -> list[dict[str, Any]]:
     as the registry has them. A malformed or unknown id gives an empty list."""
     with _LOCK:
         records = _read_registry()["datasets"]
-    children = [record for record in records if record.get("parent") == dataset_id]
+    children = [_with_absolute_folders(record) for record in records if record.get("parent") == dataset_id]
     return sorted(children, key=lambda record: record["created_at"], reverse=True)
 
 
@@ -632,7 +660,7 @@ def set_prepared(dataset_id: str, prepared: dict[str, Any]) -> bool:
         record = records[_index_of(records, dataset_id)]
         if record.get("prepared") is not None:
             return False
-        record["prepared"] = prepared
+        record["prepared"] = _version_with_folder(prepared, to_saved)
         _save(data)
     return True
 

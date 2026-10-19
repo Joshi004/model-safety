@@ -49,6 +49,7 @@ from typing import Any, Callable, Iterable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from modelsafety.contract.fingerprints import compare_files  # noqa: E402
+from modelsafety.contract.project_paths import from_saved, to_saved  # noqa: E402
 from modelsafety.contract.run_finder import (  # noqa: E402
     SCAN_INPUTS_FILENAME,
     SUCCESS_FILENAME,
@@ -522,7 +523,7 @@ def load_toxicity(results_dir: Path) -> ScanRecord:
             continue
         slice_root = block.get("root")
         if manifest_root is not None and isinstance(slice_root, str):
-            if Path(slice_root).resolve() != Path(manifest_root).resolve():
+            if from_saved(slice_root).resolve() != from_saved(manifest_root).resolve():
                 record.problems.append(
                     make_problem(
                         "toxicity",
@@ -647,7 +648,8 @@ def check_scan_root(record: ScanRecord, selection: ScanSelection) -> list[dict[s
         if all(part.status == FINISHED for part in record.parts):
             return [make_problem(record.scanner, "The results don't record which folder was scanned.")]
         return []
-    if Path(record.scan_root).expanduser().resolve() != Path(selection.scan_root).resolve():
+    # The results record the root relative to the project root when it is inside it.
+    if from_saved(record.scan_root).resolve() != Path(selection.scan_root).resolve():
         return [
             make_problem(
                 record.scanner,
@@ -810,7 +812,7 @@ def _per_run(
 def not_run_section(results_dir: Path | None, reason: str) -> dict[str, Any]:
     return {
         "status": "not_run",
-        "results_dir": str(results_dir) if results_dir is not None else None,
+        "results_dir": to_saved(results_dir) if results_dir is not None else None,
         "reason": reason,
     }
 
@@ -860,7 +862,7 @@ def check_scanner(
     totals = _sum_counts(record, read_paths)
     return {
         "status": "fail" if problems else "pass",
-        "results_dir": str(results_path),
+        "results_dir": to_saved(results_path),
         "scan_root": record.scan_root,
         "input_mode": record.input_mode,
         "parts": [_part_dict(part) for part in record.parts],
@@ -937,7 +939,7 @@ def build_report(
         "report": "coverage",
         "version": REPORT_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "root": str(root_path),
+        "root": to_saved(root_path),
         "verdict": "fail",
         "scanners_checked": [],
         "scanners_not_run": [],

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=medpsy_guard_pilot
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
@@ -25,7 +25,8 @@ GEMMA_MODEL="${GEMMA_MODEL:-google/gemma-4-31B-it}"
 PORT="${MEDICAL_GUARD_PORT:-$((20000 + SLURM_JOB_ID % 20000))}"
 BASE_URL="http://127.0.0.1:${PORT}/v1"
 CONCURRENCY="${MEDICAL_GUARD_CONCURRENCY:-8}"
-VLLM_SQUASHFS_PATH="${VLLM_SQUASHFS_PATH:-${REPO}/containers/vllm-openai-v0.24.0-cu129.sqsh}"
+source "${REPO}/launchers/slurm/defaults.sh"
+VLLM_SQUASHFS_PATH="${VLLM_SQUASHFS_PATH:-${MODEL_SAFETY_VLLM_IMAGE}}"
 HF_HOME="${HF_HOME:-${REPO}/cache/hf}"
 HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
 HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
@@ -33,11 +34,8 @@ VLLM_ENABLE_CUDA_COMPATIBILITY="${VLLM_ENABLE_CUDA_COMPATIBILITY:-1}"
 VLLM_PID=""
 VLLM_LOG=""
 
-if [[ -z "${HF_TOKEN:-}" && -f "${REPO}/.env" ]]; then
-  set -a
-  source "${REPO}/.env"
-  set +a
-fi
+# The token only comes from your own environment (export HF_TOKEN before sbatch); no file in
+# the repo is read for it.
 HF_TOKEN="${HF_TOKEN:-}"
 
 stop_vllm() {

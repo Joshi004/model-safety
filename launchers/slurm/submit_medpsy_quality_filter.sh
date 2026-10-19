@@ -17,12 +17,6 @@ export QUALITY_ARRAY_CONCURRENCY="${QUALITY_ARRAY_CONCURRENCY:-8}"
 export QUALITY_PII_ARRAY_CONCURRENCY="${QUALITY_PII_ARRAY_CONCURRENCY:-4}"
 export REPO
 
-if [[ -z "${HF_TOKEN:-}" && -f "${REPO}/.env" ]]; then
-  set -a
-  source "${REPO}/.env"
-  set +a
-fi
-
 if [[ ! -d "${QUALITY_INPUT_ROOT}" ]]; then
   echo "Input root does not exist: ${QUALITY_INPUT_ROOT}" >&2
   exit 2

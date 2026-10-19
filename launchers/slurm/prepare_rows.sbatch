@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=prepare_rows
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00

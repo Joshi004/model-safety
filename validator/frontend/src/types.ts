@@ -478,6 +478,8 @@ export interface ConversionCheckResponse {
   slurm_error: string | null
   resources: JobResources | null
   resources_error: string | null
+  // Other people's jobs on these datasets that are still queued or running. Only a warning.
+  warnings: string[]
   items: ConversionPlanItem[]
 }
 

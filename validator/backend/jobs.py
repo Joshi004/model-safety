@@ -19,7 +19,6 @@ Rules this module keeps:
 
 from __future__ import annotations
 
-import getpass
 import json
 import os
 import re
@@ -29,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import activity
 import detect
 import preview
 import runs
@@ -40,7 +40,9 @@ from reader_imports import (
     run_identity,
 )
 
-DEFAULT_RESOURCES = {"partition": "health", "cpus": 2, "mem": "32G", "time": "04:00:00"}
+# `background` is hidden from plain `sinfo`, has a low priority and its jobs can be preempted
+# (they then restart from scratch); a user can pick any other partition for a job.
+DEFAULT_RESOURCES = {"partition": "background", "cpus": 2, "mem": "32G", "time": "04:00:00"}
 MAX_CPUS = 32
 SLURM_TIMEOUT_SECONDS = 30
 JOB_SCRIPT = "launchers/slurm/prepare_rows.sbatch"
@@ -61,6 +63,7 @@ ACTIVE_OUTCOMES = ("queued", "running", "stalled")
 STILL_GOING_STATES = {
     "PENDING": "queued",
     "REQUEUED": "queued",
+    "PREEMPTED": "queued",  # a job in `background` that a higher-priority job pushed off its nodes; it restarts
     "RUNNING": "running",
     "COMPLETING": "running",
     "CONFIGURING": "running",
@@ -213,9 +216,9 @@ def _slurm(argv: list[str]) -> str:
 
 
 def list_partitions() -> list[str]:
-    """Partition names from `sinfo`; its `*` marks the default partition and
-    isn't part of the name."""
-    output = _slurm(["sinfo", "-h", "-o", "%P"])
+    """Partition names from `sinfo -a` (so hidden partitions such as `background`
+    are listed); its `*` marks the default partition and isn't part of the name."""
+    output = _slurm(["sinfo", "-a", "-h", "-o", "%P"])
     names = {line.strip().rstrip("*") for line in output.splitlines() if line.strip()}
     if not names:
         raise SlurmUnavailable("SLURM couldn't be reached: sinfo listed no partitions.")
@@ -223,13 +226,15 @@ def list_partitions() -> list[str]:
 
 
 def active_jobs() -> dict[str, dict[str, Any]]:
-    """The current user's jobs that squeue lists, in any state, by job ID.
+    """The jobs that squeue lists, in any state, by job ID. It isn't limited to the
+    current user: a job submitted by someone else running this service (the clone
+    is shared) must still be found, and a job ID is unique cluster-wide.
 
     The filtering by job ID happens in the callers, not with `squeue -j`:
     squeue exits 1 for a job ID it no longer knows, which would look like
     SLURM being down.
     """
-    output = _slurm(["squeue", "-h", "-u", getpass.getuser(), "-o", "%i|%T|%r|%M"])
+    output = _slurm(["squeue", "-h", "-o", "%i|%T|%r|%M"])
     jobs: dict[str, dict[str, Any]] = {}
     for line in output.splitlines():
         parts = line.strip().split("|", 3)
@@ -472,6 +477,9 @@ def _submit_one(logs: Path, resources: dict[str, Any], job: dict[str, Any]) -> N
     job["slurm_job_id"] = job_id
     job["out_log"] = str(logs / f"{job_id}.out")
     job["err_log"] = str(logs / f"{job_id}.err")
+    dataset_id = job.get("dataset_id")
+    if isinstance(dataset_id, str):
+        activity.record("conversion", [dataset_id], [job_id])
 
 
 # -------------------------------------------------------------------------

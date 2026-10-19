@@ -27,6 +27,10 @@ import prepare_rows  # noqa: E402  (needs the sys.path insert above first)
 
 from modelsafety.contract.fingerprints import line_fingerprint  # noqa: E402
 from modelsafety.contract.origin import ORIGIN_KEY, json_safe  # noqa: E402
+
+# Saved paths are relative to the project root when they are inside it, so a record still
+# works after the project is moved or cloned elsewhere.
+from modelsafety.contract.project_paths import from_saved, to_saved  # noqa: E402
 from modelsafety.contract.run_finder import (  # noqa: E402
     FILTER_ROWS_TOOL,
     PREPARE_ROWS_TOOL,
@@ -120,6 +124,8 @@ __all__ = [
     "label_tier",
     "CandidatePolicy",
     "json_safe",
+    "from_saved",
+    "to_saved",
     "line_fingerprint",
     "clean_value",
     "prepare_row",

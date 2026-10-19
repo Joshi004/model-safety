@@ -94,7 +94,7 @@ INPUT_CSV="${INPUT_CSV:-${REPO}/output/tool_team_pii_run/stage3_extract/pii_extr
 RUN_DIR="${RUN_DIR:-}"
 
 # --- SLURM resources, filled in per-action by apply_action_defaults -------
-PARTITION="${PARTITION:-health}"    # main | health | toolCall | VLM -- pick_partition lists the real, live set
+PARTITION="${PARTITION:-background}"    # background (low priority, can be preempted) | main | health | toolCall | VLM -- pick_partition lists the real, live set
 GPU_COUNT="${GPU_COUNT:-}"
 CPUS="${CPUS:-}"
 MEM="${MEM:-}"

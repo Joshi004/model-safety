@@ -2,3 +2,5 @@
 node_modules/
 dist/
 .validator-state
+.node/
+.node-install.*/

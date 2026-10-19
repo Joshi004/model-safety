@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=result_analysis
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00

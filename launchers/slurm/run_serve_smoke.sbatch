@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=serve_smoke
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=privacy_filter_manifest
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00

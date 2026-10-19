@@ -220,6 +220,11 @@ export default function ConvertDialog({
           {check.resources_error}
         </div>
       )}
+      {check?.warnings.map((warning) => (
+        <div key={warning} className="banner banner-warning small">
+          {warning}
+        </div>
+      ))}
       {error !== null && (
         <div className="banner banner-error" role="alert">
           {error}

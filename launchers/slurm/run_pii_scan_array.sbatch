@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=medpsy_pii_cpu
-#SBATCH --partition=health
+#SBATCH --partition=background
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64

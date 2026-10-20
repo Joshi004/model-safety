@@ -1282,6 +1282,56 @@ a.tab {
   gap: 12px;
 }
 
+/* ---- Partition table (the partition choice of the Convert and Scan forms) ---- */
+
+.partition-picker {
+  margin-bottom: 12px;
+}
+
+.partition-picker .scan-heading {
+  margin-top: 0;
+}
+
+.partition-picker .partition-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.partition-table th {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 0.78em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text);
+  opacity: 0.8;
+}
+
+.partition-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.partition-table tbody tr {
+  cursor: pointer;
+}
+
+.partition-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.partition-table tbody tr:hover {
+  background: var(--bg-alt);
+}
+
+.partition-table tbody tr.selected {
+  background: var(--accent-bg);
+}
+
 /* ---- Scan dialog ---- */
 
 .dialog-wide {

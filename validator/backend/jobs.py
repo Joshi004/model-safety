@@ -225,6 +225,235 @@ def list_partitions() -> list[str]:
     return sorted(names)
 
 
+# -------------------------------------------------------------------------
+# How busy each partition is (read-only: `sinfo` and `squeue`)
+# -------------------------------------------------------------------------
+
+BACKGROUND_PARTITION = "background"
+# Node states (SLURM's long names, flags such as `*` or `~` removed) whose GPUs can't be given to a job.
+UNAVAILABLE_NODE_STATE_PREFIXES = ("drain", "down", "fail", "maint", "inval", "unk", "fut")
+# Job states in which a job holds its nodes.
+HOLDING_JOB_STATES = ("RUNNING", "COMPLETING")
+# The GPU count in a node's GRES text: "gpu:nvidia_h100_80gb_hbm3:8(S:0-1)" or "gpu:8".
+GRES_GPU_COUNT = re.compile(r"gpu:(?:[^:(,\s]+:)?(\d+)")
+# The GPUs of a job in squeue's `tres-alloc` ("cpu=8,mem=64G,node=1,gres/gpu=2").
+JOB_GPU_COUNT = re.compile(r"(?:^|,)gres/gpu=(\d+)")
+
+
+def _gpu_count(gres: str) -> int:
+    return sum(int(count) for count in GRES_GPU_COUNT.findall(gres))
+
+
+def _split_top_level(text: str) -> list[str]:
+    """`text` cut at the commas that aren't inside square brackets."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for index, character in enumerate(text):
+        if character == "[":
+            depth += 1
+        elif character == "]":
+            depth = max(depth - 1, 0)
+        elif character == "," and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return [part for part in parts if part]
+
+
+def _expand_node_part(part: str) -> list[str]:
+    match = re.search(r"\[([^\]]*)\]", part)
+    if match is None:
+        return [part]
+    prefix, suffix = part[: match.start()], part[match.end() :]
+    expanded: list[str] = []
+    for item in match.group(1).split(","):
+        low, _separator, high = item.partition("-")
+        if not low.isdigit() or (high != "" and not high.isdigit()):
+            return [part]  # Not a list SLURM writes; it won't match any node.
+        for number in range(int(low), int(high or low) + 1):
+            expanded.extend(_expand_node_part(prefix + str(number).zfill(len(low)) + suffix))
+    return expanded
+
+
+def _expand_nodelist(text: str) -> list[str]:
+    """The node names in squeue's list: "health-[0-1,5],vlm-3" is health-0, health-1, health-5, vlm-3."""
+    names: list[str] = []
+    for part in _split_top_level(text.strip()):
+        names.extend(_expand_node_part(part))
+    return names
+
+
+def _pending_task_count(job_id: str) -> int:
+    """How many jobs a pending squeue line stands for: squeue joins the waiting tasks of an
+    array job into one line such as "525000_[3-40%4]" (the number after % limits how many run
+    at once). 1 for any other ID, or when the range isn't one this understands."""
+    match = re.search(r"_\[([^\]]*)\]", job_id)
+    if match is None:
+        return 1
+    total = 0
+    for item in match.group(1).split("%", 1)[0].split(","):
+        bounds, _colon, step = item.partition(":")
+        low, _dash, high = bounds.partition("-")
+        if not low.isdigit() or (high != "" and not high.isdigit()) or (step != "" and not step.isdigit()):
+            return 1
+        if step == "0":
+            return 1
+        total += (int(high or low) - int(low)) // int(step or 1) + 1
+    return max(total, 1)
+
+
+def _read_nodes() -> dict[str, dict[str, Any]]:
+    """Each node's state, GPUs and used GPUs, and the partitions it is in, from `sinfo -a -N`
+    (one line for each node and partition it is in)."""
+    output = _slurm(
+        [
+            "sinfo",
+            "-a",
+            "-N",
+            "-h",
+            "-O",
+            "NodeHost:60|,Partition:60|,StateLong:30|,Gres:200|,GresUsed:200|",
+        ]
+    )
+    nodes: dict[str, dict[str, Any]] = {}
+    for line in output.splitlines():
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) < 5:
+            continue
+        host, partition, state, gres, gres_used = parts[:5]
+        partition = partition.rstrip("*")
+        if not host or not partition:
+            continue
+        node = nodes.setdefault(
+            host,
+            {
+                "state": state.lower().rstrip("*~#!%$@^-+"),
+                "gpus": _gpu_count(gres),
+                "used": _gpu_count(gres_used),
+                "partitions": set(),
+            },
+        )
+        node["partitions"].add(partition)
+    if not nodes:
+        raise SlurmUnavailable("SLURM couldn't be reached: sinfo listed no nodes.")
+    return nodes
+
+
+def _read_jobs() -> list[dict[str, Any]]:
+    """Every job of every user in any partition, `squeue -a` (without -a the jobs of a hidden
+    partition such as `background` aren't listed). `gpus` is what the job holds, or, for a
+    waiting job, what it asks for."""
+    output = _slurm(
+        [
+            "squeue",
+            "-a",
+            "-h",
+            "-O",
+            "JobID:100|,Partition:100|,State:20|,NodeList:1000|,tres-alloc:300|",
+        ]
+    )
+    listed: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) < 5:
+            continue
+        job_id, partitions, state, nodelist, tres = parts[:5]
+        match = JOB_GPU_COUNT.search(tres)
+        listed.append(
+            {
+                "id": job_id,
+                "partitions": [name for name in partitions.split(",") if name],
+                "state": state,
+                "nodes": nodelist,
+                "gpus": int(match.group(1)) if match else 0,
+            }
+        )
+    return listed
+
+
+def partition_usage() -> dict[str, Any]:
+    """For every partition `sinfo -a` lists, over the nodes it has: the nodes and GPUs that are
+    free, the GPUs held by jobs of the partition itself, of `background` and of any other
+    partition, the GPUs a job of this partition could get if the `background` jobs on its
+    nodes were preempted, and the jobs running and waiting in it.
+
+    The GPUs of a job on several nodes are shared evenly between them (SLURM doesn't say how
+    they are really spread). A waiting job submitted to several partitions counts in each.
+    When SLURM can't be asked, `partitions` is empty and `slurm_error` says why. Changes nothing.
+    """
+    try:
+        nodes = _read_nodes()
+        listed = _read_jobs()
+    except SlurmUnavailable as exc:
+        return {"partitions": [], "read_at": _now_iso(), "slurm_error": str(exc)}
+
+    held_on_node: dict[str, dict[str, int]] = {}  # node -> partition of the job -> GPUs it holds there
+    running_jobs: dict[str, int] = {}
+    queued_jobs: dict[str, int] = {}
+    queued_gpus: dict[str, int] = {}
+    for job in listed:
+        if job["state"] in HOLDING_JOB_STATES:
+            node_names = _expand_nodelist(job["nodes"])
+            for name in job["partitions"]:
+                running_jobs[name] = running_jobs.get(name, 0) + 1
+                if not node_names or job["gpus"] == 0:
+                    continue
+                share, extra = divmod(job["gpus"], len(node_names))
+                for index, node_name in enumerate(node_names):
+                    held = held_on_node.setdefault(node_name, {})
+                    held[name] = held.get(name, 0) + share + (1 if index < extra else 0)
+        elif job["state"] == "PENDING":
+            tasks = _pending_task_count(job["id"])
+            for name in job["partitions"]:
+                queued_jobs[name] = queued_jobs.get(name, 0) + tasks
+                queued_gpus[name] = queued_gpus.get(name, 0) + job["gpus"] * tasks
+
+    partitions: list[dict[str, Any]] = []
+    for name in sorted({partition for node in nodes.values() for partition in node["partitions"]}):
+        is_background = name == BACKGROUND_PARTITION
+        row: dict[str, Any] = {
+            "name": name,
+            "nodes_total": 0,
+            "nodes_free": 0,
+            "nodes_unavailable": 0,
+            "gpus_total": 0,
+            "gpus_free": 0,
+            "gpus_used_by_self": 0,
+            "gpus_used_by_background": None if is_background else 0,
+            "gpus_used_by_others": 0,
+            "gpus_reclaimable": None if is_background else 0,
+            "jobs_running": running_jobs.get(name, 0),
+            "jobs_queued": queued_jobs.get(name, 0),
+            "gpus_queued": queued_gpus.get(name, 0),
+        }
+        for host, node in nodes.items():
+            if name not in node["partitions"]:
+                continue
+            usable = not node["state"].startswith(UNAVAILABLE_NODE_STATE_PREFIXES)
+            held = held_on_node.get(host, {})
+            by_self = held.get(name, 0)
+            by_background = 0 if is_background else held.get(BACKGROUND_PARTITION, 0)
+            free = max(node["gpus"] - node["used"], 0) if usable else 0
+
+            row["nodes_total"] += 1
+            row["gpus_total"] += node["gpus"]
+            row["gpus_free"] += free
+            row["gpus_used_by_self"] += by_self
+            row["gpus_used_by_others"] += max(node["used"] - by_self - by_background, 0)
+            if not usable:
+                row["nodes_unavailable"] += 1
+            elif node["state"] == "idle" and node["used"] == 0:
+                row["nodes_free"] += 1
+            if not is_background:
+                row["gpus_used_by_background"] += by_background
+                if usable:
+                    row["gpus_reclaimable"] += free + by_background
+        partitions.append(row)
+
+    return {"partitions": partitions, "read_at": _now_iso(), "slurm_error": None}
+
+
 def active_jobs() -> dict[str, dict[str, Any]]:
     """The jobs that squeue lists, in any state, by job ID. It isn't limited to the
     current user: a job submitted by someone else running this service (the clone

@@ -15,6 +15,7 @@ import FormatPicker from './FormatPicker'
 import InputFields from './InputFields'
 import OutputPreview from './OutputPreview'
 import RecordView from './RecordView'
+import PartitionPicker from './PartitionPicker'
 import ResourcesFields from './ResourcesFields'
 import RowNavigator from './RowNavigator'
 
@@ -366,6 +367,14 @@ export default function ConversionTab({
           </div>
         )}
 
+        <PartitionPicker
+          partitions={resources.settings?.partitions ?? []}
+          selected={resources.inputs.partition}
+          onSelect={(partition) => resources.change({ ...resources.inputs, partition })}
+          error={resources.error ?? resources.settings?.slurm_error ?? null}
+          onReload={resources.reload}
+        />
+
         <div className="start-actions">
           <button
             type="button"
@@ -397,11 +406,9 @@ export default function ConversionTab({
         )}
 
         <details>
-          <summary className="small">Advanced: resources and the exact commands</summary>
+          <summary className="small">Advanced: CPUs, memory, time and the exact commands</summary>
           <ResourcesFields
             settings={resources.settings}
-            settingsError={resources.error}
-            onReloadSettings={resources.reload}
             resources={resources.inputs}
             onResourcesChange={resources.change}
           />

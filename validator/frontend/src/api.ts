@@ -43,6 +43,7 @@ import type {
   InspectResult,
   LookupRequest,
   LookupResponse,
+  PartitionUsageResponse,
   PreviewRequest,
   PreviewResponse,
   RegisterDatasetRequest,
@@ -146,6 +147,11 @@ export function lookupOrigin(body: LookupRequest): Promise<LookupResponse> {
 }
 
 // ---- Converting datasets ----
+
+// How busy each partition is: free nodes and GPUs, and who holds the others. Read-only.
+export function getPartitionUsage(): Promise<PartitionUsageResponse> {
+  return request<PartitionUsageResponse>('/api/cluster/partitions')
+}
 
 export function getConversionSettings(): Promise<ConversionSettings> {
   return request<ConversionSettings>('/api/conversions/settings')

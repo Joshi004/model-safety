@@ -434,6 +434,34 @@ export interface ConversionSettings {
   slurm_error: string | null
 }
 
+// One partition's row of GET /api/cluster/partitions. GPU counts are over the nodes the
+// partition has; a node that is draining or down gives no free GPUs. The two `null`s are
+// for the `background` partition itself (its own jobs are "used by this partition").
+export interface PartitionUsage {
+  name: string
+  nodes_total: number
+  nodes_free: number
+  nodes_unavailable: number
+  gpus_total: number
+  gpus_free: number
+  gpus_used_by_self: number
+  gpus_used_by_background: number | null
+  gpus_used_by_others: number
+  // Free GPUs plus the ones background jobs hold, which a job of this partition could take.
+  gpus_reclaimable: number | null
+  jobs_running: number
+  jobs_queued: number
+  gpus_queued: number
+}
+
+// GET /api/cluster/partitions.
+export interface PartitionUsageResponse {
+  partitions: PartitionUsage[]
+  read_at: string
+  // Set when SLURM couldn't be asked (then `partitions` is empty).
+  slurm_error: string | null
+}
+
 // Why a dataset can or can't be converted now. Only `ready` can be started.
 export type ConversionStatus =
   | 'ready'

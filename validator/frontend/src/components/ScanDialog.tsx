@@ -33,6 +33,7 @@ import { useScanResources } from '../useScanResources'
 import CommandBox from './CommandBox'
 import DeleteList from './DeleteList'
 import Dialog from './Dialog'
+import PartitionPicker from './PartitionPicker'
 import ResourcesFields from './ResourcesFields'
 
 // What the check says about one dataset: whether it is converted, and what the scan does about it.
@@ -813,11 +814,24 @@ export default function ScanDialog({
           {modeText !== null && <p className="small">{modeText}</p>}
           {dropText !== null && <p className="small">{dropText}</p>}
 
+          <PartitionPicker
+            partitions={resources.response?.partitions ?? []}
+            selected={resources.inputs.partition}
+            onSelect={(partition) => resources.change({ ...resources.inputs, partition })}
+            error={resources.error ?? resources.response?.slurm_error ?? null}
+            onReload={resources.reload}
+            jobWord="Scanning"
+          />
+
           <details>
             <summary className="small">
               {advancedFields(scanner).length > 0
-                ? 'Advanced: settings, resources and the exact commands'
-                : 'Advanced: resources and the exact commands'}
+                ? scanner.resources_fixed
+                  ? 'Advanced: settings and the exact commands'
+                  : 'Advanced: settings, CPUs, memory, time and the exact commands'
+                : scanner.resources_fixed
+                  ? 'Advanced: the exact commands'
+                  : 'Advanced: CPUs, memory, time and the exact commands'}
             </summary>
             {advancedFields(scanner).map((field) => (
               <SettingControl
@@ -830,17 +844,16 @@ export default function ScanDialog({
             ))}
             <ResourcesFields
               settings={resources.response}
-              settingsError={resources.error}
-              onReloadSettings={resources.reload}
               resources={resources.inputs}
               onResourcesChange={resources.change}
-              jobWord="Scanning"
               usesGpu={scanner.gpu}
               partitionOnly={scanner.resources_fixed}
             />
             <p className="muted small">
-              {scanner.resources_fixed ? "The partition is the scan's." : 'These are the resources of the scan.'} A
-              conversion that has to run first uses the default conversion resources.
+              {scanner.resources_fixed
+                ? "The partition chosen above is the scan's."
+                : 'These, with the partition chosen above, are the resources of the scan.'}{' '}
+              A conversion that has to run first uses the default conversion resources.
             </p>
             {converting.length === 0 && units.every((unit) => unit.command_text === null) && (
               <p className="muted small">The commands appear here once the check has passed.</p>

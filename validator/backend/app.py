@@ -479,6 +479,14 @@ def conversions_settings() -> dict[str, Any]:
     return _conversions_call(conversions.settings)
 
 
+@app.get("/api/cluster/partitions")
+def cluster_partitions() -> dict[str, Any]:
+    """For each partition: its free nodes and GPUs, the GPUs held by its own jobs, by
+    `background` and by others, and its running and waiting jobs. Read-only (`sinfo`, `squeue`);
+    `slurm_error` says why `partitions` is empty when SLURM couldn't be asked."""
+    return _conversions_call(jobs.partition_usage)
+
+
 @app.post("/api/conversions/check")
 def conversions_check(body: ConversionsRequest) -> dict[str, Any]:
     """For each dataset: whether a conversion can start, what it would delete, and the

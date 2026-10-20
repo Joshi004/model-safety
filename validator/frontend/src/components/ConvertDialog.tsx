@@ -7,6 +7,7 @@ import { useConversionResources } from '../useConversionResources'
 import CommandBox from './CommandBox'
 import DeleteList from './DeleteList'
 import Dialog from './Dialog'
+import PartitionPicker from './PartitionPicker'
 import ResourcesFields from './ResourcesFields'
 
 // "More -> Convert only": converts the ticked datasets with their saved settings, and
@@ -231,12 +232,18 @@ export default function ConvertDialog({
         </div>
       )}
 
+      <PartitionPicker
+        partitions={resources.settings?.partitions ?? []}
+        selected={resources.inputs.partition}
+        onSelect={(partition) => resources.change({ ...resources.inputs, partition })}
+        error={resources.error ?? resources.settings?.slurm_error ?? null}
+        onReload={resources.reload}
+      />
+
       <details>
-        <summary className="small">Advanced: resources and the exact commands</summary>
+        <summary className="small">Advanced: CPUs, memory, time and the exact commands</summary>
         <ResourcesFields
           settings={resources.settings}
-          settingsError={resources.error}
-          onReloadSettings={resources.reload}
           resources={resources.inputs}
           onResourcesChange={resources.change}
         />

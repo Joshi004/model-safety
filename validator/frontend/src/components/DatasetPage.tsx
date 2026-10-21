@@ -14,6 +14,7 @@ import DataTab from './DataTab'
 import { DropBar } from './DropDialog'
 import HistoryTab from './HistoryTab'
 import OverviewTab from './OverviewTab'
+import PolicyTab from './PolicyTab'
 import ResultPage from './ResultPage'
 import ResultsTab from './ResultsTab'
 import ScannerChips from './ScannerChips'
@@ -28,6 +29,7 @@ const TAB_LABELS: Record<DatasetTab, string> = {
   data: 'Data',
   conversion: 'Conversion',
   results: 'Results',
+  policy: 'Toxicity policy',
   history: 'History',
 }
 
@@ -309,6 +311,7 @@ export default function DatasetPage({
                 onChanged={reload}
               />
             ))}
+          {tab === 'policy' && <PolicyTab key={loaded.dataset.id} dataset={loaded.dataset} />}
           {tab === 'history' && <HistoryTab dataset={loaded.dataset} onChanged={reload} />}
           {tab === 'results' && (
             <DropBar

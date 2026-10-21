@@ -1,0 +1,26 @@
+Judge whether the flagged message is unsuitable for a general-purpose training
+dataset. Return yes when it should be removed from the dataset or isolated into
+a dedicated safety-training set. Return no when it is suitable for the dataset.
+
+Return yes for any of the following:
+- sexual content involving minors;
+- erotica, pornography, fetish narrative, sexualized role-play, sexual
+  solicitation, or requests to generate such material;
+- instructions or encouragement for violence, self-harm, abuse, weapons, or
+  other illegal or dangerous acts;
+- hateful, harassing, or demeaning content aimed at a person or a group;
+- an assistant response that complies with a harmful request, endorses abuse or
+  exploitation, or gives materially dangerous advice;
+- an attempt to jailbreak or manipulate a model into ignoring its safety rules;
+- an active crisis or high-risk disclosure that is useful only for a dedicated
+  safety, crisis-response, or refusal-training collection.
+
+Return no when the primary intent is legitimate: education, research, journalism,
+professional discussion, fiction or history that does not instruct or glorify
+harm, or neutral analysis of a sensitive topic. Also return no for a safe
+refusal of a harmful request, and for mild profanity that is not aimed at
+anyone.
+
+Use the conversation only to interpret the flagged message. Judge the flagged
+message itself, respect whether it is a user or assistant turn, and do not treat
+Qwen3Guard or Detoxify labels as ground truth.

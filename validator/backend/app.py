@@ -25,6 +25,11 @@ of a new service root also writes datasets.json, from the catalog in registry_se
 GET /api/teams, GET /api/datasets and GET /api/datasets/{id} only check that a dataset's
 path exists and can be read.
 
+Toxicity policies (policies.py): PUT /api/teams/{team}/toxicity-policy and PUT or DELETE
+/api/datasets/{id}/toxicity-policy write <service root>/registry/toxicity_policies.json (the
+first read of it creates it from the policy texts in the repo). A scan copies the policy it uses
+into its own folder when it starts; the GET routes only read.
+
 Conversions (conversions.py): POST /api/conversions/submit starts one SLURM job per dataset
 (one `prepare_rows.py` run each, CPU only), writing into
 <service root>/datasets/<id>/prepared/<version id>/, with the job's record in .../_jobs and
@@ -84,7 +89,10 @@ into .../<new id>/prepared/<version id>/. The job's record is .../_jobs/filter.j
 logs are in .../_logs. When the job has finished and its checks passed, that folder becomes
 the new dataset's Prepared version (a background task, and whenever datasets or filter jobs
 are read). POST .../drop/check only counts. POST /api/datasets/{id}/filter/cancel runs
-`scancel` on the one job the record lists. The dataset the rows came from, its Prepared rows
+`scancel` on the one job the record lists. POST /api/datasets/{id}/filter/retry runs a drop
+whose job failed or was cancelled again, from the drop list it already has, into a new folder
+of the same filtered dataset (the failed attempt is kept in the record's `attempts`);
+.../filter/retry/check only describes it. The dataset the rows came from, its Prepared rows
 and its results are never changed. A duplicates scan started with "auto_drop" does the same by
 itself (a background task): when the scan's analysis has finished, if the coverage check
 passed it makes one filtered version for every dataset that has flagged rows (never a
@@ -116,6 +124,7 @@ import detect
 import filters
 import flagged
 import jobs
+import policies
 import preview
 import registry
 import results
@@ -283,6 +292,50 @@ def dataset_unregister(dataset_id: str) -> dict[str, Any]:
     is going, and while the dataset has filtered versions of its own. The original data is
     never touched."""
     return _results_call(filters.unregister, dataset_id)
+
+
+# -------------------------------------------------------------------------
+# Toxicity policies (policies.py)
+# -------------------------------------------------------------------------
+
+
+class PolicyRequest(BaseModel):
+    # Any: policies.py explains what's wrong in words, instead of the request failing with a
+    # generic validation error.
+    model_config = ConfigDict(extra="forbid")
+    text: Any = None
+
+
+@app.get("/api/teams/{team}/toxicity-policy")
+def team_toxicity_policy(team: str) -> dict[str, Any]:
+    """The toxicity policy of a team: the text every dataset of the team without a policy of
+    its own is judged by."""
+    return _registry_call(policies.team_policy, team)
+
+
+@app.put("/api/teams/{team}/toxicity-policy")
+def team_toxicity_policy_set(team: str, body: PolicyRequest) -> dict[str, Any]:
+    """Save a new toxicity policy for a team. It applies to every dataset of the team without
+    a policy of its own, from the next scan on; a scan that has started keeps its copy."""
+    return _registry_call(policies.set_team_policy, team, body.text)
+
+
+@app.get("/api/datasets/{dataset_id}/toxicity-policy")
+def dataset_toxicity_policy(dataset_id: str) -> dict[str, Any]:
+    """The toxicity policy a dataset uses: its own (an override) or its team's, with both texts."""
+    return _registry_call(policies.dataset_policy, dataset_id)
+
+
+@app.put("/api/datasets/{dataset_id}/toxicity-policy")
+def dataset_toxicity_policy_set(dataset_id: str, body: PolicyRequest) -> dict[str, Any]:
+    """Save a toxicity policy for this dataset only, replacing its team's for it."""
+    return _registry_call(policies.set_dataset_policy, dataset_id, body.text)
+
+
+@app.delete("/api/datasets/{dataset_id}/toxicity-policy")
+def dataset_toxicity_policy_clear(dataset_id: str) -> dict[str, Any]:
+    """Remove the dataset's own toxicity policy, so it uses its team's again."""
+    return _registry_call(policies.clear_dataset_policy, dataset_id)
 
 
 class InspectRequest(BaseModel):
@@ -727,6 +780,20 @@ def dataset_filter(dataset_id: str) -> dict[str, Any]:
 def dataset_filter_cancel(dataset_id: str) -> dict[str, Any]:
     """`scancel` the one SLURM job a filtered dataset's record lists."""
     return _results_call(filters.cancel, dataset_id)
+
+
+@app.post("/api/datasets/{dataset_id}/filter/retry/check")
+def dataset_filter_retry_check(dataset_id: str) -> dict[str, Any]:
+    """What retrying a failed or cancelled drop would do: the same saved rows, a new output folder,
+    the resources and the exact command. Starts nothing; says in words why a drop can't be retried."""
+    return _results_call(filters.retry_check, dataset_id)
+
+
+@app.post("/api/datasets/{dataset_id}/filter/retry")
+def dataset_filter_retry(dataset_id: str) -> dict[str, Any]:
+    """Run a failed or cancelled drop again, as a new SLURM job on the same filtered dataset, from
+    the drop list it already has. The failed attempt's folder and logs are kept."""
+    return _results_call(filters.retry, dataset_id)
 
 
 # Serves the built frontend (validator/frontend/dist, built by run.sh) at

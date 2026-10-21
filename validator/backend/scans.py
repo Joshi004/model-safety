@@ -284,14 +284,18 @@ def _state(
     waiting_for: list[dict[str, Any]] | None = None,
     elapsed: str | None = None,
     own_job_running: bool = False,
+    failed_job: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # `own_job_running` is whether the scan's own job (not a job it waits for) is running.
+    # `failed_job` is, for a scan that failed because of one of its jobs, `{role, job_id, row}`:
+    # that job and its sacct row (None when SLURM has none).
     return {
         "state": state,
         "reason": reason,
         "waiting_for": waiting_for or [],
         "elapsed": elapsed,
         "own_job_running": own_job_running,
+        "failed_job": failed_job,
     }
 
 
@@ -315,18 +319,18 @@ def _sacct_rows(job_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
     this cluster), so no start time is passed."""
     if not job_ids:
         return {}
-    output = jobs._slurm(["sacct", "-j", ",".join(job_ids), "-n", "-P", "-o", "JobID,State,ExitCode,Elapsed"])
+    output = jobs._slurm(["sacct", "-j", ",".join(job_ids), "-n", "-P", "-o", "JobID,State,ExitCode,Elapsed,NodeList"])
     wanted = set(job_ids)
     rows: dict[str, list[dict[str, Any]]] = {}
     for line in output.splitlines():
         parts = [part.strip() for part in line.split("|")]
-        if len(parts) != 4:
+        if len(parts) != 5:
             continue
         match = SACCT_JOB.fullmatch(parts[0])
         if match is None or match.group(1) not in wanted or match.group(3) is not None:
             continue
         parent, task, _step = match.groups()
-        state, exit_code, elapsed = parts[1], parts[2], parts[3]
+        state, exit_code, elapsed, node = parts[1], parts[2], parts[3], parts[4]
         rows.setdefault(parent, []).append(
             {
                 "task": task,
@@ -334,6 +338,7 @@ def _sacct_rows(job_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
                 "state_text": state,
                 "exit_code": exit_code,
                 "elapsed": elapsed,
+                "node": jobs.node_of(node),
             }
         )
     return rows
@@ -408,6 +413,18 @@ def _slurm_elapsed(
     if not tasks:
         return None
     return max(tasks, key=lambda task: jobs._parse_duration(task["elapsed"]) or 0)["elapsed"]
+
+
+def _failed_job(
+    role: str, job_id: str, accounted: dict[str, list[dict[str, Any]]] | None
+) -> dict[str, Any]:
+    """The job a scan failed because of, with its sacct row: the first task that didn't finish
+    well (an array job has one row for each task), else the first row. The row is None when
+    sacct wasn't read or doesn't know the job."""
+    rows = (accounted or {}).get(job_id) or []
+    bad = [row for row in rows if row["state"] not in ("COMPLETED", "CANCELLED")]
+    chosen = bad or rows
+    return {"role": role, "job_id": job_id, "row": chosen[0] if chosen else None}
 
 
 def _dataset(dataset_id: str, cache: dict[Any, Any]) -> dict[str, Any] | None:
@@ -503,7 +520,12 @@ def _state_of(
         if earlier_state in (STATE_FAILED, STATE_CANCELLED):
             what = "failed" if earlier_state == STATE_FAILED else "was cancelled"
             detail = f": {earlier_reason}" if earlier_reason else "."
-            return _state(earlier_state, f"The {role} job ({earlier_id}) {what}{detail}", elapsed=elapsed)
+            return _state(
+                earlier_state,
+                f"The {role} job ({earlier_id}) {what}{detail}",
+                elapsed=elapsed,
+                failed_job=_failed_job(role, earlier_id, accounted) if earlier_state == STATE_FAILED else None,
+            )
     if state == STATE_QUEUED:
         for role, earlier_id, earlier_state, _earlier_reason in earlier:
             if earlier_state == STATE_RUNNING:
@@ -521,8 +543,15 @@ def _state_of(
                 STATE_FAILED,
                 f"The job ended, but its results folder has no {shown}.",
                 elapsed=elapsed,
+                failed_job=_failed_job(scanners.MAIN_JOB_ROLE, job_id, accounted),
             )
-    return _state(state, reason, elapsed=elapsed, own_job_running=state == STATE_RUNNING)
+    return _state(
+        state,
+        reason,
+        elapsed=elapsed,
+        own_job_running=state == STATE_RUNNING,
+        failed_job=_failed_job(scanners.MAIN_JOB_ROLE, job_id, accounted) if state == STATE_FAILED else None,
+    )
 
 
 def _states_of(scans: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], str | None]:
@@ -1240,6 +1269,7 @@ def _view(
         wrapper_output=scan.get("wrapper_output"),
         details=None,
         logs=[],
+        failure=None,
     )
     if state["state"] == STATE_SUCCEEDED:
         view["details"] = scanner.read_details(folder / scanners.RESULTS_FOLDER)
@@ -1249,7 +1279,34 @@ def _view(
         for name, path in scanner.log_files(folder, scan["settings"], started):
             tail = jobs._tail_file(path) if state["state"] != STATE_QUEUED else None
             view["logs"].append({"name": name, "path": str(path), "tail": tail})
+    if state["state"] == STATE_FAILED and state["failed_job"] is not None:
+        view["failure"] = _failure_of(scan, folder, scanner, state["failed_job"])
     return view
+
+
+def _failure_of(
+    scan: dict[str, Any], folder: Path, scanner: scanners.Scanner, failed_job: dict[str, Any]
+) -> dict[str, Any]:
+    """Why a scan failed, for the job it failed because of: where and how it ended, and the
+    lines of that job's own logs that say why. Only called for a scan SLURM no longer lists."""
+    own: dict[str, str] = {"role": failed_job["role"], "job_id": failed_job["job_id"]}
+    job_label = failed_job["job_id"]
+    # The task of an array job that failed (the toxicity scan's shard), so its own logs are read.
+    task = (failed_job["row"] or {}).get("task")
+    if isinstance(task, str) and task.isdigit():
+        own["task"] = task
+        job_label = f"{failed_job['job_id']}_{task}"
+    files = scanner.log_files(folder, scan["settings"], [own])
+    # The files with "errors" in their name come first: their lines are the best candidates. A
+    # model server's log comes next, before the others: a job's output can have a summary line
+    # like "Error: 2" that isn't why it failed.
+    files.sort(key=lambda item: 0 if "errors" in item[0].lower() else 1 if "server" in item[0].lower() else 2)
+    return jobs.failure_view(
+        failed_job["role"],
+        job_label,
+        failed_job["row"],
+        [path for _name, path in files],
+    )
 
 
 def list_scans() -> dict[str, Any]:

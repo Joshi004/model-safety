@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 import { isScannerKey } from './scans'
 
-export const DATASET_TABS = ['overview', 'data', 'conversion', 'results', 'history'] as const
+export const DATASET_TABS = ['overview', 'data', 'conversion', 'results', 'policy', 'history'] as const
 export type DatasetTab = (typeof DATASET_TABS)[number]
 
 export type Route =

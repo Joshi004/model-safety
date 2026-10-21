@@ -11,6 +11,7 @@ Rules this module keeps:
 * The only thing this module deletes is `<service root>/datasets/<id>`, when a dataset is
   unregistered, after checking the id and that the folder really is that path.
   (conversions.py deletes the Prepared version folders inside it, with its own checks.)
+  An unregistered dataset's toxicity policy override is removed too, by policies.py.
 * `prepared` (the current Prepared version) and `kept_versions` (versions kept on disk
   after a re-conversion) are only changed by `set_prepared`, `clear_prepared` and `mark_kept`,
   which conversions.py and filters.py call. They are not part of `update`.
@@ -823,4 +824,14 @@ def unregister(dataset_id: str) -> dict[str, Any]:
 
         del records[index]
         _save(data)
+
+        # The dataset's toxicity policy override goes with it. Imported here because policies.py
+        # uses this module. The dataset is gone either way: an override that couldn't be removed
+        # belongs to an id that is never used again, so it doesn't fail the request.
+        import policies
+
+        try:
+            policies.forget_dataset(dataset_id)
+        except (RegistryError, RegistryCorrupt, OSError):
+            pass
     return {"id": dataset_id, "name": record["name"], "removed_folder": removed_folder}

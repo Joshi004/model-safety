@@ -659,6 +659,19 @@ def _view(
             out_tail = jobs._tail_file(out_log)
             err_tail = jobs._tail_file(err_log)
 
+    # Why it failed: SLURM's row for the job, the error its own progress.json reported and the
+    # error lines of its logs. Only in the single-conversion route, which reads the logs.
+    failure = None
+    if with_logs and outcome in ("failed", "checks_failed") and out_log is not None and err_log is not None:
+        progress_error = progress.get("error") if progress is not None else None
+        failure = jobs.failure_view(
+            None,
+            slurm_id,
+            sacct,
+            [err_log, out_log],
+            first_lines=[progress_error] if isinstance(progress_error, str) else None,
+        )
+
     prepared = dataset.get("prepared")
     return {
         "job_id": record["job_id"],
@@ -689,6 +702,7 @@ def _view(
         "err_log": str(err_log) if err_log else None,
         "out_tail": out_tail,
         "err_tail": err_tail,
+        "failure": failure,
     }
 
 

@@ -8,9 +8,10 @@ starting, waiting for conversions, state, replacing results, cancelling) never n
 scanner, so another scanner is another entry here.
 
 Nothing here starts, stops or deletes anything. The only things that write are
-`dedup_write_inputs`, which writes the scan's own `inputs/files.txt`, and `ner_write_inputs`,
-which writes its `inputs/policy.json`, both inside the scan's folder; the other functions
-read a scan's output or the job scripts.
+`dedup_write_inputs`, which writes the scan's own `inputs/files.txt`, `ner_write_inputs`,
+which writes its `inputs/policy.json`, and `toxicity_write_inputs`, which writes the copy of the
+dataset's toxicity policy (`inputs/toxicity_policy.txt` and `.json`), all inside the scan's
+folder; the other functions read a scan's output or the job scripts.
 
 A scan's folder, as scans.py lays it out:
 
@@ -20,6 +21,7 @@ A scan's folder, as scans.py lays it out:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -29,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import jobs
+import policies
 import registry
 from reader_imports import (
     PII_CATEGORIES,
@@ -842,6 +845,11 @@ def ner_read_jobs(output: str) -> tuple[list[dict[str, str]], str | None]:
     )
 
 
+# The full scan's job asks for 8 GPUs (`run_privacy_filter_node.sbatch`) and starts a worker on
+# each, every one with its own `worker_<n>.log`. One that isn't there is left out of the page.
+NER_FULL_GPU_COUNT = 8
+
+
 def ner_log_files(folder: Path, settings: dict[str, Any], jobs_started: list[dict[str, str]]) -> list[tuple[str, Path]]:
     # The job scripts name their own SLURM logs (`logs/slurm/` in the repo, by job ID).
     slurm = REPO_ROOT / "logs" / "slurm"
@@ -856,7 +864,8 @@ def ner_log_files(folder: Path, settings: dict[str, Any], jobs_started: list[dic
             files.append(("Scan output", slurm / f"privacy_filter_{name}_{job['job_id']}.out"))
             files.append(("Scan errors", slurm / f"privacy_filter_{name}_{job['job_id']}.err"))
     if full and main_job_id(jobs_started) is not None:
-        files.append(("Worker on GPU 0", folder / RESULTS_FOLDER / "worker_logs" / "worker_0.log"))
+        for index in range(NER_FULL_GPU_COUNT):
+            files.append((f"Worker on GPU {index}", folder / RESULTS_FOLDER / "worker_logs" / f"worker_{index}.log"))
     return files
 
 
@@ -982,16 +991,27 @@ def regex_headline_count(results: Path, _mode: str | None, _dataset_id: str, _ve
 # -------------------------------------------------------------------------
 
 # The wrapper plans the shards (a prepare job) and submits one array job behind it: a task per
-# shard, which screens it with Detoxify and then judges what was flagged with Qwen3Guard.
+# shard, which screens it with Detoxify, judges what was flagged with Qwen3Guard and then has
+# Granite Guardian judge, against the dataset's toxicity policy, what Qwen3Guard rated Unsafe or
+# Controversial.
 TOXICITY_WRAPPER = REPO_ROOT / "scripts" / "tool_team_toxicity_scan.sh"
 TOXICITY_ARRAY_SCRIPT = "run_toxicity_scan_array.sbatch"
 TOXICITY_MANIFEST = "manifests/manifest.json"
 # Where the array job writes each shard (as modelsafety/results/coverage.py reads them).
 TOXICITY_SHARDS_FOLDER = "scans/toxicity/shards"
 DETOXIFY_SUCCESS_MARKER = "_DETOXIFY_SUCCESS"
+GUARD_SUCCESS_MARKER = "_GUARD_SUCCESS"
+POLICY_SUCCESS_MARKER = "_POLICY_SUCCESS"
+# What the policy judge writes in a shard (policy_judge.py's summary file).
+POLICY_SUMMARY_FILE = "policy_results/summary.json"
+# The copy of the dataset's toxicity policy a scan is started with, in the scan's `inputs/`: the
+# text the job reads, and a record of where it came from.
+TOXICITY_POLICY_TEXT = "toxicity_policy.txt"
+TOXICITY_POLICY_INFO = "toxicity_policy.json"
 TOXICITY_STAGES = (
     "Quick screen: Detoxify (Unitary, multilingual model)",
     "Judge: Qwen3Guard-Gen-8B",
+    "Policy judge: Granite Guardian 4.1 8B",
 )
 # What Qwen3Guard names a message's categories (`CATEGORY_RE` in llm_check_guard.py, which needs
 # `openai` and so isn't imported: keep them in step), without the "None" it gives a message
@@ -1035,18 +1055,47 @@ def _toxicity_cost(settings: dict[str, Any], resources: dict[str, Any]) -> dict[
     }
 
 
+def toxicity_write_inputs(context: ScanContext) -> None:
+    """Copy the policy the scan's dataset uses (its own, or its team's) into the scan's folder:
+    `inputs/toxicity_policy.txt`, which the policy judge reads, and `inputs/toxicity_policy.json`,
+    which says where it came from and holds its SHA-256, for the result page. The scan keeps this
+    copy: a policy changed later never changes a scan that has started."""
+    (dataset_id,) = context.version_folders
+    try:
+        policy = policies.dataset_policy(dataset_id)
+    except registry.RegistryCorrupt as exc:
+        raise ScannerError(f"The toxicity policy of this dataset can't be read: {exc}") from exc
+    # The job hashes this file as it is, so the hash is of exactly what is written.
+    text = policy["text"] + "\n"
+    info = {
+        "source": policy["source"],
+        "team": policy["team"],
+        "text": policy["text"],
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
+    inputs = context.folder / INPUTS_FOLDER
+    inputs.mkdir(parents=True, exist_ok=True)
+    for name, content in ((TOXICITY_POLICY_TEXT, text), (TOXICITY_POLICY_INFO, json.dumps(info, indent=2) + "\n")):
+        temp = inputs / f"{name}.tmp"
+        temp.write_text(content, encoding="utf-8")
+        os.replace(temp, inputs / name)
+
+
 def toxicity_build_command(context: ScanContext) -> list[str]:
     """`env TOX_KILL_ON_INVALID_DEP=1 bash scripts/tool_team_toxicity_scan.sh all ...`, which
     submits the job that plans the shards and, behind it, the array job. Every setting is a
     flag, after the variables of the shell the service runs in were removed, so the command
     shown is the command that runs. The categories and verdicts aren't in it: the scan always
     judges every category, and they only decide what counts as flagged when results are read
-    (D8)."""
+    (D8). The policy is: `--policy-file` is the copy `toxicity_write_inputs` made."""
     _toxicity_check_shards(context.settings)
     (input_root,) = context.version_folders.values()
     results = context.folder / RESULTS_FOLDER
+    policy_file = context.folder / INPUTS_FOLDER / TOXICITY_POLICY_TEXT
     # The wrapper passes these on in an `--export` list, which is separated by commas.
-    _check_export_values({"TOX_INPUT_ROOT": str(input_root), "TOX_RUN_DIR": str(results)})
+    _check_export_values(
+        {"TOX_INPUT_ROOT": str(input_root), "TOX_RUN_DIR": str(results), "TOX_POLICY_FILE": str(policy_file)}
+    )
     settings = context.settings
     resources = context.resources
     return [
@@ -1071,6 +1120,8 @@ def toxicity_build_command(context: ScanContext) -> list[str]:
         str(settings["concurrency"]),
         "--threshold",
         str(settings["threshold"]),
+        "--policy-file",
+        str(policy_file),
         "--cpus",
         str(resources["cpus"]),
         "--mem",
@@ -1092,7 +1143,9 @@ def toxicity_read_jobs(output: str) -> tuple[list[dict[str, str]], str | None]:
 
 def toxicity_log_files(folder: Path, _settings: dict[str, Any], jobs_started: list[dict[str, str]]) -> list[tuple[str, Path]]:
     # The wrapper names its own SLURM logs (`logs/slurm/` in the repo, by job ID). Of the shards,
-    # the first one's are shown.
+    # the first one's are shown, or the one in the job's "task" (an array task is a shard index)
+    # when that is given: the task a failed scan failed in. The policy judge's server comes before
+    # the model server's, so a failure looks in the later stage's log first.
     slurm = REPO_ROOT / "logs" / "slurm"
     files: list[tuple[str, Path]] = []
     for job in jobs_started:
@@ -1100,9 +1153,13 @@ def toxicity_log_files(folder: Path, _settings: dict[str, Any], jobs_started: li
             files.append(("Planning output", slurm / f"tool_team_toxicity_prep_{job['job_id']}.out"))
             files.append(("Planning errors", slurm / f"tool_team_toxicity_prep_{job['job_id']}.err"))
         elif job["role"] == MAIN_JOB_ROLE:
-            files.append(("Shard 0 output", slurm / f"tool_team_toxicity_all_{job['job_id']}_0.out"))
-            files.append(("Shard 0 errors", slurm / f"tool_team_toxicity_all_{job['job_id']}_0.err"))
-            files.append(("Shard 0 model server", folder / RESULTS_FOLDER / TOXICITY_SHARDS_FOLDER / "shard_00000" / "vllm.log"))
+            task = job.get("task")
+            shard = int(task) if isinstance(task, str) and task.isdigit() else 0
+            shard_folder = folder / RESULTS_FOLDER / TOXICITY_SHARDS_FOLDER / f"shard_{shard:05d}"
+            files.append((f"Shard {shard} output", slurm / f"tool_team_toxicity_all_{job['job_id']}_{shard}.out"))
+            files.append((f"Shard {shard} errors", slurm / f"tool_team_toxicity_all_{job['job_id']}_{shard}.err"))
+            files.append((f"Shard {shard} policy judge server", shard_folder / "vllm_policy.log"))
+            files.append((f"Shard {shard} model server", shard_folder / "vllm.log"))
     return files
 
 
@@ -1128,17 +1185,19 @@ def toxicity_markers(results: Path) -> tuple[str, ...]:
 
 
 def toxicity_progress(results: Path) -> list[dict[str, Any]] | None:
-    """Shards screened and shards judged, out of all of them. The shards' folder is listed and
-    only the folders in it are looked into, not each shard's by name: asking for one before a
-    task has made it would be remembered as "not there" for about a minute. (The listing of
-    the shards' folder itself can still hit that for a poll or two when the first task has
-    only just started; then there is simply no progress to show yet.)"""
+    """Shards screened, shards judged and shards the policy judge has finished, out of all of
+    them. The shards' folder is listed and only the folders in it are looked into, not each
+    shard's by name: asking for one before a task has made it would be remembered as "not
+    there" for about a minute. (The listing of the shards' folder itself can still hit that for
+    a poll or two when the first task has only just started; then there is simply no progress
+    to show yet.) The policy stage is only listed for a scan that was started with a policy."""
     names = _toxicity_shard_names(results)
     if not names:
         return None
     shards_root = results / TOXICITY_SHARDS_FOLDER
     screened = 0
     judged = 0
+    policy_judged = 0
     try:
         with os.scandir(shards_root) as entries:
             present = {entry.name for entry in entries if entry.is_dir()}
@@ -1148,13 +1207,19 @@ def toxicity_progress(results: Path) -> list[dict[str, Any]] | None:
             with os.scandir(shards_root / name) as files:
                 made = {entry.name for entry in files}
             screened += DETOXIFY_SUCCESS_MARKER in made
-            judged += SUCCESS_MARKER in made
+            policy_judged += POLICY_SUCCESS_MARKER in made
+            # `_SUCCESS` comes after the policy stage, so Qwen3Guard's own marker is what says it is
+            # done; a shard from before that marker existed only has `_SUCCESS`.
+            judged += GUARD_SUCCESS_MARKER in made or SUCCESS_MARKER in made
     except OSError:
         return None
-    return [
+    progress = [
         {"stage": TOXICITY_STAGES[0], "done": screened, "total": len(names), "unit": "shards"},
         {"stage": TOXICITY_STAGES[1], "done": judged, "total": len(names), "unit": "shards"},
     ]
+    if (results.parent / INPUTS_FOLDER / TOXICITY_POLICY_TEXT).is_file():
+        progress.append({"stage": TOXICITY_STAGES[2], "done": policy_judged, "total": len(names), "unit": "shards"})
+    return progress
 
 
 def _add_counts(into: dict[str, int], counts: Any) -> None:
@@ -1165,15 +1230,18 @@ def _add_counts(into: dict[str, int], counts: Any) -> None:
 
 
 def toxicity_read_details(results: Path) -> dict[str, Any]:
-    """What the shards found, added up: from each shard's `detoxify_summary.json` and
-    `guard_results/summary.json`."""
+    """What the shards found, added up: from each shard's `detoxify_summary.json`,
+    `guard_results/summary.json` and, for a scan that had a policy, `policy_results/summary.json`."""
     names = _toxicity_shard_names(results)
     if names is None:
         return {}
     totals = {"rows_read": 0, "messages_scored": 0, "messages_flagged": 0, "guard_records": 0, "guard_errors": 0, "guard_unknown": 0}
+    # What the policy judge did (policy_judge.py's summary keys, with the prefix `policy_`).
+    policy_totals = {"policy_judged": 0, "policy_kept": 0, "policy_not_general": 0, "policy_review": 0, "policy_errors": 0}
     verdicts: dict[str, int] = {}
     categories: dict[str, int] = {}
     judged = 0
+    policy_shards = 0
     for name in names:
         shard = results / TOXICITY_SHARDS_FOLDER / name
         detoxify = read_json_or_none(shard / "detoxify_summary.json")
@@ -1187,13 +1255,35 @@ def toxicity_read_details(results: Path) -> dict[str, Any]:
                 totals[key] += _whole_number(guard.get(source)) or 0
             _add_counts(verdicts, guard.get("safety"))
             _add_counts(categories, guard.get("categories"))
-    return {
+        policy = read_json_or_none(shard / POLICY_SUMMARY_FILE)
+        if isinstance(policy, dict):
+            policy_shards += 1
+            for key in policy_totals:
+                policy_totals[key] += _whole_number(policy.get(key.removeprefix("policy_"))) or 0
+    details: dict[str, Any] = {
         "shards": len(names),
         "shards_judged": judged,
         **totals,
         "verdicts": _sorted_counts(verdicts),
         "categories": _sorted_counts(categories),
     }
+    # Only for a scan that had a policy stage, so the page of an older scan doesn't show zeros.
+    if policy_shards:
+        details["shards_policy_judged"] = policy_shards
+        details.update(policy_totals)
+    return details
+
+
+def _toxicity_policy_copy(results: Path) -> dict[str, str] | None:
+    """The policy the scan was started with, `{source, team, text, sha256}`, from the copy in its
+    `inputs/`. None for a scan that has none (made before there was a policy judge)."""
+    info = read_json_or_none(results.parent / INPUTS_FOLDER / TOXICITY_POLICY_INFO)
+    if not isinstance(info, dict):
+        return None
+    copy = {key: info.get(key) for key in ("source", "team", "text", "sha256")}
+    if not all(isinstance(value, str) for value in copy.values()):
+        return None
+    return copy  # type: ignore[return-value]
 
 
 def toxicity_headline_count(results: Path, _mode: str | None, _dataset_id: str, _version_id: str) -> int | None:
@@ -1421,6 +1511,14 @@ def toxicity_read_result(context: ResultContext) -> dict[str, Any]:
         )
         if _whole_number(details.get(key)) is not None
     ]
+    # What the policy judge did, for a scan that had one. A message it kept is not counted below;
+    # one it gave no usable answer for (an error, or no yes or no) still is.
+    if _whole_number(details.get("policy_judged")) is not None:
+        facts.append({"label": "Messages sent to the policy judge", "value": details["policy_judged"]})
+        facts.append({"label": "Messages the policy judge kept", "value": details["policy_kept"]})
+        no_answer = details["policy_review"] + details["policy_errors"]
+        if no_answer:
+            facts.append({"label": "Policy judge errors (count as flagged)", "value": no_answer})
     flagged = _flagged(None, "messages")
     breakdowns: list[dict[str, Any] | None] = []
     if context.tally is not None:
@@ -1453,6 +1551,8 @@ def toxicity_read_result(context: ResultContext) -> dict[str, Any]:
             "saved_verdicts": saved_verdicts,
             "threshold": context.settings.get("threshold"),
         },
+        # The policy the scan was started with, or None for a scan made before there was one.
+        "policy": _toxicity_policy_copy(context.results),
     }
 
 
@@ -1585,8 +1685,10 @@ SCANNERS: dict[str, Scanner] = {
         key="toxicity",
         label="Toxicity",
         description=(
-            "Finds toxic messages in two stages: a fast model (Detoxify) screens every message, and "
-            "Qwen3Guard judges the ones it flagged. It needs GPUs."
+            "Finds toxic messages in three stages: a fast model (Detoxify) screens every message, "
+            "Qwen3Guard judges the ones it flagged, and Granite Guardian re-judges the ones Qwen3Guard "
+            "rated Unsafe or Controversial against the dataset's toxicity policy. A message only counts as "
+            "flagged when the policy doesn't say it is suitable. It needs GPUs."
         ),
         stages=TOXICITY_STAGES,
         gpu=True,
@@ -1633,7 +1735,7 @@ SCANNERS: dict[str, Scanner] = {
         default_mode=None,
         count_label="messages",
         cost=_toxicity_cost,
-        write_inputs=lambda _context: None,
+        write_inputs=toxicity_write_inputs,
         build_command=toxicity_build_command,
         read_jobs=toxicity_read_jobs,
         log_files=toxicity_log_files,

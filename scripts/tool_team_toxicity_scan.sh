@@ -22,6 +22,12 @@
 #   --shards N            --concurrency N        --pilot-files N
 #   --threshold FLOAT     --batch-size N         --guard-concurrency N
 #   --max-model-len N     --vllm-image PATH      --input-mode runs|folder
+#   --policy-file PATH
+#
+# --policy-file adds a third pass to 'verify' and 'all': after Qwen3Guard, Granite Guardian
+# judges the messages Qwen3Guard rated Unsafe or Controversial against the written policy in
+# that file (a message it says is suitable stops counting as flagged). Without it the scan
+# is the two passes only. The model is TOX_POLICY_MODEL (environment only).
 #
 # --input-mode decides which files are scanned under --input-root. The
 # default, 'runs', reads only the files of finished conversions and writes
@@ -93,6 +99,10 @@ TOX_BATCH_SIZE="${TOX_BATCH_SIZE:-32}"
 GUARD_CONCURRENCY="${GUARD_CONCURRENCY:-8}"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-8192}"
 
+# --- Policy judge (the third pass; only when a policy file is given) -------
+TOX_POLICY_FILE="${TOX_POLICY_FILE:-}"  # empty = no third pass
+TOX_POLICY_MODEL="${TOX_POLICY_MODEL:-ibm-granite/granite-guardian-4.1-8b}"
+
 # --- vLLM image ------------------------------------------------------------
 # Prefer this repo's own image if someone ever adds one; otherwise use the
 # shared image named in launchers/slurm/defaults.sh (the one confirmed working
@@ -125,6 +135,7 @@ REVIEW_PAIRS=(
   TOX_BATCH_SIZE "Detoxify batch size"
   GUARD_CONCURRENCY "Guard concurrency"
   VLLM_MAX_MODEL_LEN "Max model length"
+  TOX_POLICY_FILE "Policy file (empty = no policy pass)"
   VLLM_IMAGE "vLLM image"
 )
 
@@ -162,6 +173,11 @@ Flags (each overrides the matching setting for this run only):
   --shards N            --concurrency N        --pilot-files N
   --threshold FLOAT     --batch-size N         --guard-concurrency N
   --max-model-len N     --vllm-image PATH      --input-mode runs|folder
+  --policy-file PATH
+
+--policy-file adds a third pass to 'verify' and 'all': after Qwen3Guard, Granite Guardian
+(TOX_POLICY_MODEL, environment only) judges the messages Qwen3Guard rated Unsafe or
+Controversial against the written policy in that file. Without it the scan is the two passes.
 
 --input-mode decides which files are scanned under --input-root. 'runs' (the
 default) reads only the files of finished conversions and lists everything it
@@ -216,6 +232,8 @@ Current settings:
   TOX_BATCH_SIZE      ${TOX_BATCH_SIZE}
   GUARD_CONCURRENCY   ${GUARD_CONCURRENCY}
   VLLM_MAX_MODEL_LEN  ${VLLM_MAX_MODEL_LEN}
+  TOX_POLICY_FILE     ${TOX_POLICY_FILE:-(none: no policy pass)}
+  TOX_POLICY_MODEL    ${TOX_POLICY_MODEL}
   VLLM_IMAGE          ${VLLM_IMAGE}
 EOF
 }
@@ -279,6 +297,7 @@ parse_args() {
         --guard-concurrency) GUARD_CONCURRENCY="$2" ;;
         --max-model-len) VLLM_MAX_MODEL_LEN="$2" ;;
         --vllm-image) VLLM_IMAGE="$2" ;;
+        --policy-file) TOX_POLICY_FILE="$2" ;;
         *)
           echo "error: unknown flag '$1'" >&2
           usage
@@ -387,6 +406,15 @@ check_identity() {
   if (( TOX_PILOT_FILES > 0 )); then
     mode="pilot"
   fi
+  # The policy changes what the results mean, so a run folder remembers it. Only when there is
+  # one: a run folder made without a policy keeps its identity, and can still be resumed.
+  local -a policy_settings=()
+  if [[ -n "${TOX_POLICY_FILE}" ]]; then
+    policy_settings=(
+      --setting "policy_sha256=$(sha256sum "${TOX_POLICY_FILE}" | awk '{print $1}')"
+      --setting "policy_model=${TOX_POLICY_MODEL}"
+    )
+  fi
   state="$(python3 "${REPO}/modelsafety/contract/run_identity.py" check \
     --run-dir "${TOX_RUN_DIR}" \
     --tool toxicity \
@@ -398,7 +426,8 @@ check_identity() {
     --setting "threshold=${TOX_THRESHOLD}" \
     --setting "stage1_model=${TOX_STAGE1_MODEL}" \
     --setting "guard_model=${GUARD_MODEL}" \
-    --setting "vllm_max_model_len=${VLLM_MAX_MODEL_LEN}")"
+    --setting "vllm_max_model_len=${VLLM_MAX_MODEL_LEN}" \
+    "${policy_settings[@]}")"
   echo "Run identity: ${state}"
 }
 
@@ -409,6 +438,15 @@ preflight_for_submit() {
   fi
   if [[ "${DO_VERIFY}" -eq 1 && ! -f "${VLLM_IMAGE}" ]]; then
     die "vLLM image not found: ${VLLM_IMAGE} -- set --vllm-image to a valid SquashFS path"
+  fi
+  if [[ -n "${TOX_POLICY_FILE}" ]]; then
+    if [[ ! -s "${TOX_POLICY_FILE}" ]]; then
+      die "policy file not found or empty: ${TOX_POLICY_FILE}"
+    fi
+    # The path goes into sbatch's --export list, which is separated by commas.
+    if [[ "${TOX_POLICY_FILE}" == *,* ]]; then
+      die "policy file path can't contain a comma: ${TOX_POLICY_FILE}"
+    fi
   fi
 }
 
@@ -482,7 +520,7 @@ submit_array() {
     --error="${REPO}/logs/slurm/tool_team_toxicity_${stage_label}_%A_%a.err" \
     --array="${array_spec}" \
     "${dep_args[@]}" \
-    --export=ALL,REPO="${REPO}",QUALITY_INPUT_ROOT="${TOX_INPUT_ROOT}",QUALITY_MANIFEST_DIR="${TOX_RUN_DIR}/manifests",QUALITY_RUN_ROOT="${TOX_RUN_DIR}",TOX_STAGE1_ONLY="${tox_stage1_only}",TOX_REUSE_STAGE1="${tox_reuse_stage1}",TOX_THRESHOLD="${TOX_THRESHOLD}",TOX_STAGE1_MODEL="${TOX_STAGE1_MODEL}",GUARD_MODEL="${GUARD_MODEL}",TOX_BATCH_SIZE="${TOX_BATCH_SIZE}",GUARD_CONCURRENCY="${GUARD_CONCURRENCY}",VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN}",VLLM_SQUASHFS_PATH="${VLLM_IMAGE}" \
+    --export=ALL,REPO="${REPO}",QUALITY_INPUT_ROOT="${TOX_INPUT_ROOT}",QUALITY_MANIFEST_DIR="${TOX_RUN_DIR}/manifests",QUALITY_RUN_ROOT="${TOX_RUN_DIR}",TOX_STAGE1_ONLY="${tox_stage1_only}",TOX_REUSE_STAGE1="${tox_reuse_stage1}",TOX_THRESHOLD="${TOX_THRESHOLD}",TOX_STAGE1_MODEL="${TOX_STAGE1_MODEL}",GUARD_MODEL="${GUARD_MODEL}",TOX_BATCH_SIZE="${TOX_BATCH_SIZE}",GUARD_CONCURRENCY="${GUARD_CONCURRENCY}",VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN}",VLLM_SQUASHFS_PATH="${VLLM_IMAGE}",TOX_POLICY_FILE="${TOX_POLICY_FILE}",TOX_POLICY_MODEL="${TOX_POLICY_MODEL}" \
     "${REPO}/launchers/slurm/run_toxicity_scan_array.sbatch"
 }
 
@@ -500,7 +538,8 @@ print_array_job_commands() {
   echo "  Cancel whole job:     scancel ${job_id}"
   echo "  Cancel one shard:     scancel ${job_id}_<shard>"
   echo "  Per-shard artifacts:  ${TOX_RUN_DIR}/scans/toxicity/shards/shard_<00000>/"
-  echo "                        (flagged.jsonl, vllm.log, guard_results/, _DETOXIFY_SUCCESS, _SUCCESS)"
+  echo "                        (flagged.jsonl, vllm.log, guard_results/, _DETOXIFY_SUCCESS, _SUCCESS;"
+  echo "                         with --policy-file also policy_results/, vllm_policy.log, _POLICY_SUCCESS)"
   echo "  Once finished:        $(basename "$0") report --run-dir ${TOX_RUN_DIR}"
 }
 
@@ -737,6 +776,9 @@ main() {
   TOX_INPUT_ROOT="$(realpath -m -- "${TOX_INPUT_ROOT}")"
   TOX_RUN_DIR="$(realpath -m -- "${TOX_RUN_DIR}")"
   VLLM_IMAGE="$(realpath -m -- "${VLLM_IMAGE}")"
+  if [[ -n "${TOX_POLICY_FILE}" ]]; then
+    TOX_POLICY_FILE="$(realpath -m -- "${TOX_POLICY_FILE}")"
+  fi
 
   preflight_checks
 

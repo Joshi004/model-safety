@@ -27,6 +27,7 @@ import Chip from './Chip'
 import CommandBox from './CommandBox'
 import CoverageBadge from './CoverageBadge'
 import FlaggedRows from './FlaggedRows'
+import ResultPolicy from './ResultPolicy'
 import ScanDialog from './ScanDialog'
 import ToxicityFilter from './ToxicityFilter'
 
@@ -397,6 +398,8 @@ export default function ResultPage({
               }}
             />
           )}
+
+          {result.policy != null && <ResultPolicy policy={result.policy} datasetId={dataset.id} />}
 
           {result.breakdowns.length > 0 && (
             <div className="result-breakdowns">

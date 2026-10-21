@@ -83,6 +83,18 @@ export function isHolding(state: ScanState): boolean {
   return HOLDING_STATES.includes(state)
 }
 
+// A scan in one of these has ended without a result, so it can be started again.
+const RETRYABLE_SCAN_STATES: readonly ScanState[] = ['failed', 'cancelled', 'conversion_failed']
+
+export function canRetryScan(state: ScanState): boolean {
+  return RETRYABLE_SCAN_STATES.includes(state)
+}
+
+// A drop that failed or was cancelled left a filtered dataset with no data, so it can be run again.
+export function canRetryFilter(state: ScanState): boolean {
+  return state === 'failed' || state === 'cancelled'
+}
+
 // A finished scan whose coverage check failed is marked: it may not have read exactly the
 // dataset's converted data.
 function coverageFailed(summary: ScanSummary): boolean {
@@ -399,8 +411,11 @@ export function scannerNote(scannerKey: string): string | null {
   }
   if (scannerKey === 'toxicity') {
     return (
-      'Every message the Detoxify screen flags is judged by Qwen3Guard. A message the judge gives no usable verdict ' +
-      '(a guard error) counts as flagged. Nothing is dropped by this scan: you choose what to drop from the results.'
+      'Every message the Detoxify screen flags is judged by Qwen3Guard. A message it rates Unsafe or Controversial ' +
+      "is then checked again by Granite Guardian against the dataset's toxicity policy: when the policy says the " +
+      "message is fine, it isn't counted as flagged. A message with no usable verdict (a guard error, or a policy " +
+      'check that gave no answer) counts as flagged. Nothing is dropped by this scan: you choose what to drop from ' +
+      'the results.'
     )
   }
   return null

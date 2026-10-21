@@ -135,6 +135,22 @@ a {
   color: var(--warn);
 }
 
+/* A failed job's reason, where it ran and the error lines (FailureDetails). */
+.failure-details {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.failure-details p {
+  margin: 0;
+}
+
+.failure-lines {
+  color: var(--text);
+}
+
 .facts {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -1690,4 +1706,35 @@ a.chip-link:hover .chip {
 .filtered-versions {
   margin: 0;
   padding-left: 18px;
+}
+
+/* ---- Toxicity policies ---- */
+
+.policy-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.policy-view {
+  max-height: 320px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  font-family: var(--mono);
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.policy-list {
+  margin: 0 0 12px;
+  padding-left: 18px;
+}
+
+.policy-list li {
+  margin-bottom: 8px;
 }

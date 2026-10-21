@@ -18,7 +18,6 @@ WORK_MANIFEST="${PRIVACY_FILTER_WORK_MANIFEST:-${RUN_ROOT}/manifest/work_units.j
 MODEL="${PRIVACY_FILTER_MODEL:-OpenMed/privacy-filter-nemotron-v2}"
 BACKEND="${PRIVACY_FILTER_BACKEND:-transformers}"
 VENV="${PRIVACY_FILTER_VENV:-${PIPELINE_DIR}/.venv-isolated}"
-BASE_PYTHON="${PRIVACY_FILTER_BASE_PYTHON:-python3}"
 HF_HOME="${HF_HOME:-${REPO}/cache/hf}"
 source "${REPO}/launchers/slurm/defaults.sh"
 VLLM_IMAGE="${PRIVACY_VLLM_SQUASHFS_PATH:-${MODEL_SAFETY_VLLM_IMAGE}}"
@@ -64,16 +63,14 @@ if [[ "${BACKEND}" == "vllm" ]]; then
     --no-container-entrypoint
     /usr/bin/python3)
 else
+  # The job never installs anything into the shared environment (two jobs doing it at the same
+  # time broke it): scripts/setup_pii_env.sh builds it, and writes the marker last.
   requirements_hash="$(sha256sum "${PIPELINE_DIR}/requirements.txt" | awk '{print $1}')"
   installed_hash="$(test -f "${VENV}/.requirements_hash" && tr -d '\n' <"${VENV}/.requirements_hash" || true)"
   if [[ ! -x "${VENV}/bin/python" || "${requirements_hash}" != "${installed_hash}" ]]; then
-    "${BASE_PYTHON}" -m venv "${VENV}"
-    "${VENV}/bin/pip" install -U pip wheel
-    "${VENV}/bin/pip" install --force-reinstall \
-      --index-url "${PRIVACY_FILTER_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}" \
-      torch
-    "${VENV}/bin/pip" install -r "${PIPELINE_DIR}/requirements.txt"
-    printf '%s\n' "${requirements_hash}" >"${VENV}/.requirements_hash"
+    echo "The PII environment at ${VENV} is missing or out of date." >&2
+    echo "Run scripts/setup_pii_env.sh with no PII scan running, then start the scan again." >&2
+    exit 2
   fi
   "${VENV}/bin/python" -c \
     "from huggingface_hub import snapshot_download; snapshot_download('${MODEL}')"

@@ -14,7 +14,9 @@ For one scanner's results folder (``--results-dir``), read-only, this writes int
                rows by the set of "<verdict>|<category>" atoms their messages carry (an
                "error" atom for a guard error, and "<verdict>|" for a verdict with no
                category). Counts under any choice of verdicts and categories can then be
-               worked out later, exactly, without reading the files again.
+               worked out later, exactly, without reading the files again. A message the
+               policy judge said is suitable (its ``policy`` block) is counted like a Safe
+               one, and ``policy_kept`` says how many there were.
     ner        ``all_spans.jsonl``: the rows with a span the policy made eligible, and the
                eligible spans by label and tier.
     dedup      ``dedup_results.jsonl``, only when ``--group NAME=PREFIX`` is given (one for
@@ -80,6 +82,7 @@ from modelsafety.filter.rules import (  # noqa: E402
     FindingsError,
     HitIndex,
     guard_outcome,
+    policy_keeps,
 )
 from modelsafety.results.coverage import (  # noqa: E402
     SCANNERS,
@@ -196,7 +199,7 @@ def toxicity_tally(results_dir: Path) -> dict[str, Any]:
     atom_ids: dict[str, int] = {}
     row_masks: dict[int, int] = {}
     messages: Counter = Counter()
-    judged = safe = guard_errors = 0
+    judged = safe = guard_errors = policy_kept = 0
 
     for name in names:
         path = results_dir / TOXICITY_SHARDS / name / "guard_results" / "all.jsonl"
@@ -211,6 +214,10 @@ def toxicity_tally(results_dir: Path) -> dict[str, Any]:
                 atoms = [ERROR_ATOM]
             elif verdict == SAFE_VERDICT:
                 safe += 1
+                continue
+            elif policy_keeps(record):
+                # The policy judge said the message is suitable: it counts like a Safe one.
+                policy_kept += 1
                 continue
             else:
                 categories = _clean_categories(guard.get("categories"))
@@ -231,6 +238,7 @@ def toxicity_tally(results_dir: Path) -> dict[str, Any]:
         "slices": len(names),
         "messages_judged": judged,
         "safe": safe,
+        "policy_kept": policy_kept,
         "guard_errors": guard_errors,
         "messages": [
             {"verdict": verdict, "categories": list(categories), "count": count}

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { checkScans, errorMessage, submitScans } from '../api'
 import { formatCount } from '../format'
+import { inputsFromResources } from '../resources'
 import { hrefFor } from '../route'
 import {
   METHOD_INFO,
@@ -22,6 +23,7 @@ import {
 import type {
   ChoiceField,
   Dataset,
+  JobResources,
   ScanCheckResponse,
   ScanSettings,
   ScanSubmitResponse,
@@ -35,6 +37,7 @@ import DeleteList from './DeleteList'
 import Dialog from './Dialog'
 import PartitionPicker from './PartitionPicker'
 import ResourcesFields from './ResourcesFields'
+import ScanPolicies from './ScanPolicies'
 
 // What the check says about one dataset: whether it is converted, and what the scan does about it.
 function PlanNote({ plan }: { plan: ScanUnitDataset }) {
@@ -426,8 +429,15 @@ export default function ScanDialog({
   datasets: Dataset[]
   // What "Run again" fills in: the scanner (the method, for PII), the settings, the mode and
   // whether it dropped what it flagged by itself, of the scan being repeated. The settings are
-  // checked again like any other.
-  initial?: { scannerKey: string; settings: ScanSettings; mode: string | null; autoDrop: boolean }
+  // checked again like any other. `resources` are the ones the scan ran with: given by a retry
+  // of a failed scan, so the new one asks for the same partition, CPUs, memory and time.
+  initial?: {
+    scannerKey: string
+    settings: ScanSettings
+    mode: string | null
+    autoDrop: boolean
+    resources?: JobResources
+  }
   onClose: () => void
   onStarted: (result: ScanSubmitResponse) => void
 }) {
@@ -435,7 +445,12 @@ export default function ScanDialog({
   // Null until the user picks: the first method of the action.
   const [methodChoice, setMethodChoice] = useState<string | null>(initial?.scannerKey ?? null)
   const scannerKey = methodChoice ?? info.scannerKeys[0]
-  const resources = useScanResources(scannerKey)
+  const resources = useScanResources(
+    scannerKey,
+    initial?.resources === undefined
+      ? undefined
+      : { scannerKey: initial.scannerKey, inputs: inputsFromResources(initial.resources) },
+  )
   const scanner = resources.scanner
 
   // The datasets still in the scan, by id. A dataset that can't be scanned can be left out.
@@ -742,6 +757,8 @@ export default function ScanDialog({
               ))}
             </ul>
           )}
+
+          {scannerKey === 'toxicity' && rows.length > 0 && <ScanPolicies datasets={rows} />}
 
           {scanner.modes !== null && rows.length > 1 && (
             <fieldset className="scan-setting">

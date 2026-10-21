@@ -326,12 +326,28 @@ def guard_outcome(guard: dict[str, Any]) -> tuple[str, str | None]:
     return verdict.lower(), verdict
 
 
+# What the policy judge (policy_judge.py in the toxicity folder, which doesn't import this
+# module: keep the two in step) writes in a record's `policy` block when the policy says the
+# message is suitable.
+POLICY_KEEP_DECISION = "KEEP_GENERAL"
+
+
+def policy_keeps(record: dict[str, Any]) -> bool:
+    """Whether the policy judge said this message is suitable, so it no longer counts as
+    flagged. False for a record with no `policy` block (a scan made without a policy, or before
+    there was one), one the judge skipped, and one it gave no usable answer: those keep what
+    Qwen3Guard said."""
+    policy = record.get("policy")
+    return isinstance(policy, dict) and policy.get("decision") == POLICY_KEEP_DECISION
+
+
 def read_toxicity(
     results_dir: Path, index: HitIndex, rules: FilterRules, rows_by_file: dict[str, int]
 ) -> FindingsRead:
     """Each slice's `guard_results/all.jsonl`: the messages stage 1 flagged, with
     Qwen3Guard's verdict. A guard error, or a verdict that isn't Safe, Unsafe or
-    Controversial, counts as a guard error."""
+    Controversial, counts as a guard error. A message the policy judge said is suitable
+    (see `policy_keeps`) is not removed, whatever its verdict."""
     manifest_path = results_dir / "manifests" / "manifest.json"
     manifest = read_json_or_none(manifest_path)
     shards = manifest.get("shards") if isinstance(manifest, dict) else None
@@ -341,6 +357,7 @@ def read_toxicity(
     result = FindingsRead("toxicity", findings_by_file=Counter())
     verdicts: Counter = Counter()
     guard_errors_by_slice: Counter = Counter()
+    policy_kept = 0
     for shard in shards:
         shard_index = shard.get("index") if isinstance(shard, dict) else None
         if not isinstance(shard_index, int) or isinstance(shard_index, bool):
@@ -370,6 +387,9 @@ def read_toxicity(
                     continue
             elif verdict not in rules.toxicity_remove_verdicts:
                 continue
+            elif policy_keeps(record):
+                policy_kept += 1
+                continue
             index.add(
                 file,
                 line,
@@ -396,6 +416,7 @@ def read_toxicity(
         )
     result.details = {
         "outcomes": dict(sorted(verdicts.items())),
+        "policy_kept": policy_kept,
         "guard_errors_by_slice": dict(sorted(guard_errors_by_slice.items())),
     }
     return result

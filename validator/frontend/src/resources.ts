@@ -37,6 +37,16 @@ export function initialResources(source: ResourceDefaults): ResourceInputs {
   return { partition, cpus: String(defaults.cpus), mem: defaults.mem, time: defaults.time }
 }
 
+// The boxes filled in with the resources a job already ran with (a retry of that job).
+export function inputsFromResources(resources: JobResources): ResourceInputs {
+  return {
+    partition: resources.partition,
+    cpus: String(resources.cpus),
+    mem: resources.mem,
+    time: resources.time,
+  }
+}
+
 export function hasTypedAnything(inputs: ResourceInputs): boolean {
   return Boolean(inputs.partition || inputs.cpus || inputs.mem || inputs.time)
 }

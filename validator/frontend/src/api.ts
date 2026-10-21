@@ -11,11 +11,15 @@
 // data; "convert again" deletes the current Prepared version first), and cancelScan
 // stops one. Reading a dataset, a conversion or a scan also saves a finished conversion
 // as the dataset's Prepared version, and a finished scan as the dataset's result.
-// checkResult submits one CPU job that checks a finished scan's coverage again. submitDrop
-// drops the chosen rows: it registers a new (filtered) dataset and submits one CPU job that
-// copies the other rows into it, and cancelFilter stops that job; the dataset the rows were
-// dropped from is not changed. Every other call here is read-only, including the two that read
-// a result's flagged rows and checkDrop, which only counts.
+// setTeamPolicy, setDatasetPolicy and clearDatasetPolicy write the saved toxicity policies (a
+// scan copies the policy it uses into its own folder when it starts, so they never change a scan
+// that has started). checkResult submits one CPU job that checks a finished scan's coverage
+// again. submitDrop drops the chosen rows: it registers a new (filtered) dataset and submits one
+// CPU job that copies the other rows into it, and cancelFilter stops that job; the dataset the
+// rows were dropped from is not changed. retryFilter runs a drop that failed or was cancelled
+// again from the drop list it already has, into a new folder of the same filtered dataset.
+// Every other call here is read-only, including the two that read a result's flagged rows,
+// checkDrop, which only counts, and checkFilterRetry, which only describes a retry.
 import type {
   AllConversionsResponse,
   AnyRunResponse,
@@ -28,12 +32,15 @@ import type {
   ConversionSubmitResponse,
   ConversionsRequest,
   Dataset,
+  DatasetPolicy,
   DatasetResultResponse,
   DatasetResultsResponse,
   DatasetsResponse,
   DropCheckResponse,
   DropRequest,
   DropSubmitResponse,
+  FilterRetryCheckResponse,
+  FilterRetryResponse,
   FilterStatusResponse,
   FiltersResponse,
   FlaggedFilters,
@@ -56,6 +63,7 @@ import type {
   ScansResponse,
   SkippedPageRequest,
   SkippedPageResponse,
+  TeamPolicy,
   TeamsResponse,
   UnregisterResponse,
   UpdateDatasetRequest,
@@ -70,8 +78,8 @@ export class ApiError extends Error {
   }
 }
 
-// GET without a body, POST with one, or the method asked for (PATCH).
-async function request<T>(path: string, body?: unknown, method?: 'PATCH'): Promise<T> {
+// GET without a body, POST with one, or the method asked for (PATCH, PUT or DELETE).
+async function request<T>(path: string, body?: unknown, method?: 'PATCH' | 'PUT' | 'DELETE'): Promise<T> {
   const response = await fetch(path, {
     method: method ?? (body === undefined ? 'GET' : 'POST'),
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
@@ -106,6 +114,32 @@ export function getTeams(): Promise<TeamsResponse> {
 
 export function listDatasets(): Promise<DatasetsResponse> {
   return request<DatasetsResponse>('/api/datasets')
+}
+
+// ---- Toxicity policies ----
+
+export function getTeamPolicy(team: string): Promise<TeamPolicy> {
+  return request<TeamPolicy>(`/api/teams/${encodeURIComponent(team)}/toxicity-policy`)
+}
+
+// Saves the team's policy: every dataset of the team without a policy of its own follows it.
+export function setTeamPolicy(team: string, text: string): Promise<TeamPolicy> {
+  return request<TeamPolicy>(`/api/teams/${encodeURIComponent(team)}/toxicity-policy`, { text }, 'PUT')
+}
+
+// The policy a dataset uses (its own, or its team's) and both texts.
+export function getDatasetPolicy(datasetId: string): Promise<DatasetPolicy> {
+  return request<DatasetPolicy>(`/api/datasets/${encodeURIComponent(datasetId)}/toxicity-policy`)
+}
+
+// Saves a policy for this dataset only, in place of its team's.
+export function setDatasetPolicy(datasetId: string, text: string): Promise<DatasetPolicy> {
+  return request<DatasetPolicy>(`/api/datasets/${encodeURIComponent(datasetId)}/toxicity-policy`, { text }, 'PUT')
+}
+
+// Removes the dataset's own policy, so it follows its team's again.
+export function clearDatasetPolicy(datasetId: string): Promise<DatasetPolicy> {
+  return request<DatasetPolicy>(`/api/datasets/${encodeURIComponent(datasetId)}/toxicity-policy`, undefined, 'DELETE')
 }
 
 export function getDataset(datasetId: string): Promise<Dataset> {
@@ -329,4 +363,16 @@ export function getFilter(datasetId: string): Promise<FilterStatusResponse> {
 // Runs `scancel` on the one SLURM job the filtered dataset's record lists.
 export function cancelFilter(datasetId: string): Promise<CancelResponse> {
   return request<CancelResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/filter/cancel`, {})
+}
+
+// What retrying a failed or cancelled drop would do: the same saved rows, a new output folder, the
+// resources and the exact command. Starts nothing. Fails with the reason when it can't be retried.
+export function checkFilterRetry(datasetId: string): Promise<FilterRetryCheckResponse> {
+  return request<FilterRetryCheckResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/filter/retry/check`, {})
+}
+
+// Runs a failed or cancelled drop again as a new SLURM job on the same filtered dataset. The failed
+// attempt's folder and logs are kept.
+export function retryFilter(datasetId: string): Promise<FilterRetryResponse> {
+  return request<FilterRetryResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/filter/retry`, {})
 }

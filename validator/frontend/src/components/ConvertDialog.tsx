@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { checkConversions, errorMessage, submitConversions } from '../api'
 import { formatCount } from '../format'
+import { inputsFromResources } from '../resources'
 import { hrefFor } from '../route'
-import type { ConversionCheckResponse, ConversionPlanItem, ConversionSubmitResponse, Dataset } from '../types'
+import type {
+  ConversionCheckResponse,
+  ConversionPlanItem,
+  ConversionSubmitResponse,
+  Dataset,
+  JobResources,
+} from '../types'
 import { useConversionResources } from '../useConversionResources'
 import CommandBox from './CommandBox'
 import DeleteList from './DeleteList'
@@ -17,17 +24,28 @@ import ResourcesFields from './ResourcesFields'
 // deleted is listed and asked about before the start.
 //
 // Everything shown is plain text.
+//
+// A retry of a failed conversion opens it with the resources that conversion ran with
+// (`initialResources`) and, for a dataset that already has converted data, "Convert again" chosen
+// (`initialAgain`), because leaving that data as it is wouldn't convert anything. Nothing is
+// deleted without the same confirmation as any other start.
 export default function ConvertDialog({
   datasets,
+  initialResources,
+  initialAgain = false,
   onClose,
   onStarted,
 }: {
   datasets: Dataset[]
+  initialResources?: JobResources
+  initialAgain?: boolean
   onClose: () => void
   onStarted: (result: ConversionSubmitResponse) => void
 }) {
   // The datasets the user chose "Convert again" for, by id.
-  const [again, setAgain] = useState<Set<string>>(new Set())
+  const [again, setAgain] = useState<Set<string>>(
+    () => new Set(initialAgain ? datasets.filter((dataset) => dataset.prepared !== null).map((dataset) => dataset.id) : []),
+  )
   const [check, setCheck] = useState<ConversionCheckResponse | null>(null)
   const [checkError, setCheckError] = useState<string | null>(null)
   const [checking, setChecking] = useState(true)
@@ -35,7 +53,9 @@ export default function ConvertDialog({
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const resources = useConversionResources()
+  const resources = useConversionResources(
+    initialResources === undefined ? undefined : inputsFromResources(initialResources),
+  )
 
   const items = datasets.map((dataset) => ({ id: dataset.id, reconvert: again.has(dataset.id) }))
   const requestKey = JSON.stringify([items, resources.requestResources])

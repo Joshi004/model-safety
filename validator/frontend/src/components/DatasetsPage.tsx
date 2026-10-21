@@ -10,6 +10,7 @@ import ConvertDialog from './ConvertDialog'
 import DatasetsTable from './DatasetsTable'
 import RegisterDatasetDialog from './RegisterDatasetDialog'
 import ScanDialog from './ScanDialog'
+import TeamPolicyDialog from './TeamPolicyDialog'
 import UnregisterDialog from './UnregisterDialog'
 
 const TEAM_KEY = 'datasets.team'
@@ -37,6 +38,8 @@ export default function DatasetsPage() {
   // The key (in SCAN_ACTIONS) of the scan action whose dialog is open, or null.
   const [scanning, setScanning] = useState<string | null>(null)
   const [unregistering, setUnregistering] = useState<Dataset | null>(null)
+  // The team whose toxicity policy is being edited, or null.
+  const [editingPolicy, setEditingPolicy] = useState<string | null>(null)
   const [notice, setNotice] = useState<ReactNode>(null)
 
   // Bumped to read the list again (after a register or unregister, or Retry).
@@ -145,6 +148,13 @@ export default function DatasetsPage() {
       return next
     })
     reload()
+  }
+
+  function handlePolicySaved(team: string) {
+    setEditingPolicy(null)
+    setNotice(
+      `Saved the toxicity policy of ${team}. Scans started from now on use it for every ${team} dataset that has no policy of its own.`,
+    )
   }
 
   function handleConverting() {
@@ -280,6 +290,19 @@ export default function DatasetsPage() {
             <span className="muted small">
               {visible.length} {visible.length === 1 ? 'dataset' : 'datasets'} shown
             </span>
+            {activeTeam !== '' && (
+              <button
+                type="button"
+                className="secondary push-right"
+                title={`The toxicity policy every ${activeTeam} dataset follows, unless it has one of its own`}
+                onClick={() => {
+                  setNotice(null)
+                  setEditingPolicy(activeTeam)
+                }}
+              >
+                Edit toxicity policy
+              </button>
+            )}
           </div>
 
           {selected.size > 0 && (
@@ -329,6 +352,10 @@ export default function DatasetsPage() {
           onClose={() => setScanning(null)}
           onStarted={handleScansStarted}
         />
+      )}
+
+      {editingPolicy !== null && (
+        <TeamPolicyDialog team={editingPolicy} onClose={() => setEditingPolicy(null)} onSaved={handlePolicySaved} />
       )}
 
       {unregistering !== null && (

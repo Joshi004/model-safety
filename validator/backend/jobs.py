@@ -486,16 +486,16 @@ def accounting(job_ids: list[str]) -> dict[str, dict[str, Any]]:
     if not job_ids:
         return {}
     output = _slurm(
-        ["sacct", "-j", ",".join(job_ids), "-n", "-P", "-o", "JobID,State,ExitCode,Elapsed,MaxRSS"]
+        ["sacct", "-j", ",".join(job_ids), "-n", "-P", "-o", "JobID,State,ExitCode,Elapsed,MaxRSS,NodeList"]
     )
     wanted = set(job_ids)
     records: dict[str, dict[str, Any]] = {}
     peak_memory: dict[str, int | None] = {}
     for line in output.splitlines():
         parts = [part.strip() for part in line.split("|")]
-        if len(parts) != 5:
+        if len(parts) != 6:
             continue
-        job_id, state, exit_code, elapsed, max_rss = parts
+        job_id, state, exit_code, elapsed, max_rss, node = parts
         if job_id in wanted:
             records[job_id] = {
                 "state": state.split()[0] if state else "",
@@ -503,6 +503,7 @@ def accounting(job_ids: list[str]) -> dict[str, dict[str, Any]]:
                 "exit_code": exit_code,
                 "elapsed": elapsed,
                 "max_rss_bytes": None,
+                "node": node_of(node),
             }
         elif job_id.endswith(".batch") and job_id[: -len(".batch")] in wanted:
             peak_memory[job_id[: -len(".batch")]] = _parse_max_rss(max_rss)
@@ -766,8 +767,8 @@ def _decide_outcome(
     return "failed", f"SLURM state {record['state_text'] or 'unknown'}, exit code {exit_code}."
 
 
-def _tail_file(path: Path) -> str | None:
-    """The last `LOG_TAIL_LINES` lines of a log, reading at most the last
+def _tail_file(path: Path, max_lines: int = LOG_TAIL_LINES) -> str | None:
+    """The last `max_lines` lines of a log, reading at most the last
     `LOG_TAIL_BYTES`. None when there's no such file."""
     try:
         with path.open("rb") as handle:
@@ -780,6 +781,112 @@ def _tail_file(path: Path) -> str | None:
     lines = data.decode("utf-8", errors="replace").splitlines()
     if start > 0 and lines:
         lines = lines[1:]  # the first line was probably cut in half
-    return "\n".join(lines[-LOG_TAIL_LINES:])
+    return "\n".join(lines[-max_lines:])
+
+
+# -------------------------------------------------------------------------
+# Why a job failed: the lines of its logs that say so, and what they usually mean
+# -------------------------------------------------------------------------
+
+# A log line that looks like it says what went wrong.
+ERROR_LINE = re.compile(
+    r"error|exception|traceback|killed|out of memory|no such file|permission denied|"
+    r"stale file handle|no space left|due to time limit|segmentation fault",
+    re.IGNORECASE,
+)
+MAX_ERROR_LINES = 8
+# How many of a log's last lines are searched for them (still at most `LOG_TAIL_BYTES`): more
+# than the page shows, because a long traceback can push the line that says why far up.
+ERROR_SEARCH_LINES = 1000
+# Used when no line of any log looks like an error: the last lines of the first log with text.
+FALLBACK_ERROR_LINES = 5
+MAX_ERROR_LINE_CHARS = 300
+
+# What SLURM's own state says, by the first word of the state.
+STATE_HINTS = {
+    "OUT_OF_MEMORY": "The job used more memory than it asked for. Try again with more memory.",
+    "TIMEOUT": "The job reached its time limit and SLURM stopped it. Try again with a longer time limit.",
+    "NODE_FAIL": "The machine the job ran on failed. Trying again usually works.",
+}
+# What a log says, by a lower-case piece of a line. The first one found is used.
+LOG_HINTS = (
+    (
+        "stale file handle",
+        "A file or folder on the shared disk was changed or removed while this job was using it. "
+        "Often two jobs were changing the same shared folder at the same time (for example the shared "
+        "Python environment). Try again with no other scan starting at the same time.",
+    ),
+    ("cuda out of memory", "The GPU ran out of memory. Try again with a smaller batch size."),
+    ("no space left on device", "The disk is full. Free some space, then try again."),
+    ("modulenotfounderror", "A Python package the job needs isn't installed in its environment."),
+    (
+        "scripts/setup_pii_env.sh",
+        "The PII scan's Python environment isn't built, or is older than its requirements. On the "
+        "login node, with no PII scan running, run scripts/setup_pii_env.sh, then try again.",
+    ),
+)
+
+
+def error_lines(logs: list[tuple[Path, str | None]]) -> tuple[list[str], Path | None]:
+    """`(lines, log)`: the last few lines that look like errors from the first log (in the order
+    given, so give the error logs first) that has any, and which log that was. When no log has
+    such a line, the last few lines of the first log that has any text. `([], None)` when no log
+    has text. Each item of `logs` is a path and its tail (None when there's no such file)."""
+    for path, tail in logs:
+        lines = [line.strip() for line in (tail or "").splitlines() if line.strip()]
+        matching = [line for line in lines if ERROR_LINE.search(line)]
+        if matching:
+            return [line[:MAX_ERROR_LINE_CHARS] for line in matching[-MAX_ERROR_LINES:]], path
+    for path, tail in logs:
+        lines = [line.strip() for line in (tail or "").splitlines() if line.strip()]
+        if lines:
+            return [line[:MAX_ERROR_LINE_CHARS] for line in lines[-FALLBACK_ERROR_LINES:]], path
+    return [], None
+
+
+def failure_hint(slurm_state: str | None, lines: list[str]) -> str | None:
+    """A plain sentence for a cause that is known, from SLURM's state or from the error lines.
+    None when it isn't one of the few known."""
+    first_word = slurm_state.split()[0] if slurm_state else ""
+    if first_word in STATE_HINTS:
+        return STATE_HINTS[first_word]
+    text = "\n".join(lines).lower()
+    for piece, hint in LOG_HINTS:
+        if piece in text:
+            return hint
+    return None
+
+
+def node_of(text: str) -> str | None:
+    """The machine a job ran on, from sacct's NodeList: None when it never ran."""
+    text = text.strip()
+    return None if text in ("", "None assigned") else text
+
+
+def failure_view(
+    job_role: str | None,
+    job_id: str | None,
+    slurm_row: dict[str, Any] | None,
+    logs: list[Path],
+    first_lines: list[str] | None = None,
+) -> dict[str, Any]:
+    """What the page shows for a job that failed. `slurm_row` is the job's sacct row (as
+    `accounting` or scans.py's `_sacct_rows` make it), None when SLURM has none. `logs` are the
+    job's log files, error logs first. `first_lines` are lines the job itself reported (a
+    conversion's progress.json error), shown before the ones found in the logs."""
+    lines, source = error_lines([(path, _tail_file(path, ERROR_SEARCH_LINES)) for path in logs])
+    reported = [line.strip()[:MAX_ERROR_LINE_CHARS] for line in first_lines or [] if line.strip()]
+    lines = [*reported, *lines]
+    row = slurm_row or {}
+    return {
+        "job_role": job_role,
+        "job_id": job_id,
+        "node": row.get("node"),
+        "slurm_state": row.get("state_text") or None,
+        "exit_code": row.get("exit_code") or None,
+        "error_lines": lines,
+        "hint": failure_hint(row.get("state"), lines),
+        "log_path": str(source) if source is not None else None,
+    }
 
 

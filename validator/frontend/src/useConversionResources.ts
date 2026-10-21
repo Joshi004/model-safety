@@ -8,11 +8,14 @@ import type { ConversionSettings, JobResources } from './types'
 // SLURM lists, the boxes' text (starting at the defaults), and what to send. Nothing is
 // sent (`requestResources` is null) until the user edits a box, so the backend uses its
 // own defaults.
-export function useConversionResources() {
+//
+// `start` fills the boxes from the beginning (a retry of a conversion keeps the resources it ran
+// with). They then count as typed, so they are sent.
+export function useConversionResources(start?: ResourceInputs) {
   const [settings, setSettings] = useState<ConversionSettings | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [inputs, setInputs] = useState<ResourceInputs>(EMPTY_RESOURCES)
-  const [edited, setEdited] = useState(false)
+  const [inputs, setInputs] = useState<ResourceInputs>(start ?? EMPTY_RESOURCES)
+  const [edited, setEdited] = useState(start !== undefined)
   // Bumped to ask SLURM for the partitions again.
   const [loads, setLoads] = useState(0)
 

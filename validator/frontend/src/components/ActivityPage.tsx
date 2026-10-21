@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { cancelConversion, cancelFilter, cancelScan, errorMessage, listAllConversions, listFilters, listScans } from '../api'
-import { OUTCOME_LABELS, OUTCOME_TONES, isActive } from '../conversions'
+import { OUTCOME_LABELS, OUTCOME_TONES, canRetryConversion, isActive } from '../conversions'
 import { formatDuration, formatTimestamp, secondsBetween } from '../format'
 import { hrefFor } from '../route'
-import { STATE_LABELS, STATE_TONES, isHolding, stateLabelLong } from '../scans'
+import { STATE_LABELS, STATE_TONES, canRetryFilter, canRetryScan, isHolding, stateLabelLong } from '../scans'
 import type { ActivityConversion, AllConversionsResponse, FilterJob as FilterJobView, FiltersResponse, ScanView, ScansResponse } from '../types'
 import { useRefreshing } from '../useRefreshing'
 import Chip from './Chip'
@@ -51,6 +51,13 @@ function isGoing(item: Item): boolean {
   if (item.kind === 'scan') return isHolding(item.scan.state)
   if (item.kind === 'conversion') return isActive(item.conversion.outcome)
   return isHolding(item.filter.state)
+}
+
+// Whether the job ended without a result and can be started again (Retry).
+function canRetry(item: Item): boolean {
+  if (item.kind === 'scan') return canRetryScan(item.scan.state)
+  if (item.kind === 'conversion') return canRetryConversion(item.conversion.outcome)
+  return canRetryFilter(item.filter.state)
 }
 
 function mergeItems(activity: Activity): Item[] {
@@ -180,6 +187,9 @@ export default function ActivityPage({ scan }: { scan: string | null }) {
   )
   // The jobs whose details are open, by `itemKey`.
   const [open, setOpen] = useState<Set<string>>(() => new Set(scan === null ? [] : [`scan/${scan}`]))
+  // The job whose Retry button was pressed on its line: its details open with the retry dialog
+  // already showing. Forgotten when that job's details are hidden again.
+  const [retryKey, setRetryKey] = useState<string | null>(null)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -206,6 +216,14 @@ export default function ActivityPage({ scan }: { scan: string | null }) {
       else next.add(key)
       return next
     })
+    if (retryKey === key) setRetryKey(null)
+  }
+
+  function retry(key: string) {
+    setNotice(null)
+    setActionError(null)
+    setOpen((current) => new Set(current).add(key))
+    setRetryKey(key)
   }
 
   async function cancel(item: Item) {
@@ -336,8 +354,10 @@ export default function ActivityPage({ scan }: { scan: string | null }) {
                     open={open.has(key)}
                     focus={item.kind === 'scan' && item.scan.id === scan}
                     busy={busyKey === key}
+                    startWithRetry={retryKey === key}
                     onToggle={() => toggle(key)}
                     onCancel={() => void cancel(item)}
+                    onRetry={() => retry(key)}
                     onChanged={reload}
                   />
                 )
@@ -363,8 +383,10 @@ function ActivityRows({
   open,
   focus,
   busy,
+  startWithRetry,
   onToggle,
   onCancel,
+  onRetry,
   onChanged,
 }: {
   item: Item
@@ -372,8 +394,11 @@ function ActivityRows({
   open: boolean
   focus: boolean
   busy: boolean
+  // The job's card opens with its retry dialog showing.
+  startWithRetry: boolean
   onToggle: () => void
   onCancel: () => void
+  onRetry: () => void
   onChanged: () => void
 }) {
   return (
@@ -394,6 +419,12 @@ function ActivityRows({
               {busy ? 'Cancelling…' : 'Cancel'}
             </button>
           )}
+          {/* Once the details are open the job's card has its own Retry button. */}
+          {!open && canRetry(item) && (
+            <button type="button" className="secondary" onClick={onRetry}>
+              Retry
+            </button>
+          )}
           <button type="button" className="secondary" onClick={onToggle} aria-expanded={open}>
             {open ? 'Hide' : 'Details'}
           </button>
@@ -403,14 +434,16 @@ function ActivityRows({
         <tr className="activity-detail">
           <td colSpan={COLUMNS}>
             {item.kind === 'scan' ? (
-              <ScanJob scanId={item.scan.id} />
+              <ScanJob scanId={item.scan.id} onChanged={onChanged} startWithRetry={startWithRetry} />
             ) : item.kind === 'filter' ? (
-              <FilterJob datasetId={item.filter.dataset_id} />
+              <FilterJob datasetId={item.filter.dataset_id} onChanged={onChanged} startWithRetry={startWithRetry} />
             ) : (
               <ConversionJob
                 datasetId={item.conversion.dataset_id}
                 jobId={item.conversion.job_id}
                 onChanged={onChanged}
+                allowRetry
+                startWithRetry={startWithRetry}
                 title={`Conversion of ${item.conversion.dataset_name}`}
               />
             )}

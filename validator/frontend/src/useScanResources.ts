@@ -13,11 +13,16 @@ import type { ResourceRequest, ScannerInfo, ScannersResponse } from './types'
 // The scanner can change while the dialog is open (a choice of method): what was typed is kept
 // for each scanner on its own, so going back to a method finds its boxes as they were left.
 // A scanner whose job scripts fix the CPUs, memory and time only sends its partition.
-export function useScanResources(scannerKey: string) {
+//
+// `start` fills one scanner's boxes from the beginning (a retry of a scan keeps the resources
+// it ran with). They then count as typed, so they are sent.
+export function useScanResources(scannerKey: string, start?: { scannerKey: string; inputs: ResourceInputs }) {
   const [response, setResponse] = useState<ScannersResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   // What the user typed, by scanner. A scanner that isn't here shows its defaults.
-  const [edits, setEdits] = useState<Record<string, ResourceInputs>>({})
+  const [edits, setEdits] = useState<Record<string, ResourceInputs>>(() =>
+    start === undefined ? {} : { [start.scannerKey]: start.inputs },
+  )
   // Bumped to ask again (SLURM's partitions couldn't be read, or the first request failed).
   const [loads, setLoads] = useState(0)
 

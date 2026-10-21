@@ -35,12 +35,23 @@ VLLM_ENABLE_CUDA_COMPATIBILITY="${VLLM_ENABLE_CUDA_COMPATIBILITY:-1}"
 HF_TOKEN="${HF_TOKEN:-}"
 VLLM_LOG="${SHARD_ROOT}/vllm.log"
 VLLM_PID=""
+# The policy pass (a third stage) only runs when the scan is given a policy file. Granite
+# Guardian judges, against it, the messages Qwen3Guard rated Unsafe or Controversial.
+POLICY_FILE="${TOX_POLICY_FILE:-}"
+POLICY_MODEL="${TOX_POLICY_MODEL:-ibm-granite/granite-guardian-4.1-8b}"
+POLICY_MAX_MODEL_LEN=8192
+POLICY_DIR="${SHARD_ROOT}/policy_results"
 
-cleanup() {
+stop_vllm() {
   if [[ -n "${VLLM_PID}" ]]; then
     kill "${VLLM_PID}" 2>/dev/null || true
     wait "${VLLM_PID}" 2>/dev/null || true
+    VLLM_PID=""
   fi
+}
+
+cleanup() {
+  stop_vllm
 }
 trap cleanup EXIT INT TERM
 
@@ -68,6 +79,10 @@ if [[ ! -f "${VLLM_SQUASHFS_PATH}" ]]; then
   echo "Missing vLLM SquashFS: ${VLLM_SQUASHFS_PATH}" >&2
   exit 2
 fi
+if [[ -n "${POLICY_FILE}" && ! -s "${POLICY_FILE}" ]]; then
+  echo "Missing or empty policy file: ${POLICY_FILE}" >&2
+  exit 2
+fi
 
 mkdir -p "${REPO}/logs/slurm" "${SHARD_ROOT}" "${HF_HOME}" "${HF_HUB_CACHE}"
 (
@@ -82,7 +97,8 @@ mkdir -p "${REPO}/logs/slurm" "${SHARD_ROOT}" "${HF_HOME}" "${HF_HUB_CACHE}"
 cd "${TOX_DIR}"
 source "${VENV}/bin/activate"
 # A marker from an earlier attempt must not outlive a run that doesn't finish.
-rm -f "${SHARD_ROOT}/_SUCCESS"
+rm -f "${SHARD_ROOT}/_SUCCESS" "${SHARD_ROOT}/_GUARD_SUCCESS" "${SHARD_ROOT}/_POLICY_SUCCESS"
+rm -rf "${POLICY_DIR}"
 if [[ "${TOX_REUSE_STAGE1:-0}" == "1" && -f "${SHARD_ROOT}/_DETOXIFY_SUCCESS" && -f "${FLAGGED_FILE}" ]]; then
   echo "Reusing finished Detoxify output: ${FLAGGED_FILE}"
 else
@@ -141,6 +157,57 @@ else
     --model "${MODEL}" \
     --concurrency "${CONCURRENCY}" \
     --max_tokens "${GUARD_MAX_TOKENS:-128}"
+fi
+# Qwen3Guard is done: the validator's progress counts this, since `_SUCCESS` now comes after the
+# policy stage.
+touch "${SHARD_ROOT}/_GUARD_SUCCESS"
+
+# Stage 3, only with a policy file. One GPU: Qwen3Guard's server is stopped first, and Granite's
+# is only started when Qwen3Guard rated something Unsafe or Controversial. The judge runs either
+# way, so every record gets its `policy` block and the shard has its summary. It replaces
+# guard_results/all.jsonl only when every record is done.
+if [[ -n "${POLICY_FILE}" ]]; then
+  mkdir -p "${POLICY_DIR}"
+  stop_vllm
+  if [[ -s "${GUARD_DIR}/unsafe.jsonl" || -s "${GUARD_DIR}/controversial.jsonl" ]]; then
+    # Time for the first server's GPU memory to be released.
+    sleep 10
+    export HF_HOME HF_HUB_CACHE HF_HUB_DISABLE_XET VLLM_ENABLE_CUDA_COMPATIBILITY HF_TOKEN
+    VLLM_LOG="${SHARD_ROOT}/vllm_policy.log"
+    srun \
+      --ntasks=1 \
+      --container-image="${VLLM_SQUASHFS_PATH}" \
+      --container-mounts="${HF_HOME}:${HF_HOME}" \
+      --container-workdir="${HF_HOME}" \
+      --container-env=HF_HOME,HF_HUB_CACHE,HF_HUB_DISABLE_XET,VLLM_ENABLE_CUDA_COMPATIBILITY,HF_TOKEN \
+      --no-container-entrypoint \
+      /usr/bin/python3 -m vllm.entrypoints.openai.api_server \
+        --host 127.0.0.1 \
+        --port "${PORT}" \
+        --model "${POLICY_MODEL}" \
+        --served-model-name "${POLICY_MODEL}" \
+        --dtype bfloat16 \
+        --tensor-parallel-size 1 \
+        --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION:-0.9}" \
+        --max-model-len "${POLICY_MAX_MODEL_LEN}" \
+        --max-num-seqs "${CONCURRENCY}" \
+        --trust-remote-code \
+      >"${VLLM_LOG}" 2>&1 &
+    VLLM_PID=$!
+    wait_for_vllm
+  else
+    echo "Policy judge: Qwen3Guard rated no message Unsafe or Controversial, so there is nothing to judge."
+  fi
+
+  python policy_judge.py \
+    --input "${GUARD_DIR}/all.jsonl" \
+    --policy-file "${POLICY_FILE}" \
+    --summary-file "${POLICY_DIR}/summary.json" \
+    --base_url "${BASE_URL}" \
+    --model "${POLICY_MODEL}" \
+    --concurrency "${CONCURRENCY}"
+  stop_vllm
+  touch "${SHARD_ROOT}/_POLICY_SUCCESS"
 fi
 
 python check_guard_counts.py \

@@ -1,7 +1,9 @@
 huggingface_hub>=0.36
 numpy>=2.0
-openmed[hf]
-# Install Torch first from the CUDA 12.8 wheel index in the SLURM wrappers.
-torch>=2.9
+# 2.5.0 is the last release whose `hf` extra doesn't ask for torch>=2.13, which only has CUDA 13
+# builds; the cluster's GPU driver supports CUDA 12.8.
+openmed[hf]==2.5.0
+# Installed first from the CUDA 12.8 wheel index by scripts/setup_pii_env.sh; `2.11.0+cu128`
+# satisfies this pin, so the install below keeps it.
+torch==2.11.0
 transformers>=5.6
-

@@ -15,6 +15,31 @@ export interface TeamsResponse {
   teams: Team[]
 }
 
+// A team's toxicity policy: the text every dataset of the team without a policy of its own is
+// judged by (GET and PUT /api/teams/{team}/toxicity-policy). `updated_at` is null until someone
+// has saved it: until then it is the starting text from the repo.
+export interface TeamPolicy {
+  team: string
+  text: string
+  updated_at: string | null
+}
+
+// Where a policy comes from: the team's (shared by its datasets) or the dataset's own.
+export type PolicySource = 'team' | 'dataset'
+
+// The toxicity policy of one dataset, with both texts so the page can show them side by side.
+// `text` is the one in force (the override when `source` is "dataset"); `override_text` is null
+// when the dataset has no policy of its own.
+export interface DatasetPolicy {
+  dataset_id: string
+  team: string
+  source: PolicySource
+  text: string
+  updated_at: string | null
+  team_text: string
+  override_text: string | null
+}
+
 // The conversion settings saved on a dataset, or null until they are set (Phase 3).
 export interface DatasetConversion {
   input_type: string
@@ -527,6 +552,23 @@ export interface ConversionSubmitResponse {
   errors: string[]
 }
 
+// Why a job failed, for the page of a job that has: which SLURM job it was and where it ran,
+// the lines of its logs that look like errors, and a sentence for the few causes that are
+// known. Null on a job that didn't fail, and on one that failed without a SLURM job.
+export interface JobFailure {
+  // "plan" or "scan" for a scan's jobs; null for a conversion or a filter job.
+  job_role: string | null
+  job_id: string | null
+  // The machine it ran on; null when it never ran.
+  node: string | null
+  slurm_state: string | null
+  exit_code: string | null
+  error_lines: string[]
+  hint: string | null
+  // The log the error lines were read from.
+  log_path: string | null
+}
+
 export type JobOutcome =
   | 'queued'
   | 'running'
@@ -583,6 +625,8 @@ export interface ConversionJob {
   // Only in the single-conversion route.
   out_tail: string | null
   err_tail: string | null
+  // Set in the single-conversion route when it failed.
+  failure: JobFailure | null
 }
 
 export interface ConversionStatusResponse extends ConversionJob {
@@ -893,6 +937,8 @@ export interface ScanDetail extends ScanView {
   // What a finished scan found (the scanner decides the keys); null until then.
   details: Record<string, unknown> | null
   logs: ScanLog[]
+  // Set when the scan failed because of one of its SLURM jobs.
+  failure: JobFailure | null
 }
 
 export interface ScanSubmitResponse {
@@ -980,6 +1026,15 @@ export interface ToxicityFilter {
   threshold: number | null
 }
 
+// The toxicity policy a scan used: the copy it took when it started, so a later edit to the
+// policy doesn't change it. `sha256` is of the text as the scan saved it.
+export interface ScanPolicy {
+  source: PolicySource
+  team: string
+  text: string
+  sha256: string
+}
+
 export interface ScannerResult {
   scan_id: string
   finished_at: string | null
@@ -1002,6 +1057,8 @@ export interface ScannerResult {
   notes: ResultNote[]
   // Toxicity only.
   filter?: ToxicityFilter
+  // Toxicity only: the policy the scan used. Null for a scan made before policies existed.
+  policy?: ScanPolicy | null
 }
 
 // One scanner's side of a dataset's results: its state now, and the current result (which can
@@ -1324,10 +1381,47 @@ export interface FiltersResponse {
   filters: FilterJob[]
 }
 
+// POST /api/datasets/{id}/filter/retry/check: what running a failed or cancelled drop again would
+// do. The rows are the ones the drop list already holds; nothing is chosen again.
+export interface FilterRetryCheckResponse {
+  dataset_id: string
+  dataset_name: string
+  parent_id: string
+  rows: number
+  counts: DropCounts
+  // The attempt that failed or was cancelled.
+  previous: { job_id: string | null; version_id: string; submitted_at: string | null; reason: string | null }
+  // The number the new attempt will have (the first one was 1).
+  attempt: number
+  warnings: string[]
+  // Why it can't be started right now (SLURM can't be reached, say); empty when it can.
+  blocked: string[]
+  can_start: boolean
+  resources: JobResources | null
+  // The exact command, with <version-id> where the new folder's name isn't known yet.
+  command_text: string | null
+}
+
+// POST /api/datasets/{id}/filter/retry
+export interface FilterRetryResponse {
+  dataset_id: string
+  name: string
+  parent_id: string
+  rows: number
+  counts: DropCounts
+  // The new SLURM job; null when sbatch failed (then `submit_error` says why).
+  job_id: string | null
+  version_id: string
+  attempt: number
+  submit_error: string | null
+}
+
 // GET /api/datasets/{id}/filter
 export interface FilterStatusResponse extends FilterJob {
   command_text: string | null
   wrapper_output: string | null
   logs: ScanLog[]
   slurm_error: string | null
+  // Set when the filter job failed.
+  failure: JobFailure | null
 }

@@ -35,6 +35,13 @@ export function isActive(outcome: JobOutcome): boolean {
   return ACTIVE_OUTCOMES.includes(outcome)
 }
 
+// A conversion that ended in one of these gave no converted data, so it can be started again.
+const RETRYABLE_OUTCOMES: readonly JobOutcome[] = ['failed', 'checks_failed', 'cancelled', 'not_submitted']
+
+export function canRetryConversion(outcome: JobOutcome): boolean {
+  return RETRYABLE_OUTCOMES.includes(outcome)
+}
+
 // "health, 2 CPUs, 32G, 04:00:00"
 export function describeResources(resources: JobResources): string {
   return `${resources.partition}, ${resources.cpus} CPUs, ${resources.mem}, ${resources.time}`

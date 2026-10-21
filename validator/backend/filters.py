@@ -6,7 +6,9 @@ happen:
 
     1. the dataset's current Prepared version is marked `kept` (so "convert again" can never
        delete the folder the filter job is about to read),
-    2. a new dataset is registered in the same team with its `parent` set (D11),
+    2. a new dataset is registered in the same team with its `parent` set (D11), and with a copy
+       of the parent's toxicity policy if the parent has one of its own (policies.py), and with a copy
+       of the parent's toxicity policy if the parent has one of its own (policies.py),
     3. `<service root>/datasets/<new id>/drop_list.jsonl` is written: one line for each row and
        scanner, with the row's file, line and fingerprint,
     4. one CPU SLURM job runs `modelsafety/filter/filter_rows.py --drop-list`, which copies the
@@ -16,6 +18,11 @@ happen:
 
 The parent dataset, its Prepared rows and its results are never changed (apart from the `kept`
 mark in step 1).
+
+A drop whose job failed or was cancelled can be run again (`retry`): the same dataset, the same
+`drop_list.jsonl` and the same kept converted data, into a new `prepared/<version id>/` and as a
+new job. The rows are not chosen again, so exactly the same ones are dropped. The failed attempt's
+job ID, folder and reason are added to the record's `attempts`; its folder and logs stay.
 
 Rows are resolved from each scan's findings index (flagged.py), so what is dropped is exactly
 what the result page lists, under the same choices (a toxicity result's categories and verdicts,
@@ -59,6 +66,7 @@ from typing import Any, NamedTuple
 import activity
 import flagged
 import jobs
+import policies
 import registry
 import results
 import scanners
@@ -576,6 +584,27 @@ def _undo(dataset_id: str) -> None:
         _log(f"couldn't remove dataset {dataset_id} after a failed start: {exc}")
 
 
+def _run_sbatch(record: dict[str, Any], argv: list[str]) -> None:
+    """Run the `sbatch` call of a filter job and save what came of it in `record`, which is then
+    written: the SLURM job ID, or `submit_error` saying why there is none, and what `sbatch`
+    printed. Called with the lock held, after the record was first written (so a crash part-way
+    can't leave a drop that would be started a second time)."""
+    try:
+        result = jobs._run(argv, cwd=REPO_ROOT, env=scans._clean_environment())
+    except jobs.SlurmUnavailable as exc:
+        record["submit_error"] = f"{exc} The job may or may not have been submitted; check `squeue`."
+    else:
+        record["wrapper_output"] = (result.stdout + result.stderr)[-MAX_OUTPUT_CHARS:]
+        slurm_id = result.stdout.strip().split(";")[0]
+        if result.returncode != 0:
+            record["submit_error"] = f"sbatch failed: {jobs._failure_detail(result)}"
+        elif scans.SLURM_JOB_ID.fullmatch(slurm_id) is None:
+            record["submit_error"] = f"sbatch printed something unexpected: {result.stdout.strip()!r}"
+        else:
+            record["job_id"] = slurm_id
+    _write_record(record)
+
+
 def submit(dataset_id: str, request: Any, automatic_scan_id: str | None = None) -> dict[str, Any]:
     """Drop the chosen rows: resolve them again, mark the parent's version kept, register the new
     dataset, write its drop list and submit the filter job. Refused, with nothing changed, when
@@ -599,6 +628,13 @@ def submit(dataset_id: str, request: Any, automatic_scan_id: str | None = None) 
             dataset_id, dropped.counts["rows"], _description(dataset["name"], dropped.counts, automatic_scan_id)
         )
         child_id = child["id"]
+        # The filtered version keeps the toxicity policy of the dataset it was made from: without
+        # this, a dataset with its own policy would go back to its team's after a drop.
+        try:
+            policies.copy_dataset_policy(dataset_id, child_id)
+        except (registry.RegistryError, registry.RegistryCorrupt, OSError) as exc:
+            _undo(child_id)
+            raise FiltersError(f"Nothing was started: couldn't copy the toxicity policy ({exc}).") from exc
 
         new_version = jobs._new_batch_id()
         folder = _dataset_folder(child_id)
@@ -642,20 +678,7 @@ def submit(dataset_id: str, request: Any, automatic_scan_id: str | None = None) 
             _undo(child_id)
             raise FiltersError(f"Nothing was started: couldn't set up {folder} ({exc}).") from exc
 
-        try:
-            result = jobs._run(argv, cwd=REPO_ROOT, env=scans._clean_environment())
-        except jobs.SlurmUnavailable as exc:
-            record["submit_error"] = f"{exc} The job may or may not have been submitted; check `squeue`."
-        else:
-            record["wrapper_output"] = (result.stdout + result.stderr)[-MAX_OUTPUT_CHARS:]
-            slurm_id = result.stdout.strip().split(";")[0]
-            if result.returncode != 0:
-                record["submit_error"] = f"sbatch failed: {jobs._failure_detail(result)}"
-            elif scans.SLURM_JOB_ID.fullmatch(slurm_id) is None:
-                record["submit_error"] = f"sbatch printed something unexpected: {result.stdout.strip()!r}"
-            else:
-                record["job_id"] = slurm_id
-        _write_record(record)
+        _run_sbatch(record, argv)
         if record["job_id"]:
             activity.record("drop", [dataset_id, child_id], [record["job_id"]])
         return {
@@ -906,6 +929,7 @@ def _view(
             command_text=record.get("command_text") if record is not None else None,
             wrapper_output=record.get("wrapper_output") if record is not None else None,
             logs=[],
+            failure=None,
         )
         if job_id is not None:
             for label, suffix in (("Filter output", "out"), ("Filter errors", "err")):
@@ -913,6 +937,16 @@ def _view(
                 # Nothing is looked for on disk while the job is queued (see the module docstring).
                 tail = jobs._tail_file(path) if summary["state"] != scans.STATE_QUEUED else None
                 view["logs"].append({"name": label, "path": str(path), "tail": tail})
+            if summary["state"] == scans.STATE_FAILED:
+                # The error log first: its lines are the best candidates for the reason.
+                by_name = {log["name"]: log for log in view["logs"]}
+                ordered = [by_name["Filter errors"], by_name["Filter output"]]
+                view["failure"] = jobs.failure_view(
+                    None,
+                    job_id,
+                    scans._failed_job("filter", job_id, accounted)["row"],
+                    [Path(log["path"]) for log in ordered],
+                )
     return view
 
 
@@ -982,3 +1016,163 @@ def unregister(dataset_id: str) -> dict[str, Any]:
             if scans._is_listed(job_id, jobs.active_jobs()):
                 raise FiltersError(f"The filter job of this dataset is queued or running (SLURM job {job_id}). Cancel it first.")
         return scans.unregister(dataset_id)
+
+
+# -------------------------------------------------------------------------
+# Retrying a drop that failed or was cancelled
+# -------------------------------------------------------------------------
+
+
+def _retry_target(dataset_id: str) -> tuple[dict[str, Any], dict[str, Any], Path, str | None]:
+    """`(dataset, record, parent folder, why the last attempt ended)` for a retry, or a FiltersError
+    saying why it can't be done. Nothing is changed. A retry needs: a drop whose job failed or was
+    cancelled (not one going, and not one that worked), the converted data the rows were chosen from
+    still kept and on disk, and the drop list the first attempt wrote."""
+    dataset = registry.get_dataset(dataset_id)
+    if not dataset.get("parent"):
+        raise FiltersError(f"'{dataset['name']}' isn't a filtered version.")
+    record = _read_record(dataset_id)
+    if record is None:
+        raise FiltersError(
+            "This filtered version has no readable record of its job, so it can't be retried. "
+            "Unregister it and drop the rows again."
+        )
+
+    active, accounted, slurm_error = _slurm_for([(dataset, record)])
+    state, reason = _state_of(dataset, record, active, accounted)
+    if state == scans.STATE_UNKNOWN:
+        raise FiltersError(slurm_error or reason or "SLURM couldn't be reached, so the state of the job isn't known.")
+    if state not in (scans.STATE_FAILED, scans.STATE_CANCELLED):
+        raise FiltersError(
+            f"This drop is {state.replace('_', ' ')}, so there is nothing to retry: "
+            "only one that failed or was cancelled can be."
+        )
+
+    parent_id = record["parent_id"]
+    try:
+        parent = registry.get_dataset(parent_id)
+    except registry.DatasetNotFound as exc:
+        raise FiltersError(
+            "The dataset these rows were dropped from isn't registered any more, so the drop can't be retried."
+        ) from exc
+    version = record.get("parent_version")
+    version_id = version.get("version_id") if isinstance(version, dict) else None
+    if not isinstance(version_id, str) or jobs.BATCH_ID.fullmatch(version_id) is None:
+        raise FiltersError("The record of this drop doesn't say which converted data its rows came from, so it can't be retried.")
+    # The version was marked `kept` when the drop started, and stays marked: "convert again" sets
+    # it aside instead of deleting it. If it isn't marked, nothing protects its folder.
+    candidates = [parent.get("prepared"), *(parent.get("kept_versions") or [])]
+    if not any(isinstance(item, dict) and item.get("version_id") == version_id and item.get("kept") for item in candidates):
+        raise FiltersError("The converted data these rows were dropped from isn't kept any more, so the drop can't be retried.")
+    parent_folder = _version_folder(parent_id, version_id)
+    if not parent_folder.is_dir():
+        raise FiltersError(f"The converted data these rows were dropped from is gone ({parent_folder}), so the drop can't be retried.")
+    if not (_dataset_folder(dataset_id) / DROP_LIST_FILE).is_file():
+        raise FiltersError(f"The list of rows to drop ({DROP_LIST_FILE}) is gone, so the drop can't be retried.")
+    return dataset, record, parent_folder, reason
+
+
+def retry_check(dataset_id: str) -> dict[str, Any]:
+    """What retrying a failed or cancelled drop would do: the same rows (the saved drop list is
+    used as it is, nothing is chosen again), written to a new output folder of the same dataset, the
+    resources, anything worth a warning and the command. Read-only. A drop that can't be retried
+    raises FiltersError saying why."""
+    dataset, record, parent_folder, reason = _retry_target(dataset_id)
+
+    blocked: list[str] = []
+    resources: dict[str, Any] | None = None
+    command_text: str | None = None
+    try:
+        resources = _resources()
+    except (jobs.JobsError, jobs.SlurmUnavailable) as exc:
+        blocked.append(str(exc))
+    if resources is not None:
+        argv = _command(parent_folder, _dataset_folder(dataset_id), VERSION_PLACEHOLDER, dataset_id, resources)
+        command_text = shlex.join(argv)
+
+    warnings: list[str] = []
+    if record.get("job_id") is None:
+        warnings.append(
+            "The earlier attempt didn't get a SLURM job ID, so a job may still be running for it. "
+            f"Check `squeue` for a job named filter_{dataset_id} before retrying."
+        )
+    return {
+        "dataset_id": dataset_id,
+        "dataset_name": dataset["name"],
+        "parent_id": record["parent_id"],
+        "rows": record["drop"]["rows"],
+        "counts": record["drop"],
+        # The attempt that failed or was cancelled, and the number the new one will have.
+        "previous": {
+            "job_id": record.get("job_id"),
+            "version_id": record["version_id"],
+            "submitted_at": record.get("submitted_at"),
+            "reason": reason,
+        },
+        "attempt": len(record.get("attempts") or []) + 2,
+        "warnings": warnings,
+        "blocked": blocked,
+        "can_start": not blocked,
+        "resources": resources,
+        "command_text": command_text,
+    }
+
+
+def retry(dataset_id: str) -> dict[str, Any]:
+    """Run a failed or cancelled drop again: the same filtered dataset, the same saved drop list
+    and the same converted data, into a new output folder, as a new SLURM job. The failed attempt
+    is added to the record's `attempts` and its output folder and logs are left where they are, so
+    why it failed can still be read. Refused, with nothing changed, when it can't be retried (see
+    `_retry_target`) or SLURM can't be asked. A failure of `sbatch` itself leaves the record
+    showing why."""
+    with _LOCK:
+        resources = _resources()
+        dataset, record, parent_folder, reason = _retry_target(dataset_id)
+        new_version = jobs._new_batch_id()
+        folder = _dataset_folder(dataset_id)
+        output = _version_folder(dataset_id, new_version)
+        argv = _command(parent_folder, folder, new_version, dataset_id, resources)
+
+        previous = {
+            "version_id": record["version_id"],
+            "job_id": record.get("job_id"),
+            "submitted_at": record.get("submitted_at"),
+            "reason": reason,
+        }
+        retried: dict[str, Any] = {
+            **record,
+            "attempts": [*(record.get("attempts") or []), previous],
+            "version_id": new_version,
+            "resources": resources,
+            "command": argv,
+            "command_text": shlex.join(argv),
+            "submitted_at": None,
+            "job_id": None,
+            "submit_error": None,
+            "wrapper_output": None,
+            "result": None,
+        }
+        try:
+            # Made here, not by the job: a folder that was looked at before it existed is
+            # remembered as "not there" by the shared disk for about a minute.
+            output.mkdir(parents=True)
+            # Stamped and written before `sbatch` runs, as in `submit`.
+            retried["submitted_at"] = jobs._now_iso()
+            _write_record(retried)
+        except OSError as exc:
+            raise FiltersError(f"Nothing was started: couldn't set up {output} ({exc}).") from exc
+
+        _run_sbatch(retried, argv)
+        if retried["job_id"]:
+            activity.record("drop", [retried["parent_id"], dataset_id], [retried["job_id"]])
+        return {
+            "dataset_id": dataset_id,
+            "name": dataset["name"],
+            "parent_id": retried["parent_id"],
+            "rows": retried["drop"]["rows"],
+            "counts": retried["drop"],
+            "job_id": retried["job_id"],
+            "version_id": new_version,
+            "attempt": len(retried["attempts"]) + 1,
+            "submit_error": retried["submit_error"],
+        }

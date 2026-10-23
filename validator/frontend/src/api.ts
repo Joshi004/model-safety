@@ -20,6 +20,7 @@
 // again from the drop list it already has, into a new folder of the same filtered dataset.
 // Every other call here is read-only, including the two that read a result's flagged rows,
 // checkDrop, which only counts, and checkFilterRetry, which only describes a retry.
+import { clearCache } from './cache'
 import type {
   AllConversionsResponse,
   AnyRunResponse,
@@ -100,6 +101,13 @@ async function request<T>(path: string, body?: unknown, method?: 'PATCH' | 'PUT'
   return (await response.json()) as T
 }
 
+// Wraps a call that changes something on the backend: once it has ended, whatever way, what the
+// pages cached (cache.ts) is dropped, so no page starts from what was there before the change.
+// A call that failed may still have changed something, so a failure clears it too.
+function acting<T>(call: Promise<T>): Promise<T> {
+  return call.finally(clearCache)
+}
+
 export function errorMessage(error: unknown): string {
   return error instanceof ApiError ? error.message : String(error)
 }
@@ -112,8 +120,15 @@ export function getTeams(): Promise<TeamsResponse> {
   return request<TeamsResponse>('/api/teams')
 }
 
-export function listDatasets(): Promise<DatasetsResponse> {
-  return request<DatasetsResponse>('/api/datasets')
+// The backend keeps the answers of a few slow reads (the datasets, one dataset, the scans) for up
+// to 15 seconds. `fresh` asks for a live answer instead, which the page does the first time it
+// opens; polls and reloads accept the saved one.
+function withFresh(path: string, fresh: boolean): string {
+  return fresh ? `${path}?fresh=1` : path
+}
+
+export function listDatasets(fresh = false): Promise<DatasetsResponse> {
+  return request<DatasetsResponse>(withFresh('/api/datasets', fresh))
 }
 
 // ---- Toxicity policies ----
@@ -124,7 +139,7 @@ export function getTeamPolicy(team: string): Promise<TeamPolicy> {
 
 // Saves the team's policy: every dataset of the team without a policy of its own follows it.
 export function setTeamPolicy(team: string, text: string): Promise<TeamPolicy> {
-  return request<TeamPolicy>(`/api/teams/${encodeURIComponent(team)}/toxicity-policy`, { text }, 'PUT')
+  return acting(request<TeamPolicy>(`/api/teams/${encodeURIComponent(team)}/toxicity-policy`, { text }, 'PUT'))
 }
 
 // The policy a dataset uses (its own, or its team's) and both texts.
@@ -134,16 +149,16 @@ export function getDatasetPolicy(datasetId: string): Promise<DatasetPolicy> {
 
 // Saves a policy for this dataset only, in place of its team's.
 export function setDatasetPolicy(datasetId: string, text: string): Promise<DatasetPolicy> {
-  return request<DatasetPolicy>(`/api/datasets/${encodeURIComponent(datasetId)}/toxicity-policy`, { text }, 'PUT')
+  return acting(request<DatasetPolicy>(`/api/datasets/${encodeURIComponent(datasetId)}/toxicity-policy`, { text }, 'PUT'))
 }
 
 // Removes the dataset's own policy, so it follows its team's again.
 export function clearDatasetPolicy(datasetId: string): Promise<DatasetPolicy> {
-  return request<DatasetPolicy>(`/api/datasets/${encodeURIComponent(datasetId)}/toxicity-policy`, undefined, 'DELETE')
+  return acting(request<DatasetPolicy>(`/api/datasets/${encodeURIComponent(datasetId)}/toxicity-policy`, undefined, 'DELETE'))
 }
 
-export function getDataset(datasetId: string): Promise<Dataset> {
-  return request<Dataset>(`/api/datasets/${encodeURIComponent(datasetId)}`)
+export function getDataset(datasetId: string, fresh = false): Promise<Dataset> {
+  return request<Dataset>(withFresh(`/api/datasets/${encodeURIComponent(datasetId)}`, fresh))
 }
 
 // Looks at a path and reports what is in it: its formats, files and sizes. Read-only.
@@ -152,12 +167,12 @@ export function inspectPath(path: string): Promise<InspectResult> {
 }
 
 export function registerDataset(body: RegisterDatasetRequest): Promise<Dataset> {
-  return request<Dataset>('/api/datasets', body)
+  return acting(request<Dataset>('/api/datasets', body))
 }
 
 // Changes only the fields sent. `conversion` is replaced as a whole.
 export function updateDataset(datasetId: string, body: UpdateDatasetRequest): Promise<Dataset> {
-  return request<Dataset>(`/api/datasets/${encodeURIComponent(datasetId)}`, body, 'PATCH')
+  return acting(request<Dataset>(`/api/datasets/${encodeURIComponent(datasetId)}`, body, 'PATCH'))
 }
 
 // Reads a bounded sample of rows from a path, and says what converting them would do. Read-only.
@@ -198,7 +213,7 @@ export function checkConversions(body: ConversionsRequest): Promise<ConversionCh
 
 // Starts one SLURM job per dataset. The whole request is refused if any one can't start.
 export function submitConversions(body: ConversionsRequest): Promise<ConversionSubmitResponse> {
-  return request<ConversionSubmitResponse>('/api/conversions/submit', body)
+  return acting(request<ConversionSubmitResponse>('/api/conversions/submit', body))
 }
 
 export function listConversions(datasetId: string): Promise<ConversionListResponse> {
@@ -217,9 +232,11 @@ export function getConversion(datasetId: string, jobId: string): Promise<Convers
 }
 
 export function cancelConversion(datasetId: string, jobId: string): Promise<CancelResponse> {
-  return request<CancelResponse>(
-    `/api/datasets/${encodeURIComponent(datasetId)}/conversions/${encodeURIComponent(jobId)}/cancel`,
-    {},
+  return acting(
+    request<CancelResponse>(
+      `/api/datasets/${encodeURIComponent(datasetId)}/conversions/${encodeURIComponent(jobId)}/cancel`,
+      {},
+    ),
   )
 }
 
@@ -240,11 +257,11 @@ export function checkScans(body: ScansRequest): Promise<ScanCheckResponse> {
 // converted starts now, any other waits for its conversions). The whole request is refused
 // if any scan can't be started.
 export function submitScans(body: ScansRequest): Promise<ScanSubmitResponse> {
-  return request<ScanSubmitResponse>('/api/scans/submit', body)
+  return acting(request<ScanSubmitResponse>('/api/scans/submit', body))
 }
 
-export function listScans(): Promise<ScansResponse> {
-  return request<ScansResponse>('/api/scans')
+export function listScans(fresh = false): Promise<ScansResponse> {
+  return request<ScansResponse>(withFresh('/api/scans', fresh))
 }
 
 export function getScan(scanId: string): Promise<ScanDetail> {
@@ -254,12 +271,12 @@ export function getScan(scanId: string): Promise<ScanDetail> {
 // Stops a waiting scan from ever starting, or runs `scancel` on the scan's one job. The
 // conversions it waits for keep running.
 export function cancelScan(scanId: string): Promise<ScanCancelResponse> {
-  return request<ScanCancelResponse>(`/api/scans/${encodeURIComponent(scanId)}/cancel`, {})
+  return acting(request<ScanCancelResponse>(`/api/scans/${encodeURIComponent(scanId)}/cancel`, {}))
 }
 
 // Removes the entry and the dataset's own folder under the service root. The original data is not touched.
 export function unregisterDataset(datasetId: string): Promise<UnregisterResponse> {
-  return request<UnregisterResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/unregister`, {})
+  return acting(request<UnregisterResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/unregister`, {}))
 }
 
 // ---- A dataset's results ----
@@ -288,9 +305,11 @@ export function getDatasetResult(
 
 // Runs the check of a finished scan again: one CPU SLURM job. Refused while one is going.
 export function checkResult(datasetId: string, scanner: string): Promise<CheckAgainResponse> {
-  return request<CheckAgainResponse>(
-    `/api/datasets/${encodeURIComponent(datasetId)}/results/${encodeURIComponent(scanner)}/check`,
-    {},
+  return acting(
+    request<CheckAgainResponse>(
+      `/api/datasets/${encodeURIComponent(datasetId)}/results/${encodeURIComponent(scanner)}/check`,
+      {},
+    ),
   )
 }
 
@@ -347,7 +366,7 @@ export function checkDrop(datasetId: string, body: DropRequest): Promise<DropChe
 // Drops the chosen rows: registers the new filtered dataset and submits the job that makes it.
 // The dataset the rows are dropped from is not changed.
 export function submitDrop(datasetId: string, body: DropRequest): Promise<DropSubmitResponse> {
-  return request<DropSubmitResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/drop/submit`, body)
+  return acting(request<DropSubmitResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/drop/submit`, body))
 }
 
 // Every filter job of every filtered dataset, newest first (the Activity page).
@@ -362,7 +381,7 @@ export function getFilter(datasetId: string): Promise<FilterStatusResponse> {
 
 // Runs `scancel` on the one SLURM job the filtered dataset's record lists.
 export function cancelFilter(datasetId: string): Promise<CancelResponse> {
-  return request<CancelResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/filter/cancel`, {})
+  return acting(request<CancelResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/filter/cancel`, {}))
 }
 
 // What retrying a failed or cancelled drop would do: the same saved rows, a new output folder, the
@@ -374,5 +393,5 @@ export function checkFilterRetry(datasetId: string): Promise<FilterRetryCheckRes
 // Runs a failed or cancelled drop again as a new SLURM job on the same filtered dataset. The failed
 // attempt's folder and logs are kept.
 export function retryFilter(datasetId: string): Promise<FilterRetryResponse> {
-  return request<FilterRetryResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/filter/retry`, {})
+  return acting(request<FilterRetryResponse>(`/api/datasets/${encodeURIComponent(datasetId)}/filter/retry`, {}))
 }

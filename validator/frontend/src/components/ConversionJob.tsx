@@ -154,7 +154,7 @@ export default function ConversionJob({
     if (!retryAsked || !canRetry) return
     let cancelled = false
     // The dataset as it is now: whether it has converted data decides what the dialog offers.
-    getDataset(datasetId)
+    getDataset(datasetId, true)
       .then((dataset) => {
         if (cancelled) return
         setRetryAsked(false)

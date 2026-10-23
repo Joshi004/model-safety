@@ -26,8 +26,8 @@ type Item =
   | { kind: 'conversion'; conversion: ActivityConversion }
   | { kind: 'filter'; filter: FilterJobView }
 
-async function loadActivity(): Promise<Activity> {
-  const [scans, conversions, filters] = await Promise.all([listScans(), listAllConversions(), listFilters()])
+async function loadActivity(fresh: boolean): Promise<Activity> {
+  const [scans, conversions, filters] = await Promise.all([listScans(fresh), listAllConversions(), listFilters()])
   return { scans, conversions, filters }
 }
 
@@ -182,8 +182,12 @@ function DatasetsCell({ item }: { item: Item }) {
 //
 // Everything shown comes from SLURM or from files on disk and renders as plain text.
 export default function ActivityPage({ scan }: { scan: string | null }) {
-  const { data, error, reload } = useRefreshing(loadActivity, 'activity', POLL_MS, (loaded) =>
-    mergeItems(loaded).some(isGoing),
+  const { data, error, reload, refreshing } = useRefreshing(
+    loadActivity,
+    'activity',
+    POLL_MS,
+    (loaded) => mergeItems(loaded).some(isGoing),
+    'activity',
   )
   // The jobs whose details are open, by `itemKey`.
   const [open, setOpen] = useState<Set<string>>(() => new Set(scan === null ? [] : [`scan/${scan}`]))
@@ -267,6 +271,7 @@ export default function ActivityPage({ scan }: { scan: string | null }) {
     <>
       <div className="page-header">
         <h1>Activity</h1>
+        {refreshing && <span className="muted small">Updating…</span>}
         <button type="button" className="secondary push-right" onClick={reload}>
           Refresh
         </button>

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { checkConversions, errorMessage, listConversions, submitConversions, updateDataset } from '../api'
 import { describeRowStatus } from '../describe'
-import { applySuggestion, emptyMapping, fromRequestFlags, toRequestFlags } from '../mapping'
-import type { MappingState } from '../mapping'
+import { applySuggestion, emptyMapping, fromRequestFlags, sourceFor, toRequestFlags } from '../mapping'
+import type { MappingState, Target } from '../mapping'
 import { choiceFromConversion, conversionOf, defaultChoice, sameConversion } from '../source'
 import type { SourceChoice } from '../source'
 import type { ConversionPlanItem, Dataset, InspectGroup } from '../types'
@@ -51,7 +51,7 @@ export default function ConversionTab({
   )
   const [startRow, setStartRow] = useState(0)
   const [selectedRowIndex, setSelectedRowIndex] = useState(0)
-  const [viewMode, setViewMode] = useState<'readable' | 'fields'>('readable')
+  const [viewMode, setViewMode] = useState<'readable' | 'fields'>('fields')
 
   const [busy, setBusy] = useState<Busy>(null)
   const [error, setError] = useState<string | null>(null)
@@ -94,6 +94,8 @@ export default function ConversionTab({
   const current = choice === null ? null : conversionOf(choice, flags)
   const dirty = current !== null && (dataset.conversion === null || !sameConversion(current, dataset.conversion))
   const converted = dataset.prepared !== null
+  // Convert saves unsaved changes first, so the button says so.
+  const convertLabel = `${dirty ? 'Save and convert' : 'Convert'}${converted ? ' again…' : ''}`
 
   function handleFormatSelect(group: InspectGroup, file: string | null) {
     if (group.input_type === null) return
@@ -206,7 +208,11 @@ export default function ConversionTab({
   const sample = preview.data
   const rows = sample?.input_rows ?? []
   const suggestion = sample?.suggested_mapping.map ?? {}
-  const suggestedEntries = Object.entries(suggestion)
+  // Only text and messages can be mapped from this page, which is also all applySuggestion applies.
+  const suggestedEntries = Object.entries(suggestion).filter(([target]) => target === 'text' || target === 'messages')
+  const suggestionApplied = suggestedEntries.every(
+    ([target, source]) => sourceFor(mapping, target as Target) === source,
+  )
   const selectedRow = rows[selectedRowIndex]
 
   return (
@@ -264,6 +270,25 @@ export default function ConversionTab({
       {sample !== null && (
         <div className="card">
           <h2>2. How the fields map</h2>
+          {suggestedEntries.length > 0 && (
+            <div className={suggestionApplied ? 'banner banner-ok suggestion-bar' : 'banner suggestion-bar suggestion-bar-todo'}>
+              <div>
+                <strong>{suggestionApplied ? 'Suggested mapping applied' : 'Suggested mapping'}</strong>
+                <ul className="suggestion-list">
+                  {suggestedEntries.map(([target, source]) => (
+                    <li key={target}>
+                      <code>{target}</code> ← <code>{source}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {!suggestionApplied && (
+                <button type="button" className="primary" onClick={() => setMapping(applySuggestion(mapping, suggestion))}>
+                  Apply suggested mapping
+                </button>
+              )}
+            </div>
+          )}
           <div className={preview.loading ? 'preview-area loading' : 'preview-area'}>
             <div className="preview-toolbar">
               <div className="toolbar-left">
@@ -288,29 +313,20 @@ export default function ConversionTab({
                 <div className="row-tabs">
                   <button
                     type="button"
-                    className={viewMode === 'readable' ? 'row-tab selected' : 'row-tab'}
-                    onClick={() => setViewMode('readable')}
-                  >
-                    Readable
-                  </button>
-                  <button
-                    type="button"
                     className={viewMode === 'fields' ? 'row-tab selected' : 'row-tab'}
                     onClick={() => setViewMode('fields')}
                   >
                     Fields &amp; output
                   </button>
-                </div>
-              </div>
-              {suggestedEntries.length > 0 && (
-                <div className="suggestion-bar small">
-                  <span className="muted">Suggested:</span>{' '}
-                  {suggestedEntries.map(([target, source]) => `${target} ← ${source}`).join(', ')}
-                  <button type="button" className="secondary" onClick={() => setMapping(applySuggestion(mapping, suggestion))}>
-                    Apply
+                  <button
+                    type="button"
+                    className={viewMode === 'readable' ? 'row-tab selected' : 'row-tab'}
+                    onClick={() => setViewMode('readable')}
+                  >
+                    Readable
                   </button>
                 </div>
-              )}
+              </div>
             </div>
 
             {selectedRow === undefined ? (
@@ -352,7 +368,7 @@ export default function ConversionTab({
           ) : (
             <span className="muted">These settings are saved.</span>
           )}{' '}
-          A conversion always uses the saved settings, so Convert saves them first.
+          A conversion always uses the saved settings, so "Save and convert" saves them first.
         </p>
 
         {sample !== null && sample.preview.fatal_if_run && (
@@ -390,7 +406,7 @@ export default function ConversionTab({
             onClick={() => void handleConvert()}
             disabled={current === null || busy !== null || !dataset.available}
           >
-            {busy === 'checking' || busy === 'starting' ? 'Working…' : converted ? 'Convert again…' : 'Convert'}
+            {busy === 'checking' || busy === 'starting' ? 'Working…' : convertLabel}
           </button>
         </div>
 

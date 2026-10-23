@@ -109,7 +109,11 @@ only open a file the version's own summary.json says it read.
 
 from __future__ import annotations
 
+import functools
 import os
+import sys
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -130,6 +134,7 @@ import registry
 import results
 import runs
 import scans
+import snapshot
 from reader_imports import json_safe
 
 DEFAULT_SAMPLE_ROWS = 2
@@ -151,10 +156,27 @@ async def lifespan(_app: FastAPI):
     # Drops what a duplicates scan flagged, by itself, for the scans that were started with
     # "drop duplicates automatically" and whose coverage check has passed, also every 30 seconds.
     autodrop.start_background_refresh()
+    # Keeps the answer of GET /api/datasets built, every 15 seconds, so the first page load
+    # finds it ready.
+    _start_warming_datasets()
     yield
 
 
 app = FastAPI(title="Input validator UI", lifespan=lifespan)
+
+
+def _changes_things(route: Any) -> Any:
+    """For a route that changes something: once it has ended, however it ended, the answers
+    snapshot.py kept are forgotten, so the next read is built from what is there now."""
+
+    @functools.wraps(route)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return route(*args, **kwargs)
+        finally:
+            snapshot.clear()
+
+    return wrapper
 
 
 @app.get("/api/health")
@@ -234,13 +256,7 @@ def teams() -> dict[str, Any]:
     return {"teams": registry.TEAMS}
 
 
-@app.get("/api/datasets")
-def datasets_list(team: str | None = None) -> dict[str, Any]:
-    """Every registered dataset (or one team's), each with whether its path can still be
-    read, and, under `scans`, the state of each scanner on it. The first call on a new
-    service root creates the registry from the old catalog. A conversion that has finished
-    is made the dataset's current Prepared version first, and a scan that can start or has
-    finished is started or made the dataset's result."""
+def _build_datasets_list(team: str | None) -> dict[str, Any]:
     _conversions_call(conversions.refresh_all)
     _scans_call(scans.refresh)
     filters.refresh()
@@ -255,8 +271,32 @@ def datasets_list(team: str | None = None) -> dict[str, Any]:
     }
 
 
-@app.get("/api/datasets/{dataset_id}")
-def dataset_get(dataset_id: str) -> dict[str, Any]:
+def _warm_datasets_forever() -> None:
+    while True:
+        try:
+            snapshot.get("datasets:", lambda: _build_datasets_list(None), fresh=True)
+        except Exception as exc:  # the task has to outlive any one bad pass
+            print(f"[app] warming the datasets snapshot failed: {exc!r}", file=sys.stderr, flush=True)
+        time.sleep(snapshot.MAX_AGE_SECONDS)
+
+
+def _start_warming_datasets() -> None:
+    """A daemon thread: it ends with the process."""
+    threading.Thread(target=_warm_datasets_forever, name="datasets-snapshot", daemon=True).start()
+
+
+@app.get("/api/datasets")
+def datasets_list(team: str | None = None, fresh: bool = False) -> dict[str, Any]:
+    """Every registered dataset (or one team's), each with whether its path can still be
+    read, and, under `scans`, the state of each scanner on it. The first call on a new
+    service root creates the registry from the old catalog. A conversion that has finished
+    is made the dataset's current Prepared version first, and a scan that can start or has
+    finished is started or made the dataset's result. The answer is kept for 15 seconds
+    (snapshot.py); `fresh` asks for one built now."""
+    return snapshot.get(f"datasets:{team or ''}", lambda: _build_datasets_list(team), fresh=fresh)
+
+
+def _build_dataset(dataset_id: str) -> dict[str, Any]:
     # An id that isn't one is refused by get_dataset below, with its own message.
     if registry.DATASET_ID.fullmatch(dataset_id) is not None:
         _conversions_call(conversions.refresh, dataset_id)
@@ -273,19 +313,28 @@ def dataset_get(dataset_id: str) -> dict[str, Any]:
     }
 
 
+@app.get("/api/datasets/{dataset_id}")
+def dataset_get(dataset_id: str, fresh: bool = False) -> dict[str, Any]:
+    """One dataset with its scans and filter state. Kept for 15 seconds, like the list."""
+    return snapshot.get(f"dataset:{dataset_id}", lambda: _build_dataset(dataset_id), fresh=fresh)
+
+
 @app.post("/api/datasets")
+@_changes_things
 def dataset_register(body: DatasetCreateRequest) -> dict[str, Any]:
     """Register a dataset: a team, a name and the absolute path of its original data."""
     return _registry_call(registry.register, body.model_dump(exclude_unset=True))
 
 
 @app.patch("/api/datasets/{dataset_id}")
+@_changes_things
 def dataset_update(dataset_id: str, body: DatasetUpdateRequest) -> dict[str, Any]:
     """Change a dataset's team, name, description, notes or saved conversion settings."""
     return _registry_call(registry.update, dataset_id, body.model_dump(exclude_unset=True))
 
 
 @app.post("/api/datasets/{dataset_id}/unregister")
+@_changes_things
 def dataset_unregister(dataset_id: str) -> dict[str, Any]:
     """Remove a dataset's entry and its folder under the service root, and the scan results
     only it used. Refused while a conversion, a scan or (for a filtered version) its filter job
@@ -314,6 +363,7 @@ def team_toxicity_policy(team: str) -> dict[str, Any]:
 
 
 @app.put("/api/teams/{team}/toxicity-policy")
+@_changes_things
 def team_toxicity_policy_set(team: str, body: PolicyRequest) -> dict[str, Any]:
     """Save a new toxicity policy for a team. It applies to every dataset of the team without
     a policy of its own, from the next scan on; a scan that has started keeps its copy."""
@@ -327,12 +377,14 @@ def dataset_toxicity_policy(dataset_id: str) -> dict[str, Any]:
 
 
 @app.put("/api/datasets/{dataset_id}/toxicity-policy")
+@_changes_things
 def dataset_toxicity_policy_set(dataset_id: str, body: PolicyRequest) -> dict[str, Any]:
     """Save a toxicity policy for this dataset only, replacing its team's for it."""
     return _registry_call(policies.set_dataset_policy, dataset_id, body.text)
 
 
 @app.delete("/api/datasets/{dataset_id}/toxicity-policy")
+@_changes_things
 def dataset_toxicity_policy_clear(dataset_id: str) -> dict[str, Any]:
     """Remove the dataset's own toxicity policy, so it uses its team's again."""
     return _registry_call(policies.clear_dataset_policy, dataset_id)
@@ -549,6 +601,7 @@ def conversions_check(body: ConversionsRequest) -> dict[str, Any]:
 
 
 @app.post("/api/conversions/submit")
+@_changes_things
 def conversions_submit(body: ConversionsRequest) -> dict[str, Any]:
     """Start one SLURM job per dataset. The whole request is refused if any dataset
     can't be started, or if it converts a dataset again while a scan is going on it."""
@@ -576,6 +629,7 @@ def dataset_conversion(dataset_id: str, job_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/datasets/{dataset_id}/conversions/{job_id}/cancel")
+@_changes_things
 def dataset_conversion_cancel(dataset_id: str, job_id: str) -> dict[str, Any]:
     """`scancel` the one SLURM job this conversion's record lists."""
     return _conversions_call(conversions.cancel, dataset_id, job_id)
@@ -634,6 +688,7 @@ def scans_check(body: ScansRequest) -> dict[str, Any]:
 
 
 @app.post("/api/scans/submit")
+@_changes_things
 def scans_submit(body: ScansRequest) -> dict[str, Any]:
     """Start the conversions the datasets need and the scans: a scan whose datasets are all
     converted starts now, any other waits for its conversions. The whole request is refused
@@ -642,9 +697,10 @@ def scans_submit(body: ScansRequest) -> dict[str, Any]:
 
 
 @app.get("/api/scans")
-def scans_list() -> dict[str, Any]:
-    """Every scan, newest first, with its state read live."""
-    return _scans_call(scans.list_scans)
+def scans_list(fresh: bool = False) -> dict[str, Any]:
+    """Every scan, newest first, with its state read from SLURM. Kept for 15 seconds
+    (snapshot.py); `fresh` asks for one built now."""
+    return snapshot.get("scans", lambda: _scans_call(scans.list_scans), fresh=fresh)
 
 
 @app.get("/api/scans/{scan_id}")
@@ -654,6 +710,7 @@ def scans_get(scan_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/scans/{scan_id}/cancel")
+@_changes_things
 def scans_cancel(scan_id: str) -> dict[str, Any]:
     """Stop a scan: `scancel` on the one job its record lists, or, for a scan still waiting
     for its conversions, stop it from ever starting. The conversions keep running."""
@@ -688,6 +745,7 @@ def dataset_result(
 
 
 @app.post("/api/datasets/{dataset_id}/results/{scanner}/check")
+@_changes_things
 def dataset_result_check(dataset_id: str, scanner: str) -> dict[str, Any]:
     """Run the dataset's result analysis for a scanner again: one CPU SLURM job that checks the
     scan's coverage (and counts, if they aren't there yet). Refused while one is going."""
@@ -757,6 +815,7 @@ def dataset_drop_check(dataset_id: str, body: DropRequest) -> dict[str, Any]:
 
 
 @app.post("/api/datasets/{dataset_id}/drop/submit")
+@_changes_things
 def dataset_drop_submit(dataset_id: str, body: DropRequest) -> dict[str, Any]:
     """Drop the chosen rows: mark the dataset's converted data as kept, register the new
     filtered dataset, write its drop list and submit the filter job. Nothing in the dataset
@@ -777,6 +836,7 @@ def dataset_filter(dataset_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/datasets/{dataset_id}/filter/cancel")
+@_changes_things
 def dataset_filter_cancel(dataset_id: str) -> dict[str, Any]:
     """`scancel` the one SLURM job a filtered dataset's record lists."""
     return _results_call(filters.cancel, dataset_id)
@@ -790,6 +850,7 @@ def dataset_filter_retry_check(dataset_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/datasets/{dataset_id}/filter/retry")
+@_changes_things
 def dataset_filter_retry(dataset_id: str) -> dict[str, Any]:
     """Run a failed or cancelled drop again, as a new SLURM job on the same filtered dataset, from
     the drop list it already has. The failed attempt's folder and logs are kept."""

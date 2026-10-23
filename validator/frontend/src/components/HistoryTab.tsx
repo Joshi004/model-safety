@@ -29,6 +29,7 @@ function ScansHistory({ dataset }: { dataset: Dataset }) {
     dataset.id,
     POLL_MS,
     (response) => response.scans.some((scan) => isHolding(scan.state) && scan.datasets.some((item) => item.id === dataset.id)),
+    'scans',
   )
   const scans = data?.scans.filter((scan) => scan.datasets.some((item) => item.id === dataset.id)) ?? []
 
@@ -87,6 +88,7 @@ function ConversionsHistory({ dataset, onChanged }: { dataset: Dataset; onChange
     dataset.id,
     POLL_MS,
     (response) => response.has_active,
+    `conversions:${dataset.id}`,
   )
 
   const hasActive = data?.has_active ?? null

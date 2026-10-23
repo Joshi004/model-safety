@@ -678,6 +678,18 @@ button:disabled {
   gap: 8px;
 }
 
+/* The suggested mapping that hasn't been applied yet: the page's main next step. */
+.suggestion-bar-todo {
+  background: var(--accent-bg);
+  border: 1px solid var(--accent);
+  color: var(--text-h);
+}
+
+.suggestion-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
 .field-card {
   border: 1px solid var(--border);
   border-left: 3px solid var(--border);

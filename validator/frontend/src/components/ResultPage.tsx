@@ -97,6 +97,7 @@ export default function ResultPage({
       isHolding(loaded.summary.state) ||
       (loaded.result !== null && isAnalysisGoing(loaded.result.analysis.state)) ||
       autoDropGoing(loaded),
+    `result:${dataset.id}/${scanner}/${JSON.stringify(choice)}`,
   )
   const [checking, setChecking] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -137,7 +138,7 @@ export default function ResultPage({
   async function runAgain(result: ScannerResult) {
     setActionError(null)
     try {
-      const { datasets } = await listDatasets()
+      const { datasets } = await listDatasets(true)
       const byId = new Map(datasets.map((item) => [item.id, item]))
       const chosen = result.datasets.flatMap((item) => {
         const found = byId.get(item.id)

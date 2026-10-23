@@ -1,10 +1,18 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { errorMessage, getTeams, listDatasets } from '../api'
+import { cacheGeneration, getCached, setCached } from '../cache'
 import { hrefFor } from '../route'
 import { isHolding } from '../scans'
 import { loadString, saveString } from '../storage'
-import type { ConversionSubmitResponse, Dataset, ScanSubmitResponse, Team, UnregisterResponse } from '../types'
+import type {
+  ConversionSubmitResponse,
+  Dataset,
+  DatasetsResponse,
+  ScanSubmitResponse,
+  Team,
+  UnregisterResponse,
+} from '../types'
 import ActionBar from './ActionBar'
 import ConvertDialog from './ConvertDialog'
 import DatasetsTable from './DatasetsTable'
@@ -14,6 +22,9 @@ import TeamPolicyDialog from './TeamPolicyDialog'
 import UnregisterDialog from './UnregisterDialog'
 
 const TEAM_KEY = 'datasets.team'
+// Where the last answers are kept in the in-memory cache (cache.ts), so the page opens with them.
+const TEAMS_CACHE = 'teams'
+const DATASETS_CACHE = 'datasets'
 // How often the list is read again while a scan is going, so the scan chips follow it.
 const SCAN_POLL_MS = 10_000
 
@@ -22,10 +33,17 @@ function plural(count: number, one: string, many: string): string {
 }
 
 export default function DatasetsPage() {
-  const [teams, setTeams] = useState<Team[]>([])
-  const [datasets, setDatasets] = useState<Dataset[] | null>(null)
-  const [serviceRoot, setServiceRoot] = useState('')
+  const [teams, setTeams] = useState<Team[]>(() => getCached<Team[]>(TEAMS_CACHE) ?? [])
+  const [datasets, setDatasets] = useState<Dataset[] | null>(
+    () => getCached<DatasetsResponse>(DATASETS_CACHE)?.datasets ?? null,
+  )
+  const [serviceRoot, setServiceRoot] = useState(() => getCached<DatasetsResponse>(DATASETS_CACHE)?.service_root ?? '')
   const [loadError, setLoadError] = useState<string | null>(null)
+  // Whether a read has come back since the page opened. The first one asks the backend for live
+  // data; later ones (polls, reloads after a change) accept what it saved a moment ago. Until
+  // the first one is back, what is shown may be the cached list.
+  const hasLoaded = useRef(false)
+  const [synced, setSynced] = useState(false)
 
   // '' is the "All" tab. The last tab is remembered in this browser.
   const [teamChoice, setTeamChoice] = useState(() => loadString(TEAM_KEY, ''))
@@ -48,9 +66,14 @@ export default function DatasetsPage() {
   useEffect(() => {
     // An answer that arrives after a newer request started, or after leaving the page, is dropped.
     let stale = false
-    Promise.all([getTeams(), listDatasets()])
+    const generation = cacheGeneration()
+    Promise.all([getTeams(), listDatasets(!hasLoaded.current)])
       .then(([teamsResponse, datasetsResponse]) => {
         if (stale) return
+        setCached(TEAMS_CACHE, teamsResponse.teams, generation)
+        setCached(DATASETS_CACHE, datasetsResponse, generation)
+        hasLoaded.current = true
+        setSynced(true)
         setLoadError(null)
         setTeams(teamsResponse.teams)
         setServiceRoot(datasetsResponse.service_root)
@@ -207,6 +230,7 @@ export default function DatasetsPage() {
     <>
       <div className="page-header">
         <h1>Datasets</h1>
+        {datasets !== null && !synced && loadError === null && <span className="muted small">Updating…</span>}
         <button
           type="button"
           className="primary push-right"

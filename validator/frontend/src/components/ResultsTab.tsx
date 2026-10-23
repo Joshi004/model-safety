@@ -33,6 +33,7 @@ export default function ResultsTab({ dataset, onChanged }: { dataset: Dataset; o
     dataset.id,
     POLL_MS,
     anythingGoing,
+    `results:${dataset.id}`,
   )
 
   // The header shows the same counts and coverage, so it is read again once the checks have finished.

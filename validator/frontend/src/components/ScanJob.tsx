@@ -70,7 +70,7 @@ export default function ScanJob({
   useEffect(() => {
     if (!retryAsked || scan === null || !canRetryScan(scan.state)) return
     let cancelled = false
-    listDatasets()
+    listDatasets(true)
       .then(({ datasets }) => {
         if (cancelled) return
         // The datasets as they are registered now: one that was unregistered since can't be scanned.

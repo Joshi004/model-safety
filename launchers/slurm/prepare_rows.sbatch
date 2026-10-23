@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=prepare_rows
 #SBATCH --partition=background
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=256G
 #SBATCH --time=04:00:00
 #SBATCH --output=logs/slurm/prepare_rows_%j.out
 #SBATCH --error=logs/slurm/prepare_rows_%j.err

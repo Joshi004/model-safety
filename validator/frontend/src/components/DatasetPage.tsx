@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { ApiError, errorMessage, getDataset } from '../api'
+import { cacheGeneration, getCached, setCached } from '../cache'
 import { EMPTY_SELECTION, clearAll } from '../drop'
 import type { DropSelection } from '../drop'
 import { formatCount, formatTimestamp } from '../format'
@@ -45,7 +46,14 @@ export default function DatasetPage({
   tab: DatasetTab
   scanner: string | null
 }) {
-  const [loaded, setLoaded] = useState<Loaded>({ status: 'loading' })
+  const cacheKey = `dataset:${datasetId}`
+  // Starts from the last answer for this dataset, if there is one, while the live one is read.
+  const [loaded, setLoaded] = useState<Loaded>(() => {
+    const cached = getCached<Dataset>(cacheKey)
+    return cached === undefined ? { status: 'loading' } : { status: 'ready', dataset: cached }
+  })
+  // Whether the live read made when the page opened has come back (or failed).
+  const [synced, setSynced] = useState(false)
   // The Conversion tab holds edits that aren't saved yet, so once it has been opened it
   // stays mounted (hidden) while another tab is shown.
   const [conversionOpened, setConversionOpened] = useState(tab === 'conversion')
@@ -53,32 +61,53 @@ export default function DatasetPage({
 
   useEffect(() => {
     let cancelled = false
-    getDataset(datasetId)
+    const generation = cacheGeneration()
+    // The first read after the page opens asks for live data.
+    getDataset(datasetId, true)
       .then((dataset) => {
-        if (!cancelled) setLoaded({ status: 'ready', dataset })
+        if (cancelled) return
+        setCached(cacheKey, dataset, generation)
+        setLoaded({ status: 'ready', dataset })
+        setSynced(true)
       })
       .catch((error: unknown) => {
         if (cancelled) return
+        setSynced(true)
         const notFound = error instanceof ApiError && error.status === 404
-        setLoaded({
-          status: 'error',
-          message: notFound ? 'No dataset has this id. It may have been unregistered.' : errorMessage(error),
-        })
+        // A failed read leaves the cached dataset that is shown as it is, unless the dataset is gone.
+        setLoaded((current) =>
+          current.status === 'ready' && !notFound
+            ? current
+            : {
+                status: 'error',
+                message: notFound ? 'No dataset has this id. It may have been unregistered.' : errorMessage(error),
+              },
+        )
       })
     return () => {
       cancelled = true
     }
-  }, [datasetId])
+  }, [datasetId, cacheKey])
 
   // Reads the dataset again (a conversion started or finished) without going back to "Loading".
-  // A failure leaves what is shown as it is.
+  // A failure leaves what is shown as it is. It accepts what the backend saved a moment ago.
   const reload = useCallback(() => {
+    const generation = cacheGeneration()
     getDataset(datasetId)
-      .then((dataset) => setLoaded({ status: 'ready', dataset }))
+      .then((dataset) => {
+        setCached(cacheKey, dataset, generation)
+        setLoaded({ status: 'ready', dataset })
+      })
       .catch(() => undefined)
-  }, [datasetId])
+  }, [datasetId, cacheKey])
 
-  const setDataset = useCallback((dataset: Dataset) => setLoaded({ status: 'ready', dataset }), [])
+  const setDataset = useCallback(
+    (dataset: Dataset) => {
+      setCached(cacheKey, dataset, cacheGeneration())
+      setLoaded({ status: 'ready', dataset })
+    },
+    [cacheKey],
+  )
 
   // While this dataset's own filter job, or the job of one of its filtered versions, is going, the
   // page is read again every few seconds, so the state and the row counts follow it.
@@ -159,6 +188,7 @@ export default function DatasetPage({
           <div className="page-header">
             <h1>{loaded.dataset.name}</h1>
             <Chip label={loaded.dataset.team} />
+            {!synced && <span className="muted small">Updating…</span>}
             {loaded.dataset.available ? (
               <Chip label="Available" tone="ok" />
             ) : (

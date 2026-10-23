@@ -42,7 +42,7 @@ from reader_imports import (
 
 # `background` is hidden from plain `sinfo`, has a low priority and its jobs can be preempted
 # (they then restart from scratch); a user can pick any other partition for a job.
-DEFAULT_RESOURCES = {"partition": "background", "cpus": 2, "mem": "32G", "time": "04:00:00"}
+DEFAULT_RESOURCES = {"partition": "background", "cpus": 4, "mem": "256G", "time": "04:00:00"}
 MAX_CPUS = 32
 SLURM_TIMEOUT_SECONDS = 30
 JOB_SCRIPT = "launchers/slurm/prepare_rows.sbatch"
